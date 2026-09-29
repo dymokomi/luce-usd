@@ -1,0 +1,178 @@
+## Inherits and specializes, after _EvalNodeInherits, _EvalNodeSpecializes,
+## _AddClassBasedArcs, _AddClassBasedArc, _EvalImpliedClasses,
+## _EvalImpliedClassTree and _EvalImpliedSpecializes
+## (pxr/usd/pcp/primIndex.cpp). A class arc maps the class to the instance
+## and every other path to itself. Classes are implied up the graph: when
+## a node inherits a class, its parent inherits the class mapped across
+## the arc between them (an implied class), so a referencing layer stack's
+## opinions about the class apply too. Specializes nodes are added as inert
+## placeholders where authored and propagated (copied) under the root, so
+## their opinions come after every other arc's.
+
+extend Composer:
+    ## Add the inherits (or specializes) the node's site authors.
+    mutating func eval_class_arcs(indexer: Indexer*, node: u32, kind: ArcType) -> !:
+        if not indexer.index.node(node).contributes(): return
+        let names = self.names
+        let stack = indexer.index.node(node).stack
+        let node_path = indexer.index.node(node).path
+        var paths = Growing[ListItem]()
+        defer paths.close()
+        let layers = self.stacks.stack(stack).layers.view()
+        var position = layers.length
+        while position > 0:
+            position -= 1
+            let data = self.layers.layer(layers[position])
+            let spec = data.find(node_path) else continue
+            let field = data.get(spec, data.keys.inherit_paths if kind == ArcType.inherit else data.keys.specializes) else continue
+            let list = field.list_op() else continue
+            try apply_list_op(list, &paths)
+        let target = try names.strip_variants(node_path)
+        for number in 0..<paths.count:
+            let path = (u32)paths.items[number].a
+            if path != empty_path and not (names.is_prim(path) and not names.has_variant_selection(path)):
+                try self.problems.add("Invalid inherit or specialize prim path")
+                continue
+            var map = try MapFunction.of_pair(path, target, Offset.identity())
+            map.root_identity = true
+            discard(try self.add_class_arc(indexer, path, kind, node, node, map, (i32)number, 0, empty_path))
+
+    ## Add one class arc under `parent` (_AddClassBasedArc), or find the
+    ## one there already; `map` is taken. An implied class to the site
+    ## (`ignore_stack`, `ignore_path`) it comes from, or to the parent's own
+    ## site, contributes nothing but keeps propagating.
+    mutating func add_class_arc(indexer: Indexer*, path: u32, kind: ArcType, parent: u32, origin: u32, map: MapFunction, sibling: i32, ignore_stack: usize, ignore_path: u32) -> u32?!:
+        var owned = map
+        let names = self.names
+        let index = &indexer.index
+        if path == empty_path:
+            # Outside the arc's co-domain: no site to inherit from here.
+            owned.close()
+            return none
+        let stack = index.node(parent).stack
+        if let child = self.existing_class_arc(indexer, path, kind, parent, origin, &owned):
+            # An implied specializes to the root prefers the stronger origin.
+            let implied = kind == ArcType.specialize and parent == 0 and parent != origin
+            if not implied or index.compare_nodes(origin, (u32)index.node(child).origin) >= 0:
+                owned.close()
+                return child
+            inert_subtree(index, child, names)
+        var options = ArcOptions.plain()
+        if kind == ArcType.specialize and (parent != 0 or indexer.frame != none):
+            # An inert placeholder; its copy under the root contributes.
+            options.contribute = false
+            options.tasks = 0
+            let placeholder = try self.add_arc(indexer, kind, parent, (i32)origin, stack, path, owned, sibling, namespace_depth(names, index.node(parent).path), options)
+            let added = placeholder else return none
+            if indexer.frame != none or index.relocates_placeholder(added): return placeholder
+            let propagated = try self.propagate_to_root(indexer, added)
+            if let copy = propagated:
+                if index.node(copy).origin != (i32)added: try indexer.add_tasks_for_node(names, added, task_implied_classes)
+            return propagated
+        options.contribute = path != index.node(parent).path and not (stack == ignore_stack and path == ignore_path)
+        options.skip_duplicates = options.contribute
+        # Only subroot classes bring ancestral opinions.
+        options.ancestral = options.contribute and not is_root_prim(names, path)
+        return try self.add_arc(indexer, kind, parent, (i32)origin, stack, path, owned, sibling, namespace_depth(names, index.node(parent).path), options)
+
+    ## A child of `parent` that already is this class arc: the same site,
+    ## or under a relocation, the same kind, origin depth and map.
+    func existing_class_arc(indexer: const Indexer*, path: u32, kind: ArcType, parent: u32, origin: u32, map: const MapFunction*) -> u32?:
+        let index = &indexer.index
+        var parent_arc = index.node(parent).arc
+        if parent == 0:
+            if let frame = indexer.frame: parent_arc = frame.kind
+        if parent_arc != ArcType.relocate: return index.matching_child(parent, index.node(parent).stack, path)
+        let depth = index.depth_below_introduction(self.names, origin)
+        for child in index.node(parent).children.view():
+            let entry = index.node(child)
+            if entry.arc == kind and entry.origin >= 0 and index.depth_below_introduction(self.names, (u32)entry.origin) == depth and entry.map_to_parent.equals(map): return child
+        return none
+
+    ## Copy specializes node `node` under the root (_PropagateNodeToRoot),
+    ## unless the root has a child at its site already.
+    mutating func propagate_to_root(indexer: Indexer*, node: u32) -> u32?!:
+        let names = self.names
+        let index = &indexer.index
+        let entry = index.node(node)
+        if let found = index.matching_child(0, entry.stack, entry.path): return found
+        let map = try index.map_to_root(names, node)
+        var options = ArcOptions.plain()
+        options.skip_duplicates = true
+        options.ancestral = not is_root_prim(names, entry.path)
+        return try self.add_arc(indexer, entry.arc, 0, (i32)node, entry.stack, entry.path, map, entry.sibling, namespace_depth(names, index.node(0).path), options)
+
+    ## Imply the class arcs under `node` to its parent (_EvalImpliedClasses).
+    mutating func eval_implied_classes(indexer: Indexer*, node: u32) -> !:
+        let index = &indexer.index
+        if node == 0 or not index.has_class_based_child(node): return
+        # Classes map across any arc: add the root identity.
+        var transfer = try index.node(node).map_to_parent.copy()
+        defer transfer.close()
+        transfer.root_identity = true
+        try self.implied_class_tree(indexer, (u32)index.node(node).parent, node, &transfer, true)
+
+    ## Imply the class arcs under `source` (a whole class hierarchy) to
+    ## `destination` through `transfer` (_EvalImpliedClassTree).
+    mutating func implied_class_tree(indexer: Indexer*, destination: u32, source: u32, transfer: const MapFunction*, start: bool) -> !:
+        let names = self.names
+        let index = &indexer.index
+        if index.node(destination).arc == ArcType.relocate:
+            # Relocation nodes hold no implied classes: go to their parent.
+            var outer = try index.node(destination).map_to_parent.copy()
+            defer outer.close()
+            outer.root_identity = true
+            var composed = try outer.compose(names, transfer)
+            defer composed.close()
+            try self.implied_class_tree(indexer, (u32)index.node(destination).parent, source, &composed, start)
+            try indexer.add(Task(kind = task_implied_classes, node = destination, path = 0, name = 0, number = 0))
+            return
+        var owner = source
+        if let copy = index.propagated_of(source): owner = copy
+        var children = Growing[u32]()
+        defer children.close()
+        try children.assign(index.node(owner).children.view())
+        for child in children.view():
+            if not is_class_based(index.node(child).arc): continue
+            # The arc continuing the destination's own chain of classes.
+            if start and is_class_based(index.node(source).arc) and index.depth_below_introduction(names, source) == index.depth_below_introduction(names, child): continue
+            var implied: u32? = none
+            for there in index.node(destination).children.view():
+                if index.node(there).origin == (i32)child and not index.is_propagated(there):
+                    implied = there
+                    break
+            if implied == none:
+                let class_map = try transfer.implied_class(names, &index.node(child).map_to_parent)
+                let path = try self.inherit_path(index.node(destination).path, index.node(child).path, transfer)
+                let entry = index.node(child)
+                implied = try self.add_class_arc(indexer, path, entry.arc, destination, child, class_map, entry.sibling, entry.stack, entry.path)
+            let found = implied else continue
+            if not index.has_class_based_child(child): continue
+            var below = found
+            if let copy = index.propagated_of(found): below = copy
+            try self.implied_class_tree(indexer, below, child, transfer, false)
+
+    ## The class site under the destination: the source's path mapped
+    ## across the transfer, variant selections of the destination's path
+    ## put back (_DetermineInheritPath).
+    mutating func inherit_path(destination: u32, source: u32, transfer: const MapFunction*) -> u32!:
+        let names = self.names
+        let mapped = try transfer.map(names, try names.strip_variants(source), false)
+        if not names.has_variant_selection(destination): return mapped
+        var selection = destination
+        while names.kind(selection) != PathKind.variant: selection = names.parent(selection)
+        return try names.replace_prefix(mapped, try names.strip_variants(selection), selection)
+
+    ## Copy the specializes nodes at and under `node` under the root
+    ## (_EvalImpliedSpecializes).
+    mutating func eval_implied_specializes(indexer: Indexer*, node: u32) -> !:
+        if node == 0: return
+        try self.propagate_specializes(indexer, node)
+
+    mutating func propagate_specializes(indexer: Indexer*, node: u32) -> !:
+        if indexer.index.relocates_placeholder(node): return
+        if indexer.index.node(node).arc == ArcType.specialize: discard(try self.propagate_to_root(indexer, node))
+        var children = Growing[u32]()
+        defer children.close()
+        try children.assign(indexer.index.node(node).children.view())
+        for child in children.view(): try self.propagate_specializes(indexer, child)

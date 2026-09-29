@@ -1,9 +1,11 @@
 ## The work queue of one index build, after Pcp_PrimIndexer's tasks
 ## (pxr/usd/pcp/primIndex.cpp): each node's arcs are tasks, taken in the
-## priority order of their kinds (references, then payloads, inherits,
-## specializes, ancestral variants, variants), and among tasks of one kind
-## in node order, except that variant selections go strongest node first
-## so a stronger node's selection is found before a weaker one asks.
+## priority order of their kinds (references, payloads, inherits,
+## specializes, implied specializes and classes, ancestral variants,
+## variants), and among tasks of one kind in node order, except that
+## variant selections go strongest node first, so a stronger node's
+## selection is found before a weaker one asks, and implied classes go
+## descendants first, then strongest first.
 
 ## Task kinds in priority order (Pcp's Task::Type).
 let task_references: u32 = 4
@@ -42,22 +44,41 @@ struct Indexer:
     var index: PrimIndex
     var queue: Growing[Task]
     var frame: const Frame*?
-    ## Whether variants are evaluated (not in the nested builds arcs make).
-    var variants: bool
+    ## Whether this is an outermost build, where variants and implied
+    ## specializes are evaluated (not the nested builds arcs make).
+    var outer: bool
 
     mutating func close():
         self.index.close()
         self.queue.close()
 
+    ## Queue a task; implied class and specializes tasks once per node.
     mutating func add(task: Task) -> !:
+        if task.kind == task_implied_classes or task.kind == task_implied_specializes:
+            for queued in self.queue.view():
+                if queued.kind == task.kind and queued.node == task.node: return
         try self.queue.push(task)
+
+    ## Queue a new node's tasks (AddTasksForNode): the implied classes of
+    ## the class hierarchy it joins or brings, its subtree's specializes to
+    ## propagate, then `kinds` for it and every node under it.
+    mutating func add_tasks_for_node(names: const Names*, node: u32, kinds: u32) -> !:
+        let index = &self.index
+        if kinds & task_implied_classes != 0:
+            if is_class_based(index.node(node).arc):
+                try self.add(Task(kind = task_implied_classes, node = implied_classes_start(index, names, node), path = 0, name = 0, number = 0))
+            elif index.has_class_based_child(node):
+                try self.add(Task(kind = task_implied_classes, node = node, path = 0, name = 0, number = 0))
+        if kinds & task_implied_specializes != 0 and self.outer and index.has_specializes_below(node):
+            try self.add(Task(kind = task_implied_specializes, node = node, path = 0, name = 0, number = 0))
+        try self.add_tasks(node, kinds)
 
     ## Queue `kinds` for `node` and every node under it (Pcp's
     ## _AddTasksForNodeRecursively): the node sets for variant kinds, the
     ## kind itself for arc kinds.
     mutating func add_tasks(node: u32, kinds: u32) -> !:
         var mask = kinds
-        if not self.variants: mask = mask & ~variant_tasks
+        if not self.outer: mask = mask & ~variant_tasks
         let children = self.index.nodes.items[(usize)node].children.view()
         for child in children: try self.add_tasks(child, mask)
         for kind in [task_ancestral_variant_sets, task_variant_sets, task_specializes, task_inherits, task_payloads, task_references]:
@@ -82,6 +103,11 @@ struct Indexer:
             if a.node != b.node: return self.index.compare_nodes(a.node, b.node) < 0
             if a.path != b.path: return names.path_less(a.path, b.path)
             return a.number < b.number
+        if a.kind == task_implied_classes:
+            # Descendants before their ancestors, else strongest first.
+            if b.node > a.node and self.index.is_ancestor(a.node, b.node): return false
+            if a.node > b.node and self.index.is_ancestor(b.node, a.node): return true
+            return self.index.compare_nodes(a.node, b.node) < 0
         if a.node != b.node: return a.node < b.node
         if a.path != b.path: return names.path_less(a.path, b.path)
         return a.number < b.number
@@ -93,3 +119,16 @@ struct Indexer:
             let kind = self.queue.items[at].kind
             if kind == task_variant_fallback or kind == task_variant_none: self.queue.items[at].kind = task_variant_authored
             elif kind == task_ancestral_variant_fallback or kind == task_ancestral_variant_none: self.queue.items[at].kind = task_ancestral_variant_authored
+
+## Where a class hierarchy's implied classes start propagating from
+## (_FindStartingNodeForImpliedClasses): its instance, or further up while
+## that instance is itself a class not containing this hierarchy.
+func implied_classes_start(index: const PrimIndex*, names: const Names*, node: u32) -> u32:
+    var start = node
+    while is_class_based(index.node(start).arc):
+        let found = index.hierarchy_start(names, start)
+        start = found.instance
+        if is_class_based(index.node(start).arc) and found.class_node >= 0:
+            let ancestral = index.path_at_introduction(names, start)
+            if names.has_prefix(index.node((u32)found.class_node).path, ancestral): break
+    return start

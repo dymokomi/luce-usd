@@ -83,21 +83,29 @@ pub struct PrimIndex:
 
     ## Add `node` (taken) as a child of `parent`, among its siblings by
     ## strength; its index.
-    pub mutating func insert_child(parent: u32, node: Node) -> u32!:
+    pub mutating func insert_child(names: const Names*, parent: u32, node: Node) -> u32!:
         var owned = node
         errdefer owned.close()
         owned.parent = (i32)parent
         let index = (u32)self.nodes.count
         try self.nodes.push(owned)
         errdefer self.nodes.count -= 1
-        try self.link_child(parent, index)
+        try self.link_child(names, parent, index)
         return index
 
-    ## List node `index` among `parent`'s children by strength.
-    pub mutating func link_child(parent: u32, index: u32) -> !:
+    ## List node `index` among `parent`'s children by strength
+    ## (_InsertChildInStrengthOrder: first, last, else before the first
+    ## weaker one).
+    pub mutating func link_child(names: const Names*, parent: u32, index: u32) -> !:
+        let count = self.nodes.items[(usize)parent].children.count
+        var at = count
+        if count > 0:
+            let children = self.nodes.items[(usize)parent].children.view()
+            if self.compare_siblings(names, index, children[0]) < 0: at = 0
+            elif self.compare_siblings(names, index, children[count - 1]) < 0:
+                at = 1
+                while at < count and not (self.compare_siblings(names, index, children[at]) < 0): at += 1
         let children = &self.nodes.items[(usize)parent].children
-        var at = children.count
-        while at > 0 and self.compare_siblings(index, children.items[at - 1]) < 0: at -= 1
         try children.push(index)
         var move = children.count - 1
         while move > at:
@@ -105,33 +113,20 @@ pub struct PrimIndex:
             move -= 1
         children.items[at] = index
 
-    ## PcpCompareSiblingNodeStrength without specializes: negative when
-    ## `a` is stronger.
-    pub func compare_siblings(a: u32, b: u32) -> i32:
-        let x = &self.nodes.items[(usize)a]
-        let y = &self.nodes.items[(usize)b]
-        if (u8)x.arc != (u8)y.arc: return -1 if (u8)x.arc < (u8)y.arc else 1
-        if x.depth != y.depth: return -1 if x.depth > y.depth else 1
-        if x.origin != y.origin and x.origin >= 0 and y.origin >= 0:
-            let result = self.compare_nodes((u32)x.origin, (u32)y.origin)
-            if result != 0: return result
-        if x.sibling != y.sibling: return -1 if x.sibling < y.sibling else 1
-        return 0
+    ## The first node of the site that is neither inert nor culled
+    ## (PcpPrimIndex_Graph::GetNodeUsingSite).
+    pub func node_using_site(stack: usize, path: u32) -> u32?:
+        for at in 0..<self.nodes.count:
+            let node = &self.nodes.items[at]
+            if not node.inert and not node.culled and node.stack == stack and node.path == path: return (u32)at
+        return none
 
-    ## PcpCompareNodeStrength: negative when `a` is stronger (a pre-order
-    ## walk meets it first), positive when `b` is, 0 for the same node.
-    pub func compare_nodes(a: u32, b: u32) -> i32:
-        if a == b: return 0
-        return self.first_met(0, a, b)
-
-    ## Which of `a` and `b` a pre-order walk from `node` meets first.
-    func first_met(node: u32, a: u32, b: u32) -> i32:
-        if node == a: return -1
-        if node == b: return 1
-        for child in self.nodes.items[(usize)node].children.view():
-            let result = self.first_met(child, a, b)
-            if result != 0: return result
-        return 0
+    ## The child of `parent` at the site, if any (_FindMatchingChild).
+    pub func matching_child(parent: u32, stack: usize, path: u32) -> u32?:
+        for child in self.nodes.items[(usize)parent].children.view():
+            let node = &self.nodes.items[(usize)child]
+            if node.stack == stack and node.path == path: return child
+        return none
 
     ## Make `node` inert, recording where it was first restricted
     ## (PcpNodeRef::SetInert).

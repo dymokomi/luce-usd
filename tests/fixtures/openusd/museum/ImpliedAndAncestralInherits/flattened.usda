@@ -1,0 +1,21 @@
+#usda 1.0
+
+def "World"
+{
+    def "CharGroup"
+    {
+        def "Sim"
+        {
+            def "includes"
+            {
+                def "Hand"
+                {
+                    def "Geom"
+                    {
+                    }
+                }
+            }
+        }
+    }
+}
+

@@ -1,0 +1,198 @@
+## Strength order, after PcpCompareSiblingNodeStrength and
+## PcpCompareNodeStrength (pxr/usd/pcp/strengthOrdering.cpp) and the class
+## hierarchy helpers of utils.cpp. Siblings compare by arc type, then the
+## namespace depth their arcs were introduced at (deeper is stronger), then
+## their origins' strength, then their order among the arcs authored.
+## Specializes nodes are copied under the root (propagated) so they end up
+## weakest; among those, origins nested under one another, implied copies
+## and chains of origins decide. A node is stronger than another when a
+## pre-order walk of the graph meets it first.
+
+## A class hierarchy's start: the instance node that inherits (or
+## specializes) it and the first class node below it (-1 when none).
+struct Hierarchy:
+    var instance: u32
+    var class_node: i32
+
+## Whether an arc is an inherit or a specialize (PcpIsClassBasedArc).
+func is_class_based(arc: ArcType) -> bool:
+    return arc == ArcType.inherit or arc == ArcType.specialize
+
+extend PrimIndex:
+    ## Negative when sibling `a` is stronger, positive when `b` is.
+    pub func compare_siblings(names: const Names*, a: u32, b: u32) -> i32:
+        if a == b: return 0
+        let x = &self.nodes.items[(usize)a]
+        let y = &self.nodes.items[(usize)b]
+        if (u8)x.arc != (u8)y.arc: return -1 if (u8)x.arc < (u8)y.arc else 1
+        if x.arc == ArcType.specialize:
+            let result = self.compare_specializes(names, a, b)
+            if result != 0: return result
+        else:
+            if x.depth != y.depth: return -1 if x.depth > y.depth else 1
+            if x.origin != y.origin:
+                let result = self.compare_nodes((u32)x.origin, (u32)y.origin)
+                if result != 0: return result
+        if x.sibling != y.sibling: return -1 if x.sibling < y.sibling else 1
+        return 0
+
+    ## The specializes part of the sibling order; 0 to fall through to the
+    ## arcs' sibling numbers.
+    func compare_specializes(names: const Names*, a: u32, b: u32) -> i32:
+        let x = &self.nodes.items[(usize)a]
+        let y = &self.nodes.items[(usize)b]
+        let a_root = self.origin_root(a)
+        let b_root = self.origin_root(b)
+        # Deeper opinions are stronger, unless one origin is nested under
+        # the other: then a specializes arc lies between them.
+        if not (self.nested_under(a_root, b_root) or self.nested_under(b_root, a_root)):
+            if x.depth != y.depth: return -1 if x.depth > y.depth else 1
+        let a_origin = (u32)x.origin
+        let b_origin = (u32)y.origin
+        let a_authored = x.origin == x.parent
+        let b_authored = y.origin == y.parent
+        if a_origin == b_origin:
+            if a_authored or b_authored: return 0
+            # An implied copy (its site not its origin's) beats the
+            # propagated one.
+            let a_implied = not self.same_site(a, a_origin)
+            let b_implied = not self.same_site(b, b_origin)
+            if a_implied != b_implied: return -1 if a_implied else 1
+            return 0
+        if a_root != b_root: return self.compare_nodes(a_root, b_root)
+        # The same authored specialize arc: the shallower instance of the
+        # class hierarchy, then the longer chain of origins, then implied
+        # over propagated in the root layer stack, then the origins.
+        let a_depth = 0 if a_authored else self.hierarchy_depth(names, a_origin)
+        let b_depth = 0 if b_authored else self.hierarchy_depth(names, b_origin)
+        if a_depth != b_depth: return -1 if a_depth < b_depth else 1
+        let a_steps = self.origin_steps(a)
+        let b_steps = self.origin_steps(b)
+        if a_steps != b_steps: return -1 if a_steps > b_steps else 1
+        let root_stack = self.nodes.items[0].stack
+        if x.stack == root_stack and y.stack == root_stack and not a_authored and not b_authored:
+            let a_implied = not self.same_site(a, a_origin)
+            let b_implied = not self.same_site(b, b_origin)
+            if a_implied != b_implied: return -1 if a_implied else 1
+        return self.compare_nodes(a_origin, b_origin)
+
+    ## PcpCompareNodeStrength: negative when `a` is stronger (a pre-order
+    ## walk meets it first), positive when `b` is, 0 for the same node.
+    pub func compare_nodes(a: u32, b: u32) -> i32:
+        if a == b: return 0
+        return self.first_met(0, a, b)
+
+    ## Which of `a` and `b` a pre-order walk from `node` meets first.
+    func first_met(node: u32, a: u32, b: u32) -> i32:
+        if node == a: return -1
+        if node == b: return 1
+        for child in self.nodes.items[(usize)node].children.view():
+            let result = self.first_met(child, a, b)
+            if result != 0: return result
+        return 0
+
+    ## Whether two nodes are the same site.
+    pub func same_site(a: u32, b: u32) -> bool:
+        let x = &self.nodes.items[(usize)a]
+        let y = &self.nodes.items[(usize)b]
+        return x.stack == y.stack and x.path == y.path
+
+    ## The node an implied chain of origins starts at (GetOriginRootNode).
+    pub func origin_root(node: u32) -> u32:
+        var at = node
+        while self.nodes.items[(usize)at].origin >= 0 and self.nodes.items[(usize)at].origin != self.nodes.items[(usize)at].parent:
+            at = (u32)self.nodes.items[(usize)at].origin
+        return at
+
+    ## How many origins lie between a node and its origin root.
+    func origin_steps(node: u32) -> u32:
+        var steps: u32 = 0
+        var at = node
+        while self.nodes.items[(usize)at].origin >= 0 and self.nodes.items[(usize)at].origin != self.nodes.items[(usize)at].parent:
+            at = (u32)self.nodes.items[(usize)at].origin
+            steps += 1
+        return steps
+
+    ## Whether `x` lies under `y`, through parents or, from propagated
+    ## specializes nodes, their origins (_OriginsAreNestedArcs).
+    func nested_under(x: u32, y: u32) -> bool:
+        var at = (i32)x
+        while at >= 0:
+            if at == (i32)y: return true
+            at = self.nodes.items[(usize)at].origin if self.is_propagated((u32)at) else self.nodes.items[(usize)at].parent
+        return false
+
+    ## The namespace depth of the instance of the class hierarchy a node
+    ## belongs to, relocates skipped (_GetNamespaceDepthForClassHierarchy).
+    func hierarchy_depth(names: const Names*, node: u32) -> i32:
+        var instance = self.hierarchy_start(names, node).instance
+        while self.nodes.items[(usize)instance].arc == ArcType.relocate: instance = (u32)self.nodes.items[(usize)instance].parent
+        return self.nodes.items[(usize)instance].depth
+
+    ## Pcp_FindStartingNodeOfClassHierarchy: walk up the class arcs
+    ## introduced at the node's depth to the instance inheriting them.
+    pub func hierarchy_start(names: const Names*, node: u32) -> Hierarchy:
+        var instance = node
+        if self.is_propagated(instance): instance = (u32)self.nodes.items[(usize)instance].origin
+        let depth = self.depth_below_introduction(names, instance)
+        var class_node: i32 = -1
+        while is_class_based(self.nodes.items[(usize)instance].arc) and self.depth_below_introduction(names, instance) == depth:
+            class_node = (i32)instance
+            instance = (u32)self.nodes.items[(usize)instance].parent
+            if self.is_propagated(instance): instance = (u32)self.nodes.items[(usize)instance].origin
+        return Hierarchy(instance = instance, class_node = class_node)
+
+    ## Namespace levels between where the node's arc was introduced and its
+    ## parent's path (GetDepthBelowIntroduction).
+    pub func depth_below_introduction(names: const Names*, node: u32) -> i32:
+        let parent = self.nodes.items[(usize)node].parent
+        if parent < 0: return 0
+        return namespace_depth(names, self.nodes.items[(usize)parent].path) - self.nodes.items[(usize)node].depth
+
+    ## A specializes node copied under the root from its origin
+    ## (Pcp_IsPropagatedSpecializesNode).
+    pub func is_propagated(node: u32) -> bool:
+        let entry = &self.nodes.items[(usize)node]
+        return entry.arc == ArcType.specialize and entry.parent == 0 and entry.origin >= 0 and self.same_site(node, (u32)entry.origin)
+
+    ## The propagated copy of specializes node `node`, if any.
+    pub func propagated_of(node: u32) -> u32?:
+        if self.nodes.items[(usize)node].arc != ArcType.specialize: return none
+        let children = self.nodes.items[0].children.view()
+        var at = children.length
+        while at > 0:
+            at -= 1
+            let child = children[at]
+            if (u8)self.nodes.items[(usize)child].arc < (u8)ArcType.specialize: return none
+            if self.nodes.items[(usize)child].origin == (i32)node and self.is_propagated(child): return child
+        return none
+
+    ## Whether the node (or its propagated copy) has class-based children.
+    pub func has_class_based_child(node: u32) -> bool:
+        var owner = node
+        if let copy = self.propagated_of(node): owner = copy
+        for child in self.nodes.items[(usize)owner].children.view():
+            if is_class_based(self.nodes.items[(usize)child].arc): return true
+        return false
+
+    ## Whether any node at or under `node` is a specializes node.
+    pub func has_specializes_below(node: u32) -> bool:
+        if self.nodes.items[(usize)node].arc == ArcType.specialize: return true
+        for child in self.nodes.items[(usize)node].children.view():
+            if self.has_specializes_below(child): return true
+        return false
+
+    ## Whether `ancestor` is `node` or above it, the root excluded.
+    pub func is_ancestor(ancestor: u32, node: u32) -> bool:
+        var at = (i32)node
+        while at > 0:
+            if at == (i32)ancestor: return true
+            at = self.nodes.items[(usize)at].parent
+        return false
+
+    ## A placeholder implied class under a relocation, only there to keep
+    ## propagating (_IsRelocatesPlaceholderImpliedArc).
+    pub func relocates_placeholder(node: u32) -> bool:
+        let entry = &self.nodes.items[(usize)node]
+        if entry.parent < 0 or entry.parent == entry.origin: return false
+        return self.nodes.items[(usize)entry.parent].arc == ArcType.relocate and self.same_site(node, (u32)entry.parent)

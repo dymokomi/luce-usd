@@ -17,6 +17,10 @@ struct Frame:
     var stack: usize
     var path: u32
     var previous: const Frame*?
+    ## The arc the built index will hang by, and whether sites the outer
+    ## graphs already hold are skipped.
+    var kind: ArcType
+    var skip_duplicates: bool
 
 ## A composition: the layers and layer stacks it opened, its root layer
 ## stack, and the indexes of the root stack's prims (each once).
@@ -87,7 +91,7 @@ pub struct Composer:
         defer self.composing = outer
         var built = try self.build(self.root_stack, path, none, true, true)
         defer built.close()
-        cull(&built, self.names)
+        cull(&built, self.names, self.root_stack)
         var made = try finalized(&built)
         errdefer made.close()
         try self.cached_paths.push(path)
@@ -96,20 +100,21 @@ pub struct Composer:
         return &self.cached.items[self.cached.count - 1]
 
     ## The index of `path` in layer stack `stack` (Pcp_BuildPrimIndex).
-    ## `variants`: whether variant sets are evaluated.
-    mutating func build(stack: usize, path: u32, frame: const Frame*?, contribute_root: bool, variants: bool) -> PrimIndex!:
+    ## `outer`: an outermost build, which evaluates variant sets and
+    ## implied specializes.
+    mutating func build(stack: usize, path: u32, frame: const Frame*?, contribute_root: bool, outer: bool) -> PrimIndex!:
         if path == absolute_root:
             var index = try PrimIndex.rooted(stack, path)
             index.nodes.items[0].has_specs = self.site_has_specs(stack, path)
             return index
-        var indexer = Indexer(index = PrimIndex(), queue = Growing[Task](), frame = frame, variants = variants)
+        var indexer = Indexer(index = PrimIndex(), queue = Growing[Task](), frame = frame, outer = outer)
         defer indexer.close()
         if self.names.kind(path) == PathKind.variant:
             # A variant selection's ancestral opinions come with its prim's.
             indexer.index = try PrimIndex.rooted(stack, path)
             indexer.index.nodes.items[0].has_specs = self.site_has_specs(stack, path)
         else:
-            indexer.index = try self.ancestral(stack, path, frame, variants)
+            indexer.index = try self.ancestral(stack, path, frame, outer)
         if not contribute_root: indexer.index.set_inert(self.names, 0)
         try indexer.add_tasks(0, all_tasks & ~ancestral_variant_tasks)
         try self.run_tasks(&indexer)
@@ -118,14 +123,14 @@ pub struct Composer:
         return done
 
     ## The parent's index with every site extended by the prim's name.
-    mutating func ancestral(stack: usize, path: u32, frame: const Frame*?, variants: bool) -> PrimIndex!:
+    mutating func ancestral(stack: usize, path: u32, frame: const Frame*?, outer: bool) -> PrimIndex!:
         let parent_path = self.names.parent(path)
         var index = PrimIndex()
         errdefer index.close()
         if frame == none and stack == self.root_stack:
             index = try copy_index(try self.index(parent_path))
         else:
-            index = try self.build(stack, parent_path, frame, true, variants)
+            index = try self.build(stack, parent_path, frame, true, outer)
         let name = self.names.name(path)
         for at in 0..<index.nodes.count:
             let node = &index.nodes.items[at]
@@ -184,6 +189,10 @@ pub struct Composer:
             let kind = task.kind
             if kind == task_references: try self.eval_arcs(indexer, task.node, false)
             elif kind == task_payloads: try self.eval_arcs(indexer, task.node, true)
+            elif kind == task_inherits: try self.eval_class_arcs(indexer, task.node, ArcType.inherit)
+            elif kind == task_specializes: try self.eval_class_arcs(indexer, task.node, ArcType.specialize)
+            elif kind == task_implied_classes: try self.eval_implied_classes(indexer, task.node)
+            elif kind == task_implied_specializes: try self.eval_implied_specializes(indexer, task.node)
             elif kind == task_variant_sets: try self.eval_variant_sets(indexer, task.node)
             elif kind == task_ancestral_variant_sets: try self.eval_ancestral_variant_sets(indexer, task.node)
             elif kind == task_variant_authored or kind == task_ancestral_variant_authored:
@@ -264,23 +273,29 @@ func keep_origin_chain(index: const PrimIndex*, erasable: Growing[bool]*, start:
         if entry.origin == entry.parent or entry.origin < 0: return
         node = (u32)entry.origin
 
-## Mark subtrees without opinions culled (_CullSubtreesWithNoOpinions).
-func cull(index: PrimIndex*, names: const Names*):
+## Mark subtrees without opinions culled (_CullSubtreesWithNoOpinions);
+## `root_stack` is the index's own layer stack.
+func cull(index: PrimIndex*, names: const Names*, root_stack: usize):
     if index.nodes.count == 0: return
-    for child in index.nodes.items[0].children.view(): cull_subtree(index, child, names)
+    for child in index.nodes.items[0].children.view(): cull_subtree(index, child, names, root_stack)
 
-func cull_subtree(index: PrimIndex*, node: u32, names: const Names*):
-    for child in index.nodes.items[(usize)node].children.view(): cull_subtree(index, child, names)
-    if can_cull(index, node, names): index.set_culled(names, node)
+func cull_subtree(index: PrimIndex*, node: u32, names: const Names*, root_stack: usize):
+    for child in index.nodes.items[(usize)node].children.view(): cull_subtree(index, child, names, root_stack)
+    if can_cull(index, node, names, root_stack): index.set_culled(names, node)
 
 ## _NodeCanBeCulled: a node stays when it is the root, when its arc was
-## introduced at its own namespace depth, when a child stays, or when it
-## contributes specs.
-func can_cull(index: const PrimIndex*, node: u32, names: const Names*) -> bool:
+## introduced at its own namespace depth, when it is a subroot inherit in
+## the root layer stack, when a child stays, or when it contributes specs.
+func can_cull(index: const PrimIndex*, node: u32, names: const Names*, root_stack: usize) -> bool:
     let entry = &index.nodes.items[(usize)node]
     if entry.culled: return true
     if entry.parent < 0: return false
     if entry.depth == namespace_depth(names, index.nodes.items[(usize)entry.parent].path): return false
+    if entry.arc == ArcType.inherit and entry.stack == root_stack:
+        # A subroot class exists in the composed scene; keep its node.
+        let origin = node if entry.origin == entry.parent else index.origin_root(node)
+        let intro = index.path_at_introduction(names, origin)
+        if not (names.node(intro).depth == 1 and names.is_prim(intro)): return false
     for child in entry.children.view():
         if not index.nodes.items[(usize)child].culled: return false
     return not (entry.has_specs and entry.contributes())

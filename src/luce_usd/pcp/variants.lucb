@@ -171,13 +171,16 @@ extend Composer:
         let node_path = indexer.index.node(task.node).path
         if not ancestral:
             let path = try names.variant(node_path, task.name, selection)
-            let added = try self.add_arc(indexer, task.node, (i32)task.node, ArcType.variant, stack, path, MapFunction.identity(), task.number, namespace_depth(names, node_path), true, false)
-            if added and self.might_select(stack, path): indexer.retry_variants()
+            let added = try self.add_arc(indexer, ArcType.variant, task.node, (i32)task.node, stack, path, MapFunction.identity(), task.number, namespace_depth(names, node_path), ArcOptions.plain())
+            if added != none and self.might_select(stack, path): indexer.retry_variants()
             return
         let selected = try names.variant(task.path, task.name, selection)
         let path = try names.replace_prefix(node_path, task.path, selected)
-        let added = try self.add_arc(indexer, task.node, (i32)task.node, ArcType.variant, stack, path, MapFunction.identity(), task.number, namespace_depth(names, task.path), true, true)
-        if added and self.might_select(stack, selected): indexer.retry_variants()
+        var options = ArcOptions.plain()
+        options.ancestral = true
+        options.skip_duplicates = under_local_class(&indexer.index, names, task.node)
+        let added = try self.add_arc(indexer, ArcType.variant, task.node, (i32)task.node, stack, path, MapFunction.identity(), task.number, namespace_depth(names, task.path), options)
+        if added != none and self.might_select(stack, selected): indexer.retry_variants()
 
     ## Whether the site authors selections or arcs that could bring some
     ## (_SiteMightIntroducePendingVariantSelections).
@@ -195,3 +198,14 @@ func prim_of(names: const Names*, path: u32) -> u32:
     var at = path
     while at > relative_root and names.kind(at) != PathKind.prim: at = names.parent(at)
     return at
+
+## Whether a node lies in a subtree rooted at a contributing class arc
+## introduced at its own level of namespace, where _AddClassBasedArc skips
+## duplicate sites; ancestral variants from there skip them too.
+func under_local_class(index: const PrimIndex*, names: const Names*, node: u32) -> bool:
+    var at = node
+    while at != 0:
+        let entry = index.node(at)
+        if is_class_based(entry.arc) and index.depth_below_introduction(names, at) == 0 and not (entry.inert or entry.culled): return true
+        at = (u32)entry.parent
+    return false

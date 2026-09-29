@@ -1,0 +1,54 @@
+#usda 1.0
+(
+    """
+    This museum case demonstrates behavior when mixing specializes
+    and inherit arcs.
+    """
+)
+
+class "Inherits_1"
+{
+}
+
+class "Specializes_1"
+{
+}
+
+def "Instance_1"
+{
+}
+
+over "Inherits_2"
+{
+}
+
+over "Specializes_2"
+{
+}
+
+def "Instance_2"
+{
+}
+
+def "Model"
+{
+    def "Looks"
+    {
+        def "BaseMaterial"
+        {
+        }
+
+        def "Material"
+        {
+        }
+
+        def "Metal"
+        {
+        }
+
+        def "Brass"
+        {
+        }
+    }
+}
+

@@ -84,6 +84,44 @@ pub struct MapFunction:
         try made.targets.assign(self.sources.view())
         return made
 
+    ## Whether two maps are the same: pairs, root identity and offset.
+    pub func equals(other: const MapFunction*) -> bool:
+        if self.root_identity != other.root_identity or self.sources.count != other.sources.count: return false
+        if self.offset.offset != other.offset.offset or self.offset.scale != other.offset.scale: return false
+        for at in 0..<self.sources.count:
+            var found = false
+            for there in 0..<other.sources.count:
+                found = found or (other.sources.items[there] == self.sources.items[at] and other.targets.items[there] == self.targets.items[at])
+            if not found: return false
+        return true
+
+    ## The map of the class arc `class_arc` implied across `self`, the
+    ## transfer from a node to its parent (PcpMapFunction::ImpliedClass):
+    ## each class pair mapped through the transfer, plus the pairs the
+    ## transfer gives descendants of class targets; always with the root
+    ## identity, and the class arc's offset.
+    pub func implied_class(names: Names*, class_arc: const MapFunction*) -> MapFunction!:
+        if self.is_identity() or class_arc.is_identity(): return try class_arc.copy()
+        var made = MapFunction(sources = Growing[u32](), targets = Growing[u32](), root_identity = true, offset = class_arc.offset)
+        errdefer made.close()
+        for at in 0..<class_arc.sources.count:
+            let source = try self.map(names, class_arc.sources.items[at], false)
+            if source == empty_path: continue
+            try made.sources.push(source)
+            try made.targets.push(try self.map(names, class_arc.targets.items[at], false))
+        for at in 0..<self.sources.count:
+            let transfer_source = self.sources.items[at]
+            for pair in 0..<class_arc.sources.count:
+                let class_target = class_arc.targets.items[pair]
+                if transfer_source == class_target or not names.has_prefix(transfer_source, class_target): continue
+                let source = try names.replace_prefix(transfer_source, class_target, class_arc.sources.items[pair])
+                if try class_arc.map(names, source, false) != transfer_source: continue
+                let mapped = try self.map(names, source, false)
+                if mapped == empty_path: continue
+                try made.sources.push(mapped)
+                try made.targets.push(self.targets.items[at])
+        return made
+
 ## The index in `side` of the longest path that is a prefix of `path` with
 ## at least `floor` depth, or side.length.
 func best_match(names: Names*, path: u32, side: const u32[], floor: u32) -> usize:

@@ -6,6 +6,19 @@
 ## offset. An arc targets a prim of the referenced layer's own layer stack
 ## (the node's own, for internal references), or its defaultPrim.
 
+## How _AddArc adds a node (_ArcOptions): whether the new site contributes
+## specs, whether its ancestral opinions come along (its index is built
+## and added as a subtree), whether a site some graph up the stack frames
+## already holds is skipped, and the tasks queued for the new nodes.
+struct ArcOptions:
+    var contribute: bool
+    var ancestral: bool
+    var skip_duplicates: bool
+    var tasks: u32
+
+    static func plain() -> ArcOptions:
+        return ArcOptions(contribute = true, ancestral = false, skip_duplicates = false, tasks = all_tasks)
+
 ## One composed arc: the item (asset anchored: its identifier's token) and
 ## the position in the layer stack of the layer that authored it.
 struct ArcItem:
@@ -133,45 +146,94 @@ extend Composer:
                 prim = try default_prim_path(names, named.as_token())
         var map = try MapFunction.of_pair(prim, try names.strip_variants(node_path), offset)
         if internal: map.root_identity = true
-        let ancestral = not (names.node(prim).depth == 1 and names.is_prim(prim))
+        var options = ArcOptions.plain()
+        options.contribute = contribute
+        options.ancestral = not is_root_prim(names, prim)
         let kind = ArcType.payload if payload else ArcType.reference
-        discard(try self.add_arc(indexer, node, (i32)node, kind, target_stack, prim, map, number, namespace_depth(names, node_path), contribute, ancestral))
+        discard(try self.add_arc(indexer, kind, node, (i32)node, target_stack, prim, map, number, namespace_depth(names, node_path), options))
 
-    ## Add an arc (_AddArc): unless it closes a cycle, a new child node, or
-    ## (bringing ancestral opinions) its target's own index as a subtree;
-    ## then queue the new nodes' tasks. `map` is taken. Whether a node was
-    ## added.
-    mutating func add_arc(indexer: Indexer*, parent: u32, origin: i32, kind: ArcType, stack: usize, path: u32, map: MapFunction, sibling: i32, depth: i32, contribute: bool, ancestral: bool) -> bool!:
+    ## Add an arc (_AddArc): unless it closes a cycle or its site is a
+    ## duplicate to skip, a new child node, or (bringing ancestral opinions)
+    ## its target's own index as a subtree; then queue the new nodes'
+    ## tasks. `map` is taken. The new node, if any.
+    mutating func add_arc(indexer: Indexer*, kind: ArcType, parent: u32, origin: i32, stack: usize, path: u32, map: MapFunction, sibling: i32, depth: i32, options: ArcOptions) -> u32?!:
         var owned = map
         let index = &indexer.index
-        if kind != ArcType.variant and try self.closes_cycle(index, parent, stack, path, indexer.frame):
+        var skip = options.skip_duplicates
+        if let frame = indexer.frame: skip = skip or frame.skip_duplicates
+        let refused = self.refuses_arc(index, kind, parent, (u32)origin, stack, path, indexer.frame, skip) catch failure:
             owned.close()
-            try self.problems.add("Cycle detected")
-            return false
+            error(failure.code, failure.message)
+        if refused:
+            owned.close()
+            return none
         var added: u32 = 0
-        if not ancestral:
+        if not options.ancestral:
             let node = Node(stack = stack, path = path, arc = kind, parent = (i32)parent, origin = origin, children = Growing[u32](), sibling = sibling, depth = depth, map_to_parent = owned, inert = false, culled = false, has_specs = self.site_has_specs(stack, path), restricted = 0)
-            added = try index.insert_child(parent, node)
-            if not contribute:
+            added = try index.insert_child(self.names, parent, node)
+            if not options.contribute:
                 index.set_inert(self.names, added)
                 # Not even ancestrally (SetSpecContributionRestrictedDepth(1)).
                 index.nodes.items[(usize)added].restricted = 1
         else:
-            let below = Frame(index = index, parent = parent, stack = stack, path = path, previous = indexer.frame)
-            # Variants wait for the outer index, which knows stronger selections.
-            var sub = self.build(stack, path, &below, contribute, false) catch failure:
+            let below = Frame(index = index, parent = parent, stack = stack, path = path, previous = indexer.frame, kind = kind, skip_duplicates = skip)
+            # Variants and implied specializes wait for the outer index,
+            # which knows stronger opinions.
+            var sub = self.build(stack, path, &below, options.contribute, false) catch failure:
                 owned.close()
                 error(failure.code, failure.message)
             defer sub.close()
-            added = try append_subtree(index, parent, &sub, kind, origin, sibling, depth, owned)
+            added = try append_subtree(index, self.names, parent, &sub, kind, origin, sibling, depth, owned)
         # A nested build evaluated the subtree's expressed arcs; its
         # ancestral variants are evaluated only where variants are.
-        var tasks = all_tasks
-        if ancestral: tasks = tasks & ~expressed_arc_tasks
-        if not (indexer.variants and ancestral): tasks = tasks & ~ancestral_variant_tasks
-        try indexer.add_tasks(added, tasks)
+        var tasks = options.tasks
+        if options.ancestral: tasks = tasks & ~expressed_arc_tasks
+        if not (indexer.outer and options.ancestral): tasks = tasks & ~ancestral_variant_tasks
+        if not options.ancestral: tasks = tasks & ~task_implied_specializes
+        try indexer.add_tasks_for_node(self.names, added, tasks)
         if path == absolute_root: inert_subtree(index, added, self.names)
-        return true
+        return added
+
+    ## Whether an arc must not be added: it closes a cycle (variant arcs
+    ## never do), or with `skip` its site is one a graph up the stack
+    ## frames already holds.
+    mutating func refuses_arc(index: const PrimIndex*, kind: ArcType, parent: u32, origin: u32, stack: usize, path: u32, frame: const Frame*?, skip: bool) -> bool!:
+        if kind != ArcType.variant and not self.implied_under_relocate(index, kind, parent, origin, frame):
+            if try self.closes_cycle(index, parent, stack, path, frame):
+                try self.problems.add("Cycle detected")
+                return true
+        if not skip: return false
+        var graph = index
+        var site = path
+        var level = frame
+        while true:
+            if graph.node_using_site(stack, site) != none: return true
+            let up = level else return false
+            let root_path = graph.nodes.items[0].path
+            site = up.path if root_path == site else try self.names.replace_prefix(up.path, root_path, site)
+            graph = up.index
+            level = up.previous
+
+    ## An implied class arc under a relocation's class arcs, which is no
+    ## cycle (the XXX:RelocatesSourceNodes case of _CheckForCycle).
+    func implied_under_relocate(index: const PrimIndex*, kind: ArcType, parent: u32, origin: u32, frame: const Frame*?) -> bool:
+        if not is_class_based(kind) or parent == origin: return false
+        var graph = index
+        var node = (i32)parent
+        var level = frame
+        while true:
+            # The arc to the node's parent, across stack frames.
+            var arc = ArcType.root
+            if node > 0: arc = graph.nodes.items[(usize)node].arc
+            elif let up = level: arc = up.kind
+            if arc != ArcType.inherit and arc != ArcType.specialize: return arc == ArcType.relocate
+            if node > 0:
+                node = graph.nodes.items[(usize)node].parent
+            else:
+                let up = level else return false
+                graph = up.index
+                node = (i32)up.parent
+                level = up.previous
 
     ## Whether an arc from `parent` to (`stack`, `path`) returns to a site
     ## at, above or below one on the way to the root, through every stack
@@ -209,7 +271,7 @@ func remove_arc(items: Growing[ArcItem]*, at: usize):
 
 ## Append `sub`'s nodes under `parent`, its root reached by the given arc
 ## (`map` taken); the new root's index.
-func append_subtree(index: PrimIndex*, parent: u32, sub: const PrimIndex*, kind: ArcType, origin: i32, sibling: i32, depth: i32, map: MapFunction) -> u32!:
+func append_subtree(index: PrimIndex*, names: const Names*, parent: u32, sub: const PrimIndex*, kind: ArcType, origin: i32, sibling: i32, depth: i32, map: MapFunction) -> u32!:
     var owned = map
     errdefer owned.close()
     let base = (u32)index.nodes.count
@@ -228,7 +290,7 @@ func append_subtree(index: PrimIndex*, parent: u32, sub: const PrimIndex*, kind:
         index.nodes.push(Node(stack = node.stack, path = node.path, arc = kind if root else node.arc, parent = (i32)parent if root else node.parent + (i32)base, origin = origin if root else (node.origin + (i32)base if node.origin >= 0 else -1), children = children, sibling = sibling if root else node.sibling, depth = depth if root else node.depth, map_to_parent = node_map, inert = node.inert, culled = node.culled, has_specs = node.has_specs, restricted = node.restricted)) catch failure:
             node_map.close()
             error(failure.code, failure.message)
-    try index.link_child(parent, base)
+    try index.link_child(names, parent, base)
     return base
 
 ## Make a node and everything under it inert (_InertSubtree).
@@ -244,3 +306,7 @@ func default_prim_path(names: Names*, token: u32) -> u32!:
     for byte in text.bytes:
         if byte == '/': return try names.make_absolute(try names.parse_path(text), absolute_root)
     return try names.child(absolute_root, token)
+
+## Whether a path is a root prim's (SdfPath::IsRootPrimPath).
+func is_root_prim(names: const Names*, path: u32) -> bool:
+    return names.node(path).depth == 1 and names.is_prim(path)
