@@ -3,6 +3,8 @@
 import luce_usd.errors as errors
 import luce_usd.source as source
 import luce_usd.sniff as sniff
+import luce_usd.sdf.tokens as tokens
+import luce_usd.sdf.names as names
 
 pub let invalid = errors.invalid
 pub let unsupported = errors.unsupported
@@ -16,3 +18,36 @@ pub let most_bytes = source.most_bytes
 pub type Format = sniff.Format
 pub let detect_format = sniff.detect
 pub let format_name = sniff.extension
+
+pub type Tokens = tokens.Tokens
+pub type Names = names.Names
+pub type PathKind = names.PathKind
+pub type PathNode = names.PathNode
+pub let empty_path = names.empty_path
+pub let absolute_root = names.absolute_root
+pub let relative_root = names.relative_root
+
+import luce_usd.sdf.value_types as value_types
+import luce_usd.sdf.values as values
+import luce_usd.sdf.list_ops as list_ops
+import luce_usd.sdf.layer_data as layer_data
+
+pub type ValueKind = value_types.ValueKind
+pub type Role = value_types.Role
+pub type TypeName = value_types.TypeName
+pub let find_type = value_types.find_type
+pub let element_bytes = value_types.element_bytes
+
+pub type Value = values.Value
+pub type Dictionary = values.Dictionary
+pub type ListOp = values.ListOp
+pub type ListItem = values.ListItem
+pub type ListPart = values.ListPart
+pub type TimeSamples = values.TimeSamples
+pub let same_value = values.same
+pub let array_column = values.array_column
+pub let apply_list_op = list_ops.apply_list_op
+
+pub type SpecType = layer_data.SpecType
+pub type LayerData = layer_data.LayerData
+pub type FieldKeys = layer_data.FieldKeys

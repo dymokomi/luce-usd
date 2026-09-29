@@ -1,0 +1,55 @@
+## Byte output for text formats and messages: appending strings, bytes and
+## numbers to a growing buffer. Writers build whole documents in one buffer
+## and write it once.
+import memory
+from geocore_growing import Growing
+
+## Append `text` to `out`.
+pub func put(out: Growing[u8]*, text: str) -> !:
+    try put_bytes(out, text.bytes)
+
+## Append `bytes` to `out`.
+pub func put_bytes(out: Growing[u8]*, bytes: const u8[]) -> !:
+    if bytes.length == 0: return
+    try out.reserve(out.count + bytes.length)
+    memory.copy(out.items[out.count..], bytes, bytes.length)
+    out.count += bytes.length
+
+## Append one byte.
+pub func put_byte(out: Growing[u8]*, byte: u8) -> !:
+    try out.push(byte)
+
+## Append `value` in decimal.
+pub func put_int(out: Growing[u8]*, value: i64) -> !:
+    var digits: u8[20]
+    var count: usize = 0
+    var rest: u64 = (u64)value if value >= 0 else (u64)(-%value)
+    while true:
+        digits[count] = (u8)(48 + rest % 10)
+        count += 1
+        rest = rest // 10
+        if rest == 0: break
+    try out.reserve(out.count + count + 1)
+    if value < 0:
+        out.items[out.count] = 45
+        out.count += 1
+    while count > 0:
+        count -= 1
+        out.items[out.count] = digits[count]
+        out.count += 1
+
+## Append `value` in decimal.
+pub func put_uint(out: Growing[u8]*, value: u64) -> !:
+    var digits: u8[20]
+    var count: usize = 0
+    var rest = value
+    while true:
+        digits[count] = (u8)(48 + rest % 10)
+        count += 1
+        rest = rest // 10
+        if rest == 0: break
+    try out.reserve(out.count + count)
+    while count > 0:
+        count -= 1
+        out.items[out.count] = digits[count]
+        out.count += 1

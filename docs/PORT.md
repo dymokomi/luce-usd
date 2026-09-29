@@ -8,7 +8,7 @@ record; statuses change as milestones land.
 | Milestone | OpenUSD | luce-usd | Status |
 |---|---|---|---|
 | M0 | `sdf/crateFile.cpp`, `textFileFormat.cpp`, `zipFile.cpp` (signatures) | `sniff.lucb`, `source.lucb` | done |
-| M1 | `sdf/path*.cpp`, `tf/token`, `sdf/types.h`, `valueTypeName*`, `listOp.cpp`, `data.cpp`, `layer.cpp` (data only) | `sdf/` | planned |
+| M1 | `sdf/path*.cpp`, `pathParser.h`, `tf/token`, `crateDataTypes.h`, `schema.cpp` (type names), `listOp.cpp`, `data.cpp` | `sdf/` | done |
 | M2 | `sdf/textFileFormat*`, `fileIO_Common.cpp`, `parserValueContext.cpp` | `usda/` | planned |
 | M3 | `sdf/crateFile.cpp`, `crateData.cpp`, `integerCoding.cpp`, `tf/fastCompression.cpp` (LZ4: luce-compress) | `usdc/` | planned |
 | M4 | `sdf/crateFile.cpp` (writing) | `usdc/` | planned |

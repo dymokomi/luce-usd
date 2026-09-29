@@ -1,0 +1,163 @@
+## Values, list ops and layer data: type names resolve with their roles,
+## values share and release (composites included) without leaks, list ops
+## apply as SdfListOp does, and layers find, set and erase fields.
+import memory
+from usd_kernel import Names, ValueKind, Role, find_type, element_bytes, Value, Dictionary, ListOp, ListItem, ListPart, TimeSamples, same_value, array_column, apply_list_op, LayerData, SpecType, absolute_root, invalid
+from geocore_growing import Growing
+
+func item(a: u64) -> ListItem:
+    return ListItem(a = a, b = 0, offset = 0.0, scale = 1.0, custom = none)
+
+func items_of(list: Growing[ListItem]*) -> u64:
+    var digits: u64 = 0
+    for entry in list.view(): digits = digits * 10 + entry.a
+    return digits
+
+## Apply `list` to the items 1..=count; the result's ids as decimal digits.
+func applied(list: const ListOp*, count: u64) -> u64!:
+    var current = Growing[ListItem]()
+    defer current.close()
+    for id in 1..=count: try current.push(item(id))
+    try apply_list_op(list, &current)
+    return items_of(&current)
+
+pub func exercise() -> !:
+    # Type names.
+    let (point, point_array) = find_type("point3f[]") else trap("point3f[]")
+    assert(point.kind == ValueKind.vec3f and point.role == Role.point and point_array)
+    let (uv, uv_array) = find_type("texCoord2f") else trap("texCoord2f")
+    assert(uv.kind == ValueKind.vec2f and uv.role == Role.texture_coordinate and not uv_array)
+    let (legacy, _) = find_type("PointFloat") else trap("PointFloat")
+    assert(legacy.kind == ValueKind.vec3f and legacy.role == Role.point)
+    assert(find_type("float5") == none and find_type("opaque[]") == none)
+    assert(element_bytes(ValueKind.matrix4d) == 128 and element_bytes(ValueKind.vec3h) == 6 and element_bytes(ValueKind.dictionary) == 0)
+
+    # Arrays share their column.
+    var column = try array_column(ValueKind.float, 3)
+    let floats = column.span()
+    floats[0] = 1
+    floats[1] = 2
+    floats[2] = 3
+    var array = Value.of_array(ValueKind.float, 3, column)
+    var copy = array.share()
+    assert(same_value(&array, &copy) and copy.data.id() == array.data.id())
+    copy.release()
+    array.release()
+    assert(array.is_empty())
+
+    # A dictionary holding a dictionary and an array, shared then released.
+    let outer = try Dictionary.create()
+    let inner = try Dictionary.create()
+    try inner.put(7, Value.scalar(ValueKind.int, 5))
+    try outer.put(3, Value.of_object(ValueKind.dictionary, (void*)inner))
+    try outer.put(4, Value.scalar(ValueKind.double, double_bits(0.5)))
+    try outer.put(4, Value.scalar(ValueKind.double, double_bits(0.25)))
+    var dictionary = Value.of_object(ValueKind.dictionary, (void*)outer)
+    let seen = dictionary.dictionary() else trap("dictionary")
+    assert(seen.count() == 2)
+    let replaced = seen.find(4) else trap("key 4")
+    assert(replaced.as_double() == 0.25)
+    var twin = dictionary.share()
+    dictionary.release()
+    let nested = twin.dictionary() else trap("dictionary after release")
+    let child = nested.find(3) else trap("key 3")
+    let deep = child.dictionary() else trap("nested dictionary")
+    assert((deep.find(7) else trap("key 7")).as_int() == 5)
+    twin.release()
+
+    # Time samples stay ordered; a repeated time replaces.
+    let samples = try TimeSamples.create()
+    try samples.put(10.0, Value.scalar(ValueKind.float, float_bits(1.0)))
+    try samples.put(-1.0, Value.scalar(ValueKind.float, float_bits(2.0)))
+    try samples.put(4.0, Value.scalar(ValueKind.float, float_bits(3.0)))
+    try samples.put(4.0, Value.scalar(ValueKind.float, float_bits(4.0)))
+    assert(samples.count() == 3 and samples.times.items[0] == -1.0 and samples.times.items[1] == 4.0 and samples.times.items[2] == 10.0)
+    assert(samples.values.items[1].as_double() == 4.0)
+    var sampled = Value.of_object(ValueKind.time_samples, (void*)samples)
+    sampled.release()
+
+    # List ops, as SdfListOp applies them.
+    let edits = try ListOp.create()
+    var edit_value = Value.of_object(ValueKind.token_list_op, (void*)edits)
+    defer edit_value.release()
+    try edits.push(ListPart.deleted, item(2))
+    try edits.push(ListPart.appended, item(5))
+    try edits.push(ListPart.appended, item(1))
+    try edits.push(ListPart.prepended, item(6))
+    try edits.push(ListPart.prepended, item(3))
+    assert((try applied(edits, 4)) == 63451)
+    let explicit = try ListOp.create()
+    var explicit_value = Value.of_object(ValueKind.path_list_op, (void*)explicit)
+    defer explicit_value.release()
+    explicit.explicit = true
+    try explicit.push(ListPart.explicit, item(9))
+    try explicit.push(ListPart.explicit, item(8))
+    try explicit.push(ListPart.explicit, item(9))
+    assert((try applied(explicit, 3)) == 98)
+    let ordered = try ListOp.create()
+    var ordered_value = Value.of_object(ValueKind.token_list_op, (void*)ordered)
+    defer ordered_value.release()
+    try ordered.push(ListPart.ordered, item(4))
+    try ordered.push(ListPart.ordered, item(3))
+    try ordered.push(ListPart.ordered, item(4))
+    assert((try applied(ordered, 5)) == 12453)
+    let added = try ListOp.create()
+    var added_value = Value.of_object(ValueKind.token_list_op, (void*)added)
+    defer added_value.release()
+    try added.push(ListPart.added, item(2))
+    try added.push(ListPart.added, item(7))
+    assert((try applied(added, 3)) == 1237)
+
+    # Layer data.
+    var names = try Names()
+    defer names.close()
+    var layer = try LayerData(&names)
+    defer layer.close()
+    assert(layer.spec_count() == 1 and layer.spec(0).kind == SpecType.pseudo_root and layer.find(absolute_root) == 0)
+    let world = try names.parse_path("/World")
+    let spec = try layer.create_spec(world, SpecType.prim)
+    assert(layer.find(world) == spec)
+    var duplicate = false
+    discard(layer.create_spec(world, SpecType.prim)) catch failure:
+        assert(failure.code == invalid)
+        duplicate = true
+    assert(duplicate)
+    try layer.set(spec, layer.keys.type_name, Value.scalar(ValueKind.token, (u64)try names.token("Xform")))
+    try layer.set(spec, layer.keys.active, Value.scalar(ValueKind.boolean, 1))
+    try layer.set(spec, layer.keys.active, Value.scalar(ValueKind.boolean, 0))
+    let active = layer.get(spec, layer.keys.active) else trap("active")
+    assert(not active.as_bool())
+    assert(names.text_of((layer.get(spec, layer.keys.type_name) else trap("typeName")).as_token()) == "Xform")
+    layer.erase(spec, layer.keys.active)
+    assert(layer.get(spec, layer.keys.active) == none and layer.spec(spec).fields.count == 1)
+    # Many specs rehash and stay found.
+    var buffer: u8[32]
+    for index: usize in 0..<2000:
+        let path = try names.child(world, try names.token(try format(buffer, f"P{index}")))
+        discard(try layer.create_spec(path, SpecType.prim))
+    assert(layer.spec_count() == 2002 and layer.find(world) == spec)
+    for index: usize in 0..<2000:
+        let path = try names.child(world, try names.token(try format(buffer, f"P{index}")))
+        assert(layer.find(path) == index + 2)
+
+func double_bits(value: f64) -> u64:
+    return value.bits()
+
+func float_bits(value: f32) -> u64:
+    return (u64)value.bits()
+
+## Building composites and layers with allocations failing.
+pub func allocations() -> !:
+    let outer = try Dictionary.create()
+    var value = Value.of_object(ValueKind.dictionary, (void*)outer)
+    defer value.release()
+    let samples = try TimeSamples.create()
+    try outer.put(1, Value.of_object(ValueKind.time_samples, (void*)samples))
+    try samples.put(1.0, Value.scalar(ValueKind.int, 1))
+    try samples.put(0.0, Value.of_array(ValueKind.int, 2, try array_column(ValueKind.int, 2)))
+    var names = try Names()
+    defer names.close()
+    var layer = try LayerData(&names)
+    defer layer.close()
+    let spec = try layer.create_spec(try names.parse_path("/A"), SpecType.prim)
+    try layer.set(spec, layer.keys.custom_data, value.share())

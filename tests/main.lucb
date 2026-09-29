@@ -1,7 +1,71 @@
-## luce-usd's Base gate: every module check in turn. Each check asserts;
-## the first failure stops the run with its location.
+## luce-usd's Base gate: every module check in turn, under a heap that counts
+## live blocks, so each check must free everything it allocated. `inject`
+## fails a check's allocations one at a time: every failure must surface as
+## memory.exhausted and leave nothing allocated.
+import memory
+import sync
 import sniff_checks
+import path_checks
+import value_checks
+
+## Counts live blocks and fails the allocation after `remaining` more.
+struct Tracker: memory.Allocator:
+    var upstream: memory.Allocator
+    var live: usize
+    var remaining: usize?
+    var lock: sync.Mutex
+
+    pub mutating func allocate(size: usize, alignment: usize) -> u8[]?:
+        if size == 0: return self.upstream.allocate(size, alignment)
+        self.lock.lock()
+        defer self.lock.unlock()
+        if let remaining = self.remaining:
+            if remaining == 0: return none
+            self.remaining = remaining - 1
+        let block = self.upstream.allocate(size, alignment) else return none
+        self.live += 1
+        return block
+
+    pub mutating func resize(block: u8[], size: usize) -> bool:
+        return self.upstream.resize(block, size)
+
+    pub mutating func release(block: u8[]):
+        if block.length == 0: return
+        self.lock.lock()
+        defer self.lock.unlock()
+        assert(self.live > 0)
+        self.live -= 1
+        self.upstream.release(block)
+
+func restore(previous: memory.Allocator):
+    memory.heap = previous
+
+## Nothing may stay live after a check.
+func settle(tracker: Tracker*, what: str = "a check"):
+    tracker.remaining = none
+    if tracker.live != 0: print(f"{tracker.live} blocks still live after {what}")
+    assert(tracker.live == 0)
+
+## Fail each of the first `stages` allocations of `check` in turn.
+func inject(tracker: Tracker*, stages: usize, check: func() -> unit!):
+    for stage in 0..<stages:
+        tracker.remaining = stage
+        check() catch failure:
+            assert(failure.code == memory.exhausted)
+        if tracker.live != 0: print(f"allocation {stage} failing leaks")
+        settle(tracker)
 
 pub func main(arguments: str[]) -> i32!:
+    let previous = memory.heap
+    var tracker = Tracker(previous, 0, none, sync.Mutex())
+    memory.heap = &tracker
+    defer restore(previous)
     try sniff_checks.exercise()
+    settle(&tracker, "sniff_checks")
+    try path_checks.exercise()
+    settle(&tracker, "path_checks")
+    inject(&tracker, 64, path_checks.allocations)
+    try value_checks.exercise()
+    settle(&tracker, "value_checks")
+    inject(&tracker, 64, value_checks.allocations)
     return 0

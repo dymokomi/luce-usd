@@ -1,0 +1,92 @@
+## Paths: parsing and printing round-trip every form of the SdfPath grammar,
+## equal text is one id, malformed text fails, and the path algebra
+## (prefixes, replacement, variant stripping, anchoring) matches SdfPath's.
+import memory
+from usd_kernel import Names, PathKind, absolute_root, relative_root, empty_path, invalid
+from geocore_growing import Growing
+
+func text_of(names: Names*, path: u32, out: Growing[u8]*) -> str!:
+    out.clear()
+    try names.write_path(path, out)
+    return (str)out.view()
+
+## `text` parses and prints back unchanged.
+func round_trip(names: Names*, out: Growing[u8]*, text: str) -> u32!:
+    let path = try names.parse_path(text)
+    let printed = try text_of(names, path, out)
+    if printed != text: print(f"path round trip: {text} printed as {printed}")
+    assert(printed == text)
+    assert((try names.parse_path(text)) == path)
+    return path
+
+func rejected(names: Names*, text: str):
+    discard(names.parse_path(text)) catch failure:
+        assert(failure.code == invalid)
+        return
+    print(f"path accepted but should fail: {text}")
+    assert(false)
+
+pub func exercise() -> !:
+    var names = try Names()
+    defer names.close()
+    var out = Growing[u8]()
+    defer out.close()
+    assert((try names.parse_path("")) == empty_path)
+    assert((try round_trip(&names, &out, "/")) == absolute_root)
+    assert((try round_trip(&names, &out, ".")) == relative_root)
+    let forms = ["/A", "/A/B/C", "/A.prop", "/A/B.ns:name:x", "/A{v=x}", "/A{v=x}B", "/A{v=x}{w=}",
+                 "/A{v=x}B/C{set-1=.sel|a-b}", "/A.rel[/B/C]", "/A.rel[/B.attr]", "/A.rel[/B].ratt",
+                 "/A.rel[/B].ratt[/C]", "/A.attr.mapper[/B.x]", "/A.attr.mapper[/B.x].arg",
+                 "/A.attr.expression", "A", "A/B", ".prop", "..", "../..", "../A", "../../A.x", "../.prop",
+                 "/Caf\u{e9}/\u{65e5}\u{672c}", "/_a1/b_2.c3"]
+    for form in forms: discard(try round_trip(&names, &out, form))
+    # Blanks inside variant selections are accepted and dropped.
+    let spaced = try names.parse_path("/A{ v = x }B")
+    assert((try text_of(&names, spaced, &out)) == "/A{v=x}B")
+    let bad = ["//", "/A/", "/A.", "/1A", "/A B", "A..b", "/A{v}", "/A{=x}", "/A{v=x", "/A.rel[/B", "/A.rel[/B]x",
+               "/A.b.c", "/A:b", "/.x", "./A", "/A.rel[/B].", "/A{v=x}/B", "/A.attr.mapper", "/A.b::c"]
+    for text in bad: rejected(&names, text)
+    # Structure.
+    let prop = try names.parse_path("/World/Mesh.points")
+    assert(names.kind(prop) == PathKind.property and names.is_property(prop))
+    assert(names.name_text(prop) == "points")
+    let mesh = names.parent(prop)
+    assert(names.is_prim(mesh) and names.prim_part(prop) == mesh)
+    assert(names.is_absolute(prop) and not names.is_absolute(try names.parse_path("A/B")))
+    # Prefixes.
+    let world = try names.parse_path("/World")
+    assert(names.has_prefix(prop, world) and names.has_prefix(world, world))
+    assert(not names.has_prefix(world, prop) and not names.has_prefix(prop, try names.parse_path("/Wor")))
+    assert(not names.has_prefix(prop, empty_path))
+    # Prefix replacement reaches target paths too.
+    let other = try names.parse_path("/Other")
+    let moved = try names.replace_prefix(prop, world, other)
+    assert((try text_of(&names, moved, &out)) == "/Other/Mesh.points")
+    let targeted = try names.parse_path("/A.rel[/World/B].ratt")
+    let retargeted = try names.replace_prefix(targeted, world, other)
+    assert((try text_of(&names, retargeted, &out)) == "/A.rel[/Other/B].ratt")
+    assert((try names.replace_prefix(other, world, other)) == other)
+    # Variant stripping.
+    let selected = try names.parse_path("/A{v=x}B{w=y}.p[/C{z=q}D]")
+    assert((try text_of(&names, try names.strip_variants(selected), &out)) == "/A/B.p[/C/D]")
+    assert(names.has_variant_selection(selected) and not names.has_variant_selection(prop))
+    # Anchoring relative paths at a prim.
+    let anchor = try names.parse_path("/A/B")
+    assert((try text_of(&names, try names.make_absolute(try names.parse_path("C.x"), anchor), &out)) == "/A/B/C.x")
+    assert((try text_of(&names, try names.make_absolute(try names.parse_path("../C"), anchor), &out)) == "/A/C")
+    assert((try text_of(&names, try names.make_absolute(try names.parse_path("../../.p"), anchor), &out)) == "/.p")
+    assert((try text_of(&names, try names.make_absolute(try names.parse_path(".p"), anchor), &out)) == "/A/B.p")
+    let above = try names.parse_path("../../..")
+    var climbed = false
+    discard(names.make_absolute(above, anchor)) catch failure:
+        assert(failure.code == invalid)
+        climbed = true
+    assert(climbed)
+
+## Parsing and rebuilding paths with allocations failing.
+pub func allocations() -> !:
+    var names = try Names()
+    defer names.close()
+    let path = try names.parse_path("/A/B{v=x}C.rel[/D/E].attr")
+    let moved = try names.replace_prefix(path, try names.parse_path("/A"), try names.parse_path("/Z"))
+    discard(try names.strip_variants(moved))

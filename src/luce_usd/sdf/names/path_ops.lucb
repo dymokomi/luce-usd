@@ -1,0 +1,102 @@
+## Path algebra over ids, after SdfPath's HasPrefix, ReplacePrefix,
+## StripAllVariantSelections and MakeAbsolutePath (pxr/usd/sdf/path.cpp).
+## Composition maps namespaces with these; a rebuilt path re-interns each
+## element, so the result is again one id per distinct path.
+
+
+extend Names:
+    ## The ancestor of `path` at `depth` (the roots are depth 0).
+    pub func ancestor_at(path: u32, depth: u32) -> u32:
+        var at = path
+        while self.node(at).depth > depth: at = self.node(at).parent
+        return at
+
+    ## Whether `prefix` is `path` or one of its ancestors. The empty path is
+    ## nobody's prefix.
+    pub func has_prefix(path: u32, prefix: u32) -> bool:
+        if path == empty_path or prefix == empty_path: return false
+        let want = self.node(prefix)
+        let have = self.node(path)
+        if want.absolute != have.absolute or want.depth > have.depth: return false
+        return self.ancestor_at(path, want.depth) == prefix
+
+    ## `path` with its prefix `prefix` replaced by `replacement`, and every target path
+    ## inside it too; `path` itself when `prefix` is not its prefix.
+    pub mutating func replace_prefix(path: u32, prefix: u32, replacement: u32) -> u32!:
+        if path == empty_path or prefix == replacement: return path
+        if self.has_prefix(path, prefix):
+            return try self.rebuilt(path, self.node(prefix).depth, replacement, prefix, replacement)
+        if not self.has_target(path): return path
+        let root = absolute_root if self.node(path).absolute else relative_root
+        return try self.rebuilt(path, 0, root, prefix, replacement)
+
+    ## `path` with every variant selection removed, targets included.
+    pub mutating func strip_variants(path: u32) -> u32!:
+        if path <= relative_root: return path
+        var chain: u32[4096] = ---
+        let count = try self.chain_of(path, 0, chain)
+        var at = absolute_root if self.node(path).absolute else relative_root
+        var index = count
+        while index > 0:
+            index -= 1
+            let node = self.node(chain[index])
+            if node.kind == PathKind.variant: continue
+            var element = node.element
+            if node.kind == PathKind.target or node.kind == PathKind.mapper: element = try self.strip_variants(element)
+            at = try self.find_or_add(at, node.kind, element, node.extra)
+        return at
+
+    ## `path` anchored at the prim path `anchor` when it is relative: `..`
+    ## steps to the parent prim. Target paths inside are anchored too.
+    pub mutating func make_absolute(path: u32, anchor: u32) -> u32!:
+        if path == empty_path or self.node(path).absolute: return path
+        if path == relative_root: return anchor
+        var chain: u32[4096] = ---
+        let count = try self.chain_of(path, 0, chain)
+        var at = anchor
+        var index = count
+        while index > 0:
+            index -= 1
+            let node = self.node(chain[index])
+            if node.kind == PathKind.prim and node.element == self.dot_dot:
+                if at == absolute_root: error(errors.invalid, "a relative path climbs above the root")
+                at = self.node(self.prim_part(at)).parent
+                continue
+            var element = node.element
+            if node.kind == PathKind.target or node.kind == PathKind.mapper: element = try self.make_absolute(element, anchor)
+            at = try self.find_or_add(at, node.kind, element, node.extra)
+        return at
+
+    ## `path`'s elements below `depth`, re-appended onto `base`, with target
+    ## paths' `prefix` prefixes replaced by `replacement`.
+    mutating func rebuilt(path: u32, depth: u32, base: u32, prefix: u32, replacement: u32) -> u32!:
+        var chain: u32[4096] = ---
+        let count = try self.chain_of(path, depth, chain)
+        var at = base
+        var index = count
+        while index > 0:
+            index -= 1
+            let node = self.node(chain[index])
+            var element = node.element
+            if node.kind == PathKind.target or node.kind == PathKind.mapper: element = try self.replace_prefix(element, prefix, replacement)
+            at = try self.find_or_add(at, node.kind, element, node.extra)
+        return at
+
+    ## The nodes of `path` deeper than `depth`, deepest first; their count.
+    func chain_of(path: u32, depth: u32, chain: u32[]) -> usize!:
+        var count: usize = 0
+        var at = path
+        while self.node(at).depth > depth:
+            if count == chain.length: error(errors.limit, "a path deeper than 4096 elements")
+            chain[count] = at
+            count += 1
+            at = self.node(at).parent
+        return count
+
+    func has_target(path: u32) -> bool:
+        var at = path
+        while at > relative_root:
+            let kind = self.node(at).kind
+            if kind == PathKind.target or kind == PathKind.mapper: return true
+            at = self.node(at).parent
+        return false

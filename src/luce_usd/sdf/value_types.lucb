@@ -1,0 +1,249 @@
+## Value kinds and value type names, after OpenUSD's crate type enum
+## (pxr/usd/sdf/crateDataTypes.h) and its value type registry
+## (pxr/usd/sdf/schema.cpp, _AddStandardTypesToRegistry and the legacy types).
+##
+## A `ValueKind` is the crate file's own type number, so values read from and
+## written to .usdc need no mapping. A type name ("point3f[]", "color3f") is
+## a kind, an array flag and a role; the role says how geometry treats the
+## values and is what distinguishes point3f from float3.
+
+## What a value holds. The numbers are crateDataTypes.h's; 0 is no value.
+pub enum ValueKind as u8:
+    empty = 0
+    boolean = 1
+    uchar = 2
+    int = 3
+    uint = 4
+    int64 = 5
+    uint64 = 6
+    half = 7
+    float = 8
+    double = 9
+    string = 10
+    token = 11
+    asset = 12
+    matrix2d = 13
+    matrix3d = 14
+    matrix4d = 15
+    quatd = 16
+    quatf = 17
+    quath = 18
+    vec2d = 19
+    vec2f = 20
+    vec2h = 21
+    vec2i = 22
+    vec3d = 23
+    vec3f = 24
+    vec3h = 25
+    vec3i = 26
+    vec4d = 27
+    vec4f = 28
+    vec4h = 29
+    vec4i = 30
+    dictionary = 31
+    token_list_op = 32
+    string_list_op = 33
+    path_list_op = 34
+    reference_list_op = 35
+    int_list_op = 36
+    int64_list_op = 37
+    uint_list_op = 38
+    uint64_list_op = 39
+    path_vector = 40
+    token_vector = 41
+    specifier = 42
+    permission = 43
+    variability = 44
+    variant_selection_map = 45
+    time_samples = 46
+    payload = 47
+    double_vector = 48
+    layer_offset_vector = 49
+    string_vector = 50
+    value_block = 51
+    value = 52
+    unregistered_value = 53
+    unregistered_value_list_op = 54
+    payload_list_op = 55
+    time_code = 56
+    path_expression = 57
+    relocates = 58
+    spline = 59
+    animation_block = 60
+    ## Not a crate kind: a crate value not decoded yet (`bits` holds its rep).
+    packed = 200
+    ## Not a crate kind: text kept as written for a value this port does not
+    ## interpret (splines, array edits); written back unchanged.
+    verbatim = 201
+
+## How geometry treats a value type's values (SdfValueRoleNames).
+pub enum Role as u8:
+    generic = 0
+    point = 1
+    normal = 2
+    vector = 3
+    color = 4
+    texture_coordinate = 5
+    frame = 6
+    transform = 7
+    point_index = 8
+    group = 9
+
+## Bytes one element of an attribute value kind takes: vectors and matrices
+## packed as Gf lays them out (quaternions imaginary first, then real;
+## matrices row-major), strings, tokens, assets and path expressions as
+## token ids. 0 for kinds that are not attribute values.
+pub func element_bytes(kind: ValueKind) -> usize:
+    match kind:
+        .boolean, .uchar: return 1
+        .half: return 2
+        .int, .uint, .float, .string, .token, .asset, .path_expression, .vec2h: return 4
+        .int64, .uint64, .double, .time_code, .vec2f, .vec2i, .vec4h, .quath: return 8
+        .vec3h: return 6
+        .vec3f, .vec3i: return 12
+        .vec2d, .vec4f, .vec4i, .quatf: return 16
+        .vec3d: return 24
+        .vec4d, .quatd, .matrix2d: return 32
+        .matrix3d: return 72
+        .matrix4d: return 128
+        _: return 0
+
+## Scalar components per element (a matrix4d has 16), 0 for non-numeric kinds.
+pub func components(kind: ValueKind) -> usize:
+    match kind:
+        .boolean, .uchar, .int, .uint, .int64, .uint64, .half, .float, .double, .time_code: return 1
+        .vec2d, .vec2f, .vec2h, .vec2i: return 2
+        .vec3d, .vec3f, .vec3h, .vec3i: return 3
+        .vec4d, .vec4f, .vec4h, .vec4i, .quatd, .quatf, .quath, .matrix2d: return 4
+        .matrix3d: return 9
+        .matrix4d: return 16
+        _: return 0
+
+## The scalar kind of a vector, quaternion or matrix kind (itself for scalars).
+pub func scalar_of(kind: ValueKind) -> ValueKind:
+    match kind:
+        .vec2d, .vec3d, .vec4d, .quatd, .matrix2d, .matrix3d, .matrix4d: return ValueKind.double
+        .vec2f, .vec3f, .vec4f, .quatf: return ValueKind.float
+        .vec2h, .vec3h, .vec4h, .quath: return ValueKind.half
+        .vec2i, .vec3i, .vec4i: return ValueKind.int
+        _: return kind
+
+## Whether a kind's values are attribute values that can form arrays.
+pub func is_attribute_value(kind: ValueKind) -> bool:
+    return element_bytes(kind) > 0
+
+## One value type name.
+pub struct TypeName:
+    pub let text: str
+    pub let kind: ValueKind
+    pub let role: Role
+
+## The registered value type names, standard types first, then the legacy
+## names older files use. Each also has an array form, "name[]".
+let type_names: TypeName[81] = [
+    TypeName("bool", ValueKind.boolean, Role.generic),
+    TypeName("uchar", ValueKind.uchar, Role.generic),
+    TypeName("int", ValueKind.int, Role.generic),
+    TypeName("uint", ValueKind.uint, Role.generic),
+    TypeName("int64", ValueKind.int64, Role.generic),
+    TypeName("uint64", ValueKind.uint64, Role.generic),
+    TypeName("half", ValueKind.half, Role.generic),
+    TypeName("float", ValueKind.float, Role.generic),
+    TypeName("double", ValueKind.double, Role.generic),
+    TypeName("timecode", ValueKind.time_code, Role.generic),
+    TypeName("string", ValueKind.string, Role.generic),
+    TypeName("token", ValueKind.token, Role.generic),
+    TypeName("asset", ValueKind.asset, Role.generic),
+    TypeName("opaque", ValueKind.empty, Role.generic),
+    TypeName("group", ValueKind.empty, Role.group),
+    TypeName("pathExpression", ValueKind.path_expression, Role.generic),
+    TypeName("double2", ValueKind.vec2d, Role.generic),
+    TypeName("double3", ValueKind.vec3d, Role.generic),
+    TypeName("double4", ValueKind.vec4d, Role.generic),
+    TypeName("float2", ValueKind.vec2f, Role.generic),
+    TypeName("float3", ValueKind.vec3f, Role.generic),
+    TypeName("float4", ValueKind.vec4f, Role.generic),
+    TypeName("half2", ValueKind.vec2h, Role.generic),
+    TypeName("half3", ValueKind.vec3h, Role.generic),
+    TypeName("half4", ValueKind.vec4h, Role.generic),
+    TypeName("int2", ValueKind.vec2i, Role.generic),
+    TypeName("int3", ValueKind.vec3i, Role.generic),
+    TypeName("int4", ValueKind.vec4i, Role.generic),
+    TypeName("point3h", ValueKind.vec3h, Role.point),
+    TypeName("point3f", ValueKind.vec3f, Role.point),
+    TypeName("point3d", ValueKind.vec3d, Role.point),
+    TypeName("vector3h", ValueKind.vec3h, Role.vector),
+    TypeName("vector3f", ValueKind.vec3f, Role.vector),
+    TypeName("vector3d", ValueKind.vec3d, Role.vector),
+    TypeName("normal3h", ValueKind.vec3h, Role.normal),
+    TypeName("normal3f", ValueKind.vec3f, Role.normal),
+    TypeName("normal3d", ValueKind.vec3d, Role.normal),
+    TypeName("color3h", ValueKind.vec3h, Role.color),
+    TypeName("color3f", ValueKind.vec3f, Role.color),
+    TypeName("color3d", ValueKind.vec3d, Role.color),
+    TypeName("color4h", ValueKind.vec4h, Role.color),
+    TypeName("color4f", ValueKind.vec4f, Role.color),
+    TypeName("color4d", ValueKind.vec4d, Role.color),
+    TypeName("quath", ValueKind.quath, Role.generic),
+    TypeName("quatf", ValueKind.quatf, Role.generic),
+    TypeName("quatd", ValueKind.quatd, Role.generic),
+    TypeName("matrix2d", ValueKind.matrix2d, Role.generic),
+    TypeName("matrix3d", ValueKind.matrix3d, Role.generic),
+    TypeName("matrix4d", ValueKind.matrix4d, Role.generic),
+    TypeName("frame4d", ValueKind.matrix4d, Role.frame),
+    TypeName("texCoord2f", ValueKind.vec2f, Role.texture_coordinate),
+    TypeName("texCoord2d", ValueKind.vec2d, Role.texture_coordinate),
+    TypeName("texCoord2h", ValueKind.vec2h, Role.texture_coordinate),
+    TypeName("texCoord3f", ValueKind.vec3f, Role.texture_coordinate),
+    TypeName("texCoord3d", ValueKind.vec3d, Role.texture_coordinate),
+    TypeName("texCoord3h", ValueKind.vec3h, Role.texture_coordinate),
+    TypeName("Vec2i", ValueKind.vec2i, Role.generic),
+    TypeName("Vec2h", ValueKind.vec2h, Role.generic),
+    TypeName("Vec2f", ValueKind.vec2f, Role.generic),
+    TypeName("Vec2d", ValueKind.vec2d, Role.generic),
+    TypeName("Vec3i", ValueKind.vec3i, Role.generic),
+    TypeName("Vec3h", ValueKind.vec3h, Role.generic),
+    TypeName("Vec3f", ValueKind.vec3f, Role.generic),
+    TypeName("Vec3d", ValueKind.vec3d, Role.generic),
+    TypeName("Vec4i", ValueKind.vec4i, Role.generic),
+    TypeName("Vec4h", ValueKind.vec4h, Role.generic),
+    TypeName("Vec4f", ValueKind.vec4f, Role.generic),
+    TypeName("Vec4d", ValueKind.vec4d, Role.generic),
+    TypeName("Point", ValueKind.vec3d, Role.point),
+    TypeName("PointFloat", ValueKind.vec3f, Role.point),
+    TypeName("Normal", ValueKind.vec3d, Role.normal),
+    TypeName("NormalFloat", ValueKind.vec3f, Role.normal),
+    TypeName("Vector", ValueKind.vec3d, Role.vector),
+    TypeName("VectorFloat", ValueKind.vec3f, Role.vector),
+    TypeName("Color", ValueKind.vec3d, Role.color),
+    TypeName("ColorFloat", ValueKind.vec3f, Role.color),
+    TypeName("Quath", ValueKind.quath, Role.generic),
+    TypeName("Quatf", ValueKind.quatf, Role.generic),
+    TypeName("Quatd", ValueKind.quatd, Role.generic),
+    TypeName("Matrix2d", ValueKind.matrix2d, Role.generic),
+    TypeName("Matrix3d", ValueKind.matrix3d, Role.generic),
+]
+
+## The type named `text` ("point3f", "texCoord2f[]", ...): its entry and
+## whether it is the array form; none for an unknown name.
+pub func find_type(text: str) -> (TypeName, bool)?:
+    var name = text
+    var array = false
+    if text.length > 2 and text.bytes[text.length - 2] == 91 and text.bytes[text.length - 1] == 93:
+        name = (str)text.bytes[..<text.length - 2]
+        array = true
+    for entry in type_names:
+        if entry.text == name:
+            if array and entry.kind == ValueKind.empty: return none
+            return (entry, array)
+    for entry in extra_names:
+        if entry.text == name: return (entry, array)
+    return none
+
+## Legacy names beyond the main table.
+let extra_names: TypeName[4] = [
+    TypeName("Matrix4d", ValueKind.matrix4d, Role.generic),
+    TypeName("Frame", ValueKind.matrix4d, Role.frame),
+    TypeName("Transform", ValueKind.matrix4d, Role.transform),
+    TypeName("PointIndex", ValueKind.int, Role.point_index),
+]

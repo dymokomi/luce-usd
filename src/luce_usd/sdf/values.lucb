@@ -1,0 +1,346 @@
+## Field values, after OpenUSD's VtValue as layers hold it (pxr/base/vt,
+## pxr/usd/sdf/listOp.h, reference.h, payload.h, layerOffset.h).
+##
+## A `Value` is a kind (the crate type number), and one of:
+## - a scalar of at most 8 bytes in `bits`: bool, integers (sign-extended),
+##   half, float and double bits, a token id for token, string, asset and
+##   path expression values, a specifier, permission or variability;
+## - bytes in the shared column `data`: an array (`count` elements, laid out
+##   as value_types.element_bytes says), a larger scalar (a vector, a
+##   quaternion or a matrix), or a vector-shaped metadata value (below);
+## - a shared composite in `object`: a dictionary, a list op or time samples.
+##
+## Vector-shaped metadata in `data`: path, token and string vectors are u32
+## ids; double vectors f64; layer offset vectors (offset f64, scale f64)
+## pairs; variant selection maps and relocates (u32, u32) pairs of tokens
+## or paths; a single payload one `PayloadRecord`.
+##
+## Values share: `share` adds an owner of the column and the composite, and
+## `release` gives one up. A value never changes after it is made.
+import memory
+import luce_usd.errors as errors
+from luce_usd.sdf.value_types import ValueKind, element_bytes
+from geocore_shared import Column
+from geocore_growing import Growing
+
+## SdfSpecifier.
+pub let specifier_def: u64 = 0
+pub let specifier_over: u64 = 1
+pub let specifier_class: u64 = 2
+## SdfPermission.
+pub let permission_public: u64 = 0
+pub let permission_private: u64 = 1
+## SdfVariability.
+pub let variability_varying: u64 = 0
+pub let variability_uniform: u64 = 1
+
+pub struct Value:
+    pub var kind: ValueKind
+    pub var array: bool
+    ## Elements of an array or a vector-shaped value.
+    pub var count: usize
+    pub var bits: u64
+    pub var data: Column[u8]
+    pub var object: void*?
+
+    ## A scalar held in `bits`.
+    pub static func scalar(kind: ValueKind, bits: u64) -> Value:
+        return Value(kind = kind, array = false, count = 0, bits = bits, data = Column[u8](), object = none)
+
+    ## A kind with no payload (a value block, an animation block).
+    pub static func marker(kind: ValueKind) -> Value:
+        return Value.scalar(kind, 0)
+
+    ## A scalar whose bytes are copied into its own column (vectors,
+    ## quaternions, matrices, a payload).
+    pub static func of_bytes(kind: ValueKind, bytes: const u8[]) -> Value!:
+        return Value(kind = kind, array = false, count = 1, bits = 0, data = try Column[u8].copy_of(bytes), object = none)
+
+    ## An array of `count` elements whose bytes `column` holds (taken).
+    pub static func of_array(kind: ValueKind, count: usize, column: Column[u8]) -> Value:
+        return Value(kind = kind, array = true, count = count, bits = 0, data = column, object = none)
+
+    ## A vector-shaped metadata value of `count` records in `column` (taken).
+    pub static func of_records(kind: ValueKind, count: usize, column: Column[u8]) -> Value:
+        return Value(kind = kind, array = false, count = count, bits = 0, data = column, object = none)
+
+    ## A composite (taken): a Dictionary*, ListOp* or TimeSamples*.
+    pub static func of_object(kind: ValueKind, object: void*) -> Value:
+        return Value(kind = kind, array = false, count = 0, bits = 0, data = Column[u8](), object = object)
+
+    pub func is_empty() -> bool:
+        return self.kind == ValueKind.empty
+
+    ## The raw bytes of an array, a large scalar or a vector-shaped value.
+    pub func bytes() -> const u8[]:
+        return self.data.view()
+
+    pub func as_bool() -> bool:
+        return self.bits != 0
+
+    pub func as_int() -> i64:
+        return (i64)self.bits
+
+    ## A half, float, double or time code value as f64; integers convert.
+    pub func as_double() -> f64:
+        match self.kind:
+            .double, .time_code: return f64.bits(self.bits)
+            .float: return (f64)f32.bits((u32)self.bits)
+            .half: return (f64)f16.bits((u16)self.bits)
+            .uint, .uint64, .uchar: return (f64)self.bits
+            _: return (f64)(i64)self.bits
+
+    ## The token id of a token, string, asset or path expression value.
+    pub func as_token() -> u32:
+        return (u32)self.bits
+
+    ## A dictionary value's contents.
+    pub func dictionary() -> const Dictionary*?:
+        if self.kind != ValueKind.dictionary: return none
+        let object = self.object else return none
+        return (const Dictionary*)object
+
+    ## A list op value's contents.
+    pub func list_op() -> const ListOp*?:
+        if not is_list_op(self.kind): return none
+        let object = self.object else return none
+        return (const ListOp*)object
+
+    ## A time samples value's contents.
+    pub func time_samples() -> const TimeSamples*?:
+        if self.kind != ValueKind.time_samples: return none
+        let object = self.object else return none
+        return (const TimeSamples*)object
+
+    ## The u32 ids of a path, token or string vector.
+    pub func ids() -> const u32[]:
+        let bytes = self.data.view()
+        return u32[]((u32*)bytes.data, bytes.length // 4)
+
+    ## The f64s of a double vector.
+    pub func doubles() -> const f64[]:
+        let bytes = self.data.view()
+        return f64[]((f64*)bytes.data, bytes.length // 8)
+
+    ## Another owner of the same value.
+    pub func share() -> Value:
+        if let object = self.object: discard(((Shared*)object).users.add(1, .relaxed))
+        return Value(kind = self.kind, array = self.array, count = self.count, bits = self.bits, data = self.data.share(), object = self.object)
+
+    ## Give up this owner; the last one frees the column and the composite.
+    pub mutating func release():
+        self.data.release()
+        if let object = self.object:
+            self.object = none
+            if ((Shared*)object).users.sub(1, .acq_rel) == 1: destroy(self.kind, object)
+        self.kind = ValueKind.empty
+
+## The header every composite starts with.
+struct Shared:
+    var users: @usize
+
+## A dictionary: string keys (token ids) to values, in insertion order.
+## Writers sort by key text, as VtDictionary (a std::map) orders them.
+pub struct Dictionary:
+    var users: @usize
+    pub var keys: Growing[u32]
+    pub var values: Growing[Value]
+
+    ## A new, empty dictionary with one owner.
+    pub static func create() -> Dictionary*!:
+        let made = try new Dictionary(users = 1, keys = Growing[u32](), values = Growing[Value]()) in memory.heap
+        return made
+
+    pub func count() -> usize:
+        return self.keys.count
+
+    ## The value under `key`.
+    pub func find(key: u32) -> const Value*?:
+        for index in 0..<self.keys.count:
+            if self.keys.items[index] == key: return &self.values.items[index]
+        return none
+
+    ## Set `key` to `value` (taken), replacing an earlier value.
+    pub mutating func put(key: u32, value: Value) -> !:
+        for index in 0..<self.keys.count:
+            if self.keys.items[index] == key:
+                self.values.items[index].release()
+                self.values.items[index] = value
+                return
+        var owned = value
+        errdefer owned.release()
+        try self.keys.push(key)
+        errdefer self.keys.count -= 1
+        try self.values.push(owned)
+
+## The parts of a list op, in SdfListOp's order.
+pub enum ListPart as u8:
+    explicit = 0
+    added = 1
+    prepended = 2
+    appended = 3
+    deleted = 4
+    ordered = 5
+
+## Parts a list op has.
+pub let list_parts: usize = 6
+
+## One list op item. Tokens, strings and paths are ids in `a`; integers are
+## `a`'s bits; a reference or payload is its asset path token in `a`, its
+## prim path in `b`, its layer offset and scale, and (references only) its
+## custom data.
+pub struct ListItem:
+    pub var a: u64
+    pub var b: u64
+    pub var offset: f64
+    pub var scale: f64
+    pub var custom: Dictionary*?
+
+## A list op: explicit items, or the edits (added, prepended, appended,
+## deleted, ordered) to apply to a weaker opinion (SdfListOp).
+pub struct ListOp:
+    var users: @usize
+    pub var explicit: bool
+    pub var parts: Growing[ListItem][6]
+
+    pub static func create() -> ListOp*!:
+        let parts: Growing[ListItem][6] = [Growing[ListItem](), Growing[ListItem](), Growing[ListItem](), Growing[ListItem](), Growing[ListItem](), Growing[ListItem]()]
+        let made = try new ListOp(users = 1, explicit = false, parts = parts) in memory.heap
+        return made
+
+    pub func items(part: ListPart) -> const ListItem[]:
+        return self.parts[(usize)(u8)part].view()
+
+    ## Append an item (taken) to a part.
+    pub mutating func push(part: ListPart, item: ListItem) -> !:
+        try self.parts[(usize)(u8)part].push(item)
+
+## A single payload in a vector-shaped value.
+pub struct PayloadRecord:
+    pub var asset: u32
+    pub var prim: u32
+    pub var offset: f64
+    pub var scale: f64
+
+## Time samples: ascending times, each with its value.
+pub struct TimeSamples:
+    var users: @usize
+    pub var times: Growing[f64]
+    pub var values: Growing[Value]
+
+    pub static func create() -> TimeSamples*!:
+        let made = try new TimeSamples(users = 1, times = Growing[f64](), values = Growing[Value]()) in memory.heap
+        return made
+
+    pub func count() -> usize:
+        return self.times.count
+
+    ## Add a sample (the value taken); a repeated time replaces the value.
+    ## Samples are kept in time order.
+    pub mutating func put(time: f64, value: Value) -> !:
+        var owned = value
+        var at = self.times.count
+        while at > 0 and self.times.items[at - 1] > time: at -= 1
+        if at > 0 and self.times.items[at - 1] == time:
+            self.values.items[at - 1].release()
+            self.values.items[at - 1] = owned
+            return
+        errdefer owned.release()
+        try self.times.push(time)
+        errdefer self.times.count -= 1
+        try self.values.push(owned)
+        var index = self.times.count - 1
+        while index > at:
+            self.times.items[index] = self.times.items[index - 1]
+            self.values.items[index] = self.values.items[index - 1]
+            index -= 1
+        self.times.items[at] = time
+        self.values.items[at] = owned
+
+## Whether `kind` is one of the list op kinds.
+pub func is_list_op(kind: ValueKind) -> bool:
+    match kind:
+        .token_list_op, .string_list_op, .path_list_op, .reference_list_op, .int_list_op, .int64_list_op, .uint_list_op, .uint64_list_op, .unregistered_value_list_op, .payload_list_op: return true
+        _: return false
+
+## Free a composite whose last owner released it.
+func destroy(kind: ValueKind, object: void*):
+    match kind:
+        .dictionary:
+            let dictionary = (Dictionary*)object
+            for index in 0..<dictionary.values.count: dictionary.values.items[index].release()
+            dictionary.keys.close()
+            dictionary.values.close()
+            free(dictionary) in memory.heap
+        .time_samples:
+            let samples = (TimeSamples*)object
+            for index in 0..<samples.values.count: samples.values.items[index].release()
+            samples.times.close()
+            samples.values.close()
+            free(samples) in memory.heap
+        _:
+            if not is_list_op(kind): trap("a value composite of an unknown kind")
+            let list = (ListOp*)object
+            for part in 0..<list_parts:
+                for item in list.parts[part].view():
+                    if let custom = item.custom:
+                        var owned = Value.of_object(ValueKind.dictionary, (void*)custom)
+                        owned.release()
+                list.parts[part].close()
+            free(list) in memory.heap
+
+## Whether two values are equal: kinds, shapes and bytes, composites by
+## their contents (dictionaries in order).
+pub func same(left: const Value*, right: const Value*) -> bool:
+    if left.kind != right.kind or left.array != right.array or left.count != right.count or left.bits != right.bits: return false
+    let a = left.data.view()
+    let b = right.data.view()
+    if a.length != b.length: return false
+    if left.data.id() != right.data.id():
+        for index in 0..<a.length:
+            if a[index] != b[index]: return false
+    let first = left.object else return right.object == none
+    let second = right.object else return false
+    if first == second: return true
+    match left.kind:
+        .dictionary:
+            let x = (const Dictionary*)first
+            let y = (const Dictionary*)second
+            if x.keys.count != y.keys.count: return false
+            for index in 0..<x.keys.count:
+                if x.keys.items[index] != y.keys.items[index]: return false
+                if not same(&x.values.items[index], &y.values.items[index]): return false
+            return true
+        .time_samples:
+            let x = (const TimeSamples*)first
+            let y = (const TimeSamples*)second
+            if x.times.count != y.times.count: return false
+            for index in 0..<x.times.count:
+                if x.times.items[index] != y.times.items[index]: return false
+                if not same(&x.values.items[index], &y.values.items[index]): return false
+            return true
+        _:
+            let x = (const ListOp*)first
+            let y = (const ListOp*)second
+            if x.explicit != y.explicit: return false
+            for part in 0..<list_parts:
+                let p = x.parts[part].view()
+                let q = y.parts[part].view()
+                if p.length != q.length: return false
+                for index in 0..<p.length:
+                    if p[index].a != q[index].a or p[index].b != q[index].b or p[index].offset != q[index].offset or p[index].scale != q[index].scale: return false
+                    let c = p[index].custom
+                    let d = q[index].custom
+                    if (c == none) != (d == none): return false
+                    if let cc = c:
+                        if let dd = d:
+                            let cv = Value.of_object(ValueKind.dictionary, (void*)cc)
+                            let dv = Value.of_object(ValueKind.dictionary, (void*)dd)
+                            if not same(&cv, &dv): return false
+            return true
+
+## The column for `count` elements of `kind`, uninitialised.
+pub func array_column(kind: ValueKind, count: usize) -> Column[u8]!:
+    let size = element_bytes(kind)
+    if size == 0: error(errors.invalid, "arrays hold attribute values only")
+    return try Column[u8].allocate(count * size)
