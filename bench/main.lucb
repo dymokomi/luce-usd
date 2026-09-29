@@ -6,14 +6,20 @@
 ## ratios against it: the 837x837 quad grid (702,244 points, 700,569 faces)
 ## with a corner uv, as geocore's bench saves it.
 import time
+import c
+import files
 import interop
 import memory
 import geocore
 from geocore import Vector3, Mesh, GeometrySet
 from geocore_kernel import save_geometry, load_geometry, adopt_set
 from geocore_growing import Growing
-from usd_kernel import read_file, most_bytes, Names, LayerData, read_usda, read_usdc, write_usda
+from usd_kernel import read_file, most_bytes, Names, LayerData, read_usda, read_usdc, write_usda, write_usdc
 from io import path
+
+## Where the grid crate goes (a module buffer: error messages and paths
+## outlive the functions that format them).
+var crate_path: u8[1024]
 
 func row(name: str, started: u64, count: usize):
     print(f"{name}\t{(f64)time.since(started) / 1000000.0}\t{count}\t")
@@ -67,7 +73,7 @@ pub func main(arguments: str[]) -> i32!:
     row("Reference: read that file whole (bytes)", started, bytes.length)
     free(bytes) in memory.heap
     if arguments.length > 1: try usda_rows(arguments[1])
-    if arguments.length > 2: try usdc_rows(arguments[2])
+    if arguments.length > 1: try usdc_rows(try format(crate_path, f"{path.temp()}/luce-usd-bench.usdc"))
     return 0
 
 ## usda layers: the grid mesh (837x837, points, indices and a faceVarying
@@ -82,6 +88,10 @@ func usda_rows(file_path: str) -> !:
     var started = time.now()
     try read_usda(text, &layer)
     row("usda: read the grid layer (bytes)", started, text.length)
+    var crate = Growing[u8]()
+    defer crate.close()
+    try write_usdc(&layer, &crate)
+    try files.write((c.str)try format(crate_path, f"{path.temp()}/luce-usd-bench.usdc"), crate.view())
     var out = Growing[u8]()
     defer out.close()
     started = time.now()
@@ -97,6 +107,11 @@ func usdc_rows(file_path: str) -> !:
     defer names.close()
     var layer = try LayerData(&names)
     defer layer.close()
-    let started = time.now()
+    var started = time.now()
     try read_usdc(data, &layer)
     row("usdc: read the grid layer (bytes)", started, data.length)
+    var out = Growing[u8]()
+    defer out.close()
+    started = time.now()
+    try write_usdc(&layer, &out)
+    row("usdc: write the grid layer (bytes)", started, out.count)

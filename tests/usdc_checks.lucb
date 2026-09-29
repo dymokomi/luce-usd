@@ -2,7 +2,7 @@
 ## usdcat from our layers) read into layers that print as usdcat prints
 ## them; the integer coding round-trips; damaged crates fail cleanly.
 import memory
-from usd_kernel import Names, LayerData, read_usdc, write_usda, read_file, most_bytes, decode_integers, encode_integers, encoded_bound, invalid, unsupported
+from usd_kernel import Names, LayerData, read_usda, read_usdc, write_usda, write_usdc, read_file, most_bytes, decode_integers, encode_integers, encoded_bound, invalid, unsupported
 from geocore_growing import Growing
 
 pub func fixtures() -> !:
@@ -89,3 +89,40 @@ func attempt(names: Names*, data: const u8[]) -> !:
         if failure.code != invalid and failure.code != unsupported:
             print(f"a damaged crate failed with an unexpected code: {failure.message}")
             assert(false)
+
+## Layers written as crates read back to the same text: every usda and
+## usdc fixture through write_usdc and read_usdc.
+pub func writes() -> !:
+    try rewrite("usda", "values", false)
+    try rewrite("usda", "properties", false)
+    try rewrite("usdc", "arrays", true)
+    try rewrite("usdc", "composition", true)
+    try rewrite("usdc", "values", true)
+
+func rewrite(folder: str, name: str, crate: bool) -> !:
+    var buffer: u8[256]
+    let path = try format(buffer, f"tests/fixtures/{folder}/{name}.{folder}")
+    let input = try read_file(path, most_bytes)
+    defer free(input) in memory.heap
+    var expected_buffer: u8[256]
+    let expected = try read_file(try format(expected_buffer, f"tests/fixtures/{folder}/{name}.expected.usda"), most_bytes)
+    defer free(expected) in memory.heap
+    var names = try Names()
+    defer names.close()
+    var layer = try LayerData(&names)
+    defer layer.close()
+    if crate: try read_usdc(input, &layer)
+    else: try read_usda(input, &layer)
+    var written = Growing[u8]()
+    defer written.close()
+    try write_usdc(&layer, &written)
+    var again = try LayerData(&names)
+    defer again.close()
+    try read_usdc(written.view(), &again)
+    var text = Growing[u8]()
+    defer text.close()
+    try write_usda(&again, &text)
+    if (str)text.view() != (str)expected:
+        print(f"{name} written as a crate reads back differently:")
+        print((str)text.view())
+    assert((str)text.view() == (str)expected)

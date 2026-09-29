@@ -1,0 +1,200 @@
+## Arrays (_ValueHandler::PackArray and _WritePossiblyCompressedArray): a
+## u64 count, then integer arrays of 16 or more integer-compressed; half,
+## float and double arrays of 16 or more as 'i' (all integral: compressed
+## int32s) or 't' (at most min(n/4, 1024) distinct values: a table and
+## compressed indexes), else uncompressed after 8-byte alignment. Token,
+## string, asset and path expression arrays hold crate indexes. An empty
+## array is its rep alone, and arrays sharing a column are written once.
+##
+## The compressible arrays are encoded and compressed before packing, in
+## parallel on luce-geocore's pool; packing then copies their bytes in.
+
+## Arrays shorter than this stay uncompressed.
+let min_compressed: usize = 16
+
+## One array's compressed form, prepared ahead: its column's id, its code
+## ('i', 't', 0 for integer arrays), the lookup table and the compressed
+## integers.
+struct Prepared:
+    var id: u64
+    var kind: ValueKind
+    var bytes: const u8[]
+    var count: usize
+    var code: u8
+    var table: Growing[u8]
+    var table_count: u32
+    var packed: Growing[u8]
+    var usable: bool
+    var failed: bool
+
+    mutating func close():
+        self.table.close()
+        self.packed.close()
+
+## Whether an array of `kind` and `count` elements is compressed.
+func compressible(kind: ValueKind, count: usize) -> bool:
+    if count < min_compressed: return false
+    match kind:
+        .int, .uint, .int64, .uint64, .half, .float, .double: return true
+        _: return false
+
+extend CrateWriter:
+    ## Find every compressible array (once per column) and compress them in
+    ## parallel.
+    mutating func prepare_arrays() -> !:
+        for index in 0..<self.layer.spec_count():
+            for field in self.layer.spec(index).fields.view():
+                try self.collect(&field.value)
+        if self.prepared.count > 0: pool.run(self.prepared.count, prepare_one, (void*)&self)
+        for index in 0..<self.prepared.count:
+            if self.prepared.items[index].failed: error(memory.exhausted, "out of memory compressing a crate array")
+
+    mutating func collect(value: const Value*) -> !:
+        if value.array and compressible(value.kind, value.count):
+            let id = value.data.id()
+            for prepared in self.prepared.view():
+                if prepared.id == id: return
+            try self.prepared.push(Prepared(id = id, kind = value.kind, bytes = value.bytes(), count = value.count, code = 0, table = Growing[u8](), table_count = 0, packed = Growing[u8](), usable = false, failed = false))
+            return
+        if let samples = value.time_samples():
+            for index in 0..<samples.count(): try self.collect(&samples.values.items[index])
+
+    ## An array's rep, its bytes written (or shared) now.
+    mutating func pack_array(value: const Value*) -> u64!:
+        let kind = value.kind
+        let rep_base = array_bit | ((u64)(u8)kind << 48)
+        if value.count == 0: return rep_base
+        let id = value.data.id()
+        for index in 0..<self.array_ids.count:
+            if self.array_ids.items[index] == id: return self.array_reps.items[index]
+        if kind == ValueKind.time_code: self.require(9)
+        if kind == ValueKind.path_expression: self.require(10)
+        var rep: u64 = 0
+        if compressible(kind, value.count):
+            rep = try self.write_compressed(value)
+        else:
+            rep = try self.write_plain(value)
+        try self.array_ids.push(id)
+        try self.array_reps.push(rep)
+        return rep
+
+    ## An uncompressed array: aligned to 8 bytes (floats and the rest) or
+    ## not (short integer arrays), a u64 count, the elements.
+    mutating func write_plain(value: const Value*) -> u64!:
+        let kind = value.kind
+        let integers = kind == ValueKind.int or kind == ValueKind.uint or kind == ValueKind.int64 or kind == ValueKind.uint64
+        if not integers: try self.align(8)
+        let at = self.tell()
+        try self.put_u64((u64)value.count)
+        match kind:
+            .token, .string, .asset, .path_expression:
+                let bytes = value.bytes()
+                for index in 0..<value.count:
+                    let id = memory.read[u32]((void*)&bytes[index * 4])
+                    try self.put_u32(try self.token(id) if kind == ValueKind.token else try self.string(id))
+            _:
+                try self.put_bytes(value.bytes())
+        return array_bit | ((u64)(u8)kind << 48) | at
+
+    ## A compressible array from its prepared form (or plain when its
+    ## encoding did not pay).
+    mutating func write_compressed(value: const Value*) -> u64!:
+        let id = value.data.id()
+        var found: Prepared*? = none
+        for index in 0..<self.prepared.count:
+            if self.prepared.items[index].id == id: found = &self.prepared.items[index]
+        let prepared = found else return try self.write_plain(value)
+        if not prepared.usable: return try self.write_plain(value)
+        let at = self.tell()
+        try self.put_u64((u64)value.count)
+        if prepared.code != 0: try self.out.push(prepared.code)
+        if prepared.code == 't':
+            try self.put_u32(prepared.table_count)
+            try self.put_bytes(prepared.table.view())
+        try self.put_u64((u64)prepared.packed.count)
+        try self.put_bytes(prepared.packed.view())
+        return array_bit | compressed_bit | ((u64)(u8)value.kind << 48) | at
+
+## Compress one prepared array (on the pool).
+func prepare_one(context: void*?, index: usize):
+    let raw = context else return
+    let writer = (CrateWriter*)raw
+    let prepared = &writer.prepared.items[index]
+    compress_array(prepared) catch failure:
+        prepared.failed = true
+
+func compress_array(prepared: Prepared*) -> !:
+    let count = prepared.count
+    match prepared.kind:
+        .int, .uint:
+            try pack_integers(prepared, prepared.bytes, count, 4)
+            prepared.usable = true
+        .int64, .uint64:
+            try pack_integers(prepared, prepared.bytes, count, 8)
+            prepared.usable = true
+        _:
+            try compress_reals(prepared)
+
+## Integer-encode and compress `count` integers of `width` into `packed`.
+func pack_integers(prepared: Prepared*, values: const u8[], count: usize, width: usize) -> !:
+    let encoded = try alloc u8[compression.encoded_bound(count, width)] in memory.heap
+    defer free(encoded) in memory.heap
+    let length = try compression.encode_integers(values, count, width, encoded)
+    try prepared.packed.reserve(compression.compressed_bound(length))
+    let size = try compression.compress(encoded[..<length], prepared.packed.items)
+    prepared.packed.count = size
+
+## 'i' when every value is an int32 exactly, else 't' when few distinct
+## values, else nothing (the array is written plain).
+func compress_reals(prepared: Prepared*) -> !:
+    let count = prepared.count
+    let size = element_bytes(prepared.kind)
+    let bytes = prepared.bytes
+    let ints = try alloc u8[count * 4] in memory.heap
+    defer free(ints) in memory.heap
+    var integral = true
+    for index in 0..<count:
+        let value = real_at(prepared.kind, &bytes[index * size])
+        # -0 stays out of the int32 form, which would drop its sign.
+        let negative_zero = value == 0.0 and value.bits() != 0
+        if negative_zero or not (value >= -2147483648.0 and value <= 2147483647.0) or (f64)(i32)value != value:
+            integral = false
+            break
+        memory.write[i32]((void*)&ints[index * 4], (i32)value)
+    if integral:
+        prepared.code = 'i'
+        try pack_integers(prepared, ints, count, 4)
+        prepared.usable = true
+        return
+    # A lookup table of at most min(count / 4, 1024) distinct values.
+    let limit = count // 4 if count // 4 < 1024 else 1024
+    var entries: u32 = 0
+    for index in 0..<count:
+        let element = bytes[index * size..<index * size + size]
+        var found: u32 = entries
+        for entry in 0..<entries:
+            if same_bytes(prepared.table.items[(usize)entry * size..<(usize)entry * size + size], element):
+                found = entry
+                break
+        if found == entries:
+            if (usize)entries == limit: return
+            try prepared.table.reserve(prepared.table.count + size)
+            memory.copy(prepared.table.items[prepared.table.count..], element, size)
+            prepared.table.count += size
+            entries += 1
+        memory.write[u32]((void*)&ints[index * 4], found)
+    prepared.code = 't'
+    prepared.table_count = entries
+    try pack_integers(prepared, ints, count, 4)
+    prepared.usable = true
+
+func real_at(kind: ValueKind, at: const u8*) -> f64:
+    match kind:
+        .double: return memory.read[f64]((void*)at)
+        .float: return (f64)memory.read[f32]((void*)at)
+        _: return (f64)f16.bits(memory.read[u16]((void*)at))
+
+func same_bytes(a: const u8[], b: const u8[]) -> bool:
+    for index in 0..<a.length:
+        if a[index] != b[index]: return false
+    return true

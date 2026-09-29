@@ -92,4 +92,7 @@ pub func main(arguments: str[]) -> i32!:
     try usdc_checks.damaged()
     settle(&tracker, "damaged crates")
     inject(&tracker, 120, usdc_checks.fixtures)
+    try usdc_checks.writes()
+    settle(&tracker, "usdc writes")
+    inject(&tracker, 150, usdc_checks.writes)
     return 0

@@ -1,0 +1,321 @@
+## Packing values into ValueReps (the _ValueHandler Pack functions and the
+## _Writer's Write overloads): what fits in 32 bits is inlined (small
+## scalars, indexes, doubles exact as floats, integers in 32 bits, vectors
+## of int8 components, int8-diagonal matrices, empty dictionaries); the
+## rest is written at the file's current end and the rep points there.
+
+## ValueRep flag bits.
+let array_bit: u64 = 1 << 63
+let inlined_bit: u64 = 1 << 62
+let compressed_bit: u64 = 1 << 61
+
+## A rep of `kind` with `payload`.
+func rep_of(kind: ValueKind, payload: u64, inlined: bool) -> u64:
+    return ((u64)(u8)kind << 48) | (payload & 0xFFFFFFFFFFFF) | (inlined_bit if inlined else 0)
+
+extend CrateWriter:
+    ## The ValueRep of `value`, writing its bytes when not inlined.
+    mutating func pack(value: const Value*) -> u64!:
+        if value.array: return try self.pack_array(value)
+        let kind = value.kind
+        match kind:
+            .boolean, .uchar, .int, .uint, .half, .float, .specifier, .permission, .variability:
+                return rep_of(kind, value.bits & 0xFFFFFFFF, true)
+            .token:
+                return rep_of(kind, (u64)try self.token(value.as_token()), true)
+            .string:
+                return rep_of(kind, (u64)try self.string(value.as_token()), true)
+            .asset:
+                # Assets inline a token index (GetInlinedValue(SdfAssetPath)).
+                return rep_of(kind, (u64)try self.token(value.as_token()), true)
+            .value_block, .animation_block:
+                return rep_of(kind, 0, true)
+            .double:
+                let number = f64.bits(value.bits)
+                let narrow = (f32)number
+                if ((f64)narrow).bits() == value.bits:
+                    return rep_of(kind, (u64)narrow.bits(), true)
+                let at = self.tell()
+                try self.put_u64(value.bits)
+                return rep_of(kind, at, false)
+            .time_code:
+                self.require(9)
+                let at = self.tell()
+                try self.put_u64(value.bits)
+                return rep_of(kind, at, false)
+            .int64:
+                let number = (i64)value.bits
+                if number >= -2147483648 and number <= 2147483647: return rep_of(kind, (u64)(u32)(i32)number, true)
+                let at = self.tell()
+                try self.put_u64(value.bits)
+                return rep_of(kind, at, false)
+            .uint64:
+                if value.bits <= 0xFFFFFFFF: return rep_of(kind, value.bits, true)
+                let at = self.tell()
+                try self.put_u64(value.bits)
+                return rep_of(kind, at, false)
+            .path_expression:
+                self.require(10)
+                let index = try self.string(value.as_token())
+                let at = self.tell()
+                try self.put_u32(index)
+                return rep_of(kind, at, false)
+            .vec2h:
+                # Four bytes: always inlined as its own bytes.
+                return rep_of(kind, (u64)memory.read[u32]((void*)&value.bytes()[0]), true)
+            .vec2d, .vec3d, .vec4d, .vec2f, .vec3f, .vec4f, .vec3h, .vec4h, .vec2i, .vec3i, .vec4i:
+                if let small = small_vector(kind, value.bytes()): return rep_of(kind, small, true)
+                let at = self.tell()
+                try self.put_bytes(value.bytes())
+                return rep_of(kind, at, false)
+            .matrix2d, .matrix3d, .matrix4d:
+                if let diagonal = small_diagonal(kind, value.bytes()): return rep_of(kind, diagonal, true)
+                let at = self.tell()
+                try self.put_bytes(value.bytes())
+                return rep_of(kind, at, false)
+            .quatd, .quatf, .quath:
+                let at = self.tell()
+                try self.put_bytes(value.bytes())
+                return rep_of(kind, at, false)
+            .dictionary:
+                let dictionary = value.dictionary() else return rep_of(kind, 0, true)
+                if dictionary.count() == 0: return rep_of(kind, 0, true)
+                let at = self.tell()
+                try self.write_dictionary(dictionary)
+                return rep_of(kind, at, false)
+            .token_vector, .string_vector, .path_vector:
+                let ids = value.ids()
+                var indexes = try alloc u32[ids.length] in memory.heap
+                defer free(indexes) in memory.heap
+                for index in 0..<ids.length:
+                    if kind == ValueKind.token_vector: indexes[index] = try self.token(ids[index])
+                    elif kind == ValueKind.string_vector: indexes[index] = try self.string(ids[index])
+                    else: indexes[index] = try self.path_value(ids[index])
+                let at = self.tell()
+                try self.put_u64((u64)ids.length)
+                for index in indexes: try self.put_u32(index)
+                return rep_of(kind, at, false)
+            .double_vector, .layer_offset_vector:
+                let at = self.tell()
+                try self.put_u64((u64)value.count)
+                try self.put_bytes(value.bytes())
+                return rep_of(kind, at, false)
+            .variant_selection_map:
+                return try self.pack_selection_map(value)
+            .relocates:
+                self.require(11)
+                let pairs = value.ids()
+                var indexes = try alloc u32[pairs.length] in memory.heap
+                defer free(indexes) in memory.heap
+                for index in 0..<pairs.length: indexes[index] = try self.path_value(pairs[index])
+                let at = self.tell()
+                try self.put_u64((u64)(pairs.length // 2))
+                for index in indexes: try self.put_u32(index)
+                return rep_of(kind, at, false)
+            .unregistered_value_list_op:
+                # Held in an SdfUnregisteredValue: a nested list op value.
+                let at = self.tell()
+                let offset_at = self.tell()
+                try self.put_u64(0)
+                let inner = try self.pack_list_op(value)
+                let end = self.tell()
+                self.patch_u64(offset_at, end - offset_at)
+                try self.put_u64(inner)
+                return rep_of(ValueKind.unregistered_value, at, false)
+            .token_list_op, .string_list_op, .path_list_op, .reference_list_op, .payload_list_op, .int_list_op, .int64_list_op, .uint_list_op, .uint64_list_op:
+                return try self.pack_list_op(value)
+            .time_samples:
+                return try self.pack_time_samples(value)
+            .unregistered_value:
+                # An unregistered value is written as a nested value.
+                let at = self.tell()
+                if value.object != none:
+                    let inner = Value.of_object(ValueKind.dictionary, value.object else trap("dictionary"))
+                    try self.write_nested(&inner)
+                else:
+                    let inner = Value.scalar(ValueKind.string, value.bits)
+                    try self.write_nested(&inner)
+                return rep_of(kind, at, false)
+            _:
+                error(errors.unsupported, "a value this crate writer cannot pack (splines, array edits, relationship defaults)")
+
+    ## A nested value (_Writer::Write(VtValue)): an int64 forward offset,
+    ## the value's own bytes, then its rep at the offset's target.
+    mutating func write_nested(value: const Value*) -> !:
+        let offset_at = self.tell()
+        try self.put_u64(0)
+        let rep = try self.pack(value)
+        let end = self.tell()
+        self.patch_u64(offset_at, end - offset_at)
+        try self.put_u64(rep)
+
+    ## A dictionary (WriteMap): u64 count, then (string index, nested value)
+    ## pairs in key order.
+    mutating func write_dictionary(dictionary: const Dictionary*) -> !:
+        let count = dictionary.count()
+        var order = try alloc usize[count] in memory.heap
+        defer free(order) in memory.heap
+        for index in 0..<count: order[index] = index
+        for index in 1..<count:
+            let current = order[index]
+            var at = index
+            while at > 0 and text_less(self.names.text_of(dictionary.keys.items[current]), self.names.text_of(dictionary.keys.items[order[at - 1]])):
+                order[at] = order[at - 1]
+                at -= 1
+            order[at] = current
+        try self.put_u64((u64)count)
+        for index in order:
+            try self.put_u32(try self.string(dictionary.keys.items[index]))
+            try self.write_nested(&dictionary.values.items[index])
+
+    ## A variant selection map (WriteMap): u64 count, then (string, string)
+    ## index pairs in key order.
+    mutating func pack_selection_map(value: const Value*) -> u64!:
+        let pairs = value.ids()
+        let count = pairs.length // 2
+        var order = try alloc usize[count] in memory.heap
+        defer free(order) in memory.heap
+        for index in 0..<count: order[index] = index
+        for index in 1..<count:
+            let current = order[index]
+            var at = index
+            while at > 0 and text_less(self.names.text_of(pairs[current * 2]), self.names.text_of(pairs[order[at - 1] * 2])):
+                order[at] = order[at - 1]
+                at -= 1
+            order[at] = current
+        var indexes = try alloc u32[count * 2] in memory.heap
+        defer free(indexes) in memory.heap
+        for index in 0..<count:
+            indexes[index * 2] = try self.string(pairs[order[index] * 2])
+            indexes[index * 2 + 1] = try self.string(pairs[order[index] * 2 + 1])
+        let at = self.tell()
+        try self.put_u64((u64)count)
+        for index in indexes: try self.put_u32(index)
+        return rep_of(ValueKind.variant_selection_map, at, false)
+
+    ## A list op: its header byte, then each non-empty part (explicit,
+    ## added, prepended, appended, deleted, ordered) as a count and items.
+    mutating func pack_list_op(value: const Value*) -> u64!:
+        let list = value.list_op() else return rep_of(value.kind, 0, false)
+        let kind = value.kind
+        # Items that are nested values or dictionaries are written first
+        # into their own space, so the list op itself stays contiguous.
+        let order: ListPart[6] = [ListPart.explicit, ListPart.added, ListPart.prepended, ListPart.appended, ListPart.deleted, ListPart.ordered]
+        var bits: u8 = 1 if list.explicit else 0
+        if list.items(ListPart.explicit).length > 0: bits |= 2
+        if list.items(ListPart.added).length > 0: bits |= 4
+        if list.items(ListPart.deleted).length > 0: bits |= 8
+        if list.items(ListPart.ordered).length > 0: bits |= 16
+        if list.items(ListPart.prepended).length > 0: bits |= 32
+        if list.items(ListPart.appended).length > 0: bits |= 64
+        let at = self.tell()
+        try self.out.push(bits)
+        for part in order:
+            let items = list.items(part)
+            if items.length == 0: continue
+            try self.put_u64((u64)items.length)
+            for item in items: try self.write_item(kind, item)
+        return rep_of(kind, at, false)
+
+    ## One list op item.
+    mutating func write_item(kind: ValueKind, item: ListItem) -> !:
+        match kind:
+            .token_list_op: try self.put_u32(try self.token((u32)item.a))
+            .string_list_op: try self.put_u32(try self.string((u32)item.a))
+            .path_list_op: try self.put_u32(try self.path_value((u32)item.a))
+            .int_list_op, .uint_list_op: try self.put_u32((u32)item.a)
+            .int64_list_op, .uint64_list_op: try self.put_u64(item.a)
+            .reference_list_op:
+                try self.put_u32(try self.string((u32)item.a))
+                try self.put_u32(try self.path_value((u32)item.b))
+                try self.put_f64(item.offset)
+                try self.put_f64(item.scale)
+                if let custom = item.custom:
+                    if custom.count() > 0:
+                        try self.write_dictionary(custom)
+                        return
+                try self.put_u64(0)
+            .payload_list_op:
+                try self.put_u32(try self.string((u32)item.a))
+                try self.put_u32(try self.path_value((u32)item.b))
+                try self.put_f64(item.offset)
+                try self.put_f64(item.scale)
+            .unregistered_value_list_op:
+                let inner = Value.scalar(ValueKind.string, item.a)
+                try self.write_nested(&inner)
+            _: error(errors.unsupported, "a list op this crate writer cannot pack")
+
+    ## Time samples: an offset to the times' rep (the times written before
+    ## it, shared by rep), an offset to the values (their bytes before them),
+    ## then the count and the values' reps.
+    mutating func pack_time_samples(value: const Value*) -> u64!:
+        let samples = value.time_samples() else return rep_of(value.kind, 0, false)
+        let at = self.tell()
+        try self.put_u64(0)
+        let times_at = self.tell()
+        try self.put_u64((u64)samples.count())
+        for time in samples.times.view(): try self.put_f64(time)
+        let times_rep = rep_of(ValueKind.double_vector, times_at, false)
+        let times_rep_at = self.tell()
+        self.patch_u64(at, times_rep_at - at)
+        try self.put_u64(times_rep)
+        let values_offset_at = self.tell()
+        try self.put_u64(0)
+        var reps = try alloc u64[samples.count()] in memory.heap
+        defer free(reps) in memory.heap
+        for index in 0..<samples.count(): reps[index] = try self.pack(&samples.values.items[index])
+        let values_at = self.tell()
+        self.patch_u64(values_offset_at, values_at - values_offset_at)
+        try self.put_u64((u64)samples.count())
+        for rep in reps: try self.put_u64(rep)
+        return rep_of(ValueKind.time_samples, at, false)
+
+## int8 components of a vector packed in 32 bits, when every component is
+## exactly an int8.
+func small_vector(kind: ValueKind, bytes: const u8[]) -> u64?:
+    let count = components(kind)
+    let scalar = scalar_of(kind)
+    let size = element_bytes(scalar)
+    var packed: u64 = 0
+    for index in 0..<count:
+        let small = exact_int8(scalar, &bytes[index * size]) else return none
+        packed |= (u64)(u8)small << (u64)(index * 8)
+    return packed
+
+## A matrix whose off-diagonal is zero and diagonal exact int8s, packed.
+func small_diagonal(kind: ValueKind, bytes: const u8[]) -> u64?:
+    let rows: usize = 2 if kind == ValueKind.matrix2d else (3 if kind == ValueKind.matrix3d else 4)
+    var packed: u64 = 0
+    for row in 0..<rows:
+        for column in 0..<rows:
+            let at = &bytes[(row * rows + column) * 8]
+            if row != column:
+                if memory.read[f64]((void*)at) != 0.0: return none
+            else:
+                let small = exact_int8(ValueKind.double, at) else return none
+                packed |= (u64)(u8)small << (u64)(row * 8)
+    return packed
+
+## The scalar at `at` as an int8, when it is exactly one.
+func exact_int8(kind: ValueKind, at: const u8*) -> i8?:
+    var value: f64 = 0.0
+    match kind:
+        .double: value = memory.read[f64]((void*)at)
+        .float: value = (f64)memory.read[f32]((void*)at)
+        .half: value = (f64)f16.bits(memory.read[u16]((void*)at))
+        .int:
+            let number = memory.read[i32]((void*)at)
+            if number < -128 or number > 127: return none
+            return (i8)number
+        _: return none
+    if not (value >= -128.0 and value <= 127.0): return none
+    let small = (i8)value
+    if (f64)small != value: return none
+    # -0.0 is not exactly the int8 0 bit for bit, but compares equal, as in C++.
+    return small
+
+func text_less(a: str, b: str) -> bool:
+    let common = a.length if a.length < b.length else b.length
+    for index in 0..<common:
+        if a.bytes[index] != b.bytes[index]: return a.bytes[index] < b.bytes[index]
+    return a.length < b.length

@@ -11,7 +11,7 @@ record; statuses change as milestones land.
 | M1 | `sdf/path*.cpp`, `pathParser.h`, `tf/token`, `crateDataTypes.h`, `schema.cpp` (type names), `listOp.cpp`, `data.cpp` | `sdf/` | done |
 | M2 | `sdf/textFileFormatParser*`, `textParserHelpers.cpp`, `parserHelpers.cpp`, `parserValueContext.cpp`, `fileIO_Common.*`, `usdaFileFormat.cpp`, `schema.cpp` (metadata fields, validators), `tf/stringUtils.cpp` (TfDictionaryLessThan, double text) | `usda/`, `sdf/schema.lucb` | done: 2,017 of 2,056 testenv layers byte-identical to usdcat |
 | M3 | `sdf/crateFile.cpp` (reading), `crateValueInliners.h`, `integerCoding.cpp`, `tf/fastCompression.cpp` (LZ4: luce-compress `lz4`) | `usdc/reader/`, `usdc/compression.lucb` | done: all 30 testenv `.usdc` and 2,005 of 2,040 usdcat-written crates read byte-identical |
-| M4 | `sdf/crateFile.cpp` (writing) | `usdc/` | planned |
+| M4 | `sdf/crateFile.cpp` (packing, _Write, path tree), `crateValueInliners.h` | `usdc/writer/` | done: 2,020 of 2,056 corpus layers written by us read back identically by usdcat |
 | M5 | `sdf/zipFile.cpp`, `usdUtils/usdzPackage.cpp` (zip writing: luce-compress) | `usdz/` | planned |
 | M6 | `usdGeom/` (xformOp, mesh, subset, curves, points, pointInstancer, primvar), stage metadata | `stage/`, `usd_geom/`, `convert/` | planned |
 | M7 | (luced-3d: File rows, Export node) | | planned |
@@ -40,4 +40,5 @@ Measured with the local driver (docs/PARITY.md) against OpenUSD v26.08.
 | usda (all testenv `.usda` usdcat accepts) | 2,019 / 2,056 byte-identical | attribute splines (`.spline`, Ts) and array edits (`edit [...]`) are refused; path expression values are not re-anchored to their prim |
 | usdc (testenv `.usdc`) | 30 / 30 byte-identical | |
 | usdc-corpus (each testenv `.usda` written as `.usdc` by usdcat) | 2,005 / 2,040 | the same spline files |
+| usdc-write (each testenv `.usda` written as `.usdc` by luce-usd, read by usdcat) | 2,020 / 2,056 (layers OpenUSD cannot write as crates either count as agreeing) | splines; path expression anchoring |
 | sdf-parsing (testSdfParsing) | 69 printed as expected, 113 bad files rejected, 8 differ | the same spline and array-edit files; two baselines made with a test plugin's metadata registered |

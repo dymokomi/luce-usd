@@ -72,3 +72,6 @@ pub let read_usdc = usdc_reader.read_usdc
 pub let decode_integers = crate_compression.decode_integers
 pub let encode_integers = crate_compression.encode_integers
 pub let encoded_bound = crate_compression.encoded_bound
+import luce_usd.usdc.writer as usdc_writer
+
+pub let write_usdc = usdc_writer.write_usdc
