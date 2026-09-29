@@ -13,7 +13,7 @@ struct Case:
     var session: str
     var unloaded: str
 
-let cases: Case[19] = [
+let cases: Case[25] = [
     Case(name = "BasicAncestralReference", session = "", unloaded = ""),
     Case(name = "BasicReferenceDiamond", session = "", unloaded = ""),
     Case(name = "BasicTimeOffset", session = "", unloaded = ""),
@@ -33,6 +33,12 @@ let cases: Case[19] = [
     Case(name = "BasicInstancing", session = "", unloaded = ""),
     Case(name = "BasicInstancingAndNestedInstances", session = "", unloaded = ""),
     Case(name = "ImpliedArcsAndInstancing", session = "", unloaded = ""),
+    Case(name = "BasicRelocateToAnimInterface", session = "", unloaded = ""),
+    Case(name = "TrickyInheritsAndRelocates", session = "", unloaded = ""),
+    Case(name = "TrickySpookyInherits", session = "", unloaded = ""),
+    Case(name = "ErrorInvalidInstanceTargetPath", session = "", unloaded = ""),
+    Case(name = "TrickyMultipleRelocations", session = "", unloaded = ""),
+    Case(name = "RelocateToNone", session = "", unloaded = ""),
 ]
 
 pub func museum() -> !:
@@ -50,7 +56,7 @@ func check_case(case: Case) -> !:
     defer names.close()
     var report = Growing[u8]()
     defer report.close()
-    try composition_report(&names, root_path, session_path, case.unloaded, &report)
+    try composition_report(&names, root_path, session_path, case.unloaded, "", &report)
     let ours = after_loading((str)report.view())
     let theirs = after_loading((str)expected)
     if ours != theirs:

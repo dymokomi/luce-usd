@@ -64,7 +64,7 @@ extend Flattener:
         defer targets.close()
         var deleted = Growing[u32]()
         defer deleted.close()
-        try composer.target_paths(index, name, attribute, &targets, &deleted)
+        try composer.target_paths(index, name, attribute, false, &targets, &deleted)
         if targets.count > 0:
             let list = try ListOp.create()
             try self.out.set(spec, keys.connection_paths if attribute else keys.target_paths, Value.of_object(ValueKind.path_list_op, (void*)list))

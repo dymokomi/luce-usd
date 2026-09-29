@@ -38,9 +38,50 @@ extend Composer:
         try self.compose_arcs(stack, path, payloads, &arcs)
         if payloads and arcs.count > 0:
             indexer.index.has_payloads = true
-            if not try self.loads_payloads(): return
+            if not try self.loads_payload(indexer, node): return
         for number in 0..<arcs.count:
             try self.add_ref_arc(indexer, node, arcs.items[number], (i32)number, payloads)
+
+    ## Whether the node's payloads load (_EvalNodePayloads): its path mapped
+    ## to the prim being indexed, across stack frames
+    ## (MapNodePathToPayloadInclusionPath); a path that does not map there
+    ## always loads.
+    mutating func loads_payload(indexer: const Indexer*, node: u32) -> bool!:
+        if self.loads_all_payloads(): return true
+        var path = try self.inclusion_path(&indexer.index, node, try self.names.strip_variants(indexer.index.node(node).path))
+        var frame = indexer.frame
+        while path != empty_path:
+            let up = frame else break
+            path = try self.to_parent_inclusion(up.map, up.kind, path)
+            if path == empty_path: break
+            path = try self.inclusion_path(up.index, up.parent, path)
+            frame = up.previous
+        if path == empty_path: return true
+        return try self.payload_included(path)
+
+    ## `path` mapped from `node` to its graph's root for payload inclusion
+    ## (_MapPathToNodeRootPayloadInclusionPath): step by step, skipping
+    ## internal arcs' root identities, when the map to the root leaves it
+    ## unchanged through its root identity.
+    mutating func inclusion_path(index: const PrimIndex*, node: u32, path: u32) -> u32!:
+        var map = try index.map_to_root(self.names, node)
+        defer map.close()
+        var mapped = try map.map(self.names, path, false)
+        if mapped != path or not map.has_root_identity(): return mapped
+        var at = node
+        while mapped != empty_path and at != 0:
+            mapped = try self.to_parent_inclusion(&index.node(at).map_to_parent, index.node(at).arc, mapped)
+            at = (u32)index.node(at).parent
+        return mapped
+
+    ## `path` across one arc for payload inclusion: an internal reference's
+    ## or payload's root identity does not count.
+    mutating func to_parent_inclusion(map: const MapFunction*, arc: ArcType, path: u32) -> u32!:
+        if not map.has_root_identity() or (arc != ArcType.reference and arc != ArcType.payload): return try map.map(self.names, path, false)
+        var pairs = try map.normalized(self.names)
+        defer pairs.close()
+        pairs.root_identity = false
+        return try pairs.map(self.names, path, false)
 
     ## The site's reference (payload) list ops applied weakest layer first.
     mutating func compose_arcs(stack: usize, path: u32, payloads: bool, out: Growing[ArcItem]*) -> !:
@@ -148,8 +189,9 @@ extend Composer:
             else:
                 let named = found else return
                 prim = try default_prim_path(names, named.as_token())
-        var map = try MapFunction.of_pair(prim, try names.strip_variants(node_path), offset)
-        if internal: map.root_identity = true
+        var map = try self.arc_map(stack, prim, node_path, offset)
+        # An internal arc also maps every other path to itself.
+        if internal: map = try with_root(names, map)
         var options = ArcOptions.plain()
         options.contribute = contribute
         options.ancestral = not is_root_prim(names, prim)
@@ -180,7 +222,7 @@ extend Composer:
                 # Not even ancestrally (SetSpecContributionRestrictedDepth(1)).
                 index.nodes.items[(usize)added].restricted = 1
         else:
-            let below = Frame(index = index, parent = parent, stack = stack, path = path, previous = indexer.frame, kind = kind, skip_duplicates = skip)
+            let below = Frame(index = index, parent = parent, stack = stack, path = path, previous = indexer.frame, kind = kind, skip_duplicates = skip, map = &owned)
             # Variants and implied specializes wait for the outer index,
             # which knows stronger opinions.
             var sub = self.build(stack, path, &below, options.contribute, false) catch failure:

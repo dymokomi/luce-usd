@@ -43,6 +43,6 @@ Measured with the local driver (docs/PARITY.md) against OpenUSD v26.08.
 | usdc-write (each testenv `.usda` written as `.usdc` by luce-usd, read by usdcat) | 2,020 / 2,056 (layers OpenUSD cannot write as crates either count as agreeing) | splines; path expression anchoring |
 | usdz (testenv `.usdz` usdcat opens) | 51 / 51 byte-identical | |
 | usdz-write (each testenv `.usda` written as `.usdz` by luce-usd) | 2,020 / 2,056 read back identically; 0 fail usdchecker's RootPackageValidator/UsdzPackageValidator | the usdc-write gaps |
-| flatten (each testenv `.usda` and museum root, usdcat --flatten) | 1,831 / 2,078 byte-identical (prototypes numbered as with USD_ASSIGN_PROTOTYPES_DETERMINISTICALLY) | relocates; value clips; splines |
-| museum (testPcpMuseum composition results, 151 cases) | 101 / 151 identical to the baselines | relocates (43 cases); expression variables (asset paths, sublayers, variant selections); two `_graph` cases print Pcp's graph dump; BasicInherits and SubrootReferenceAndVariants, whose root layers OpenUSD v26.08 itself refuses to read |
+| flatten (each testenv `.usda` and museum root, usdcat --flatten) | 1,918 / 2,078 byte-identical (prototypes numbered as with USD_ASSIGN_PROTOTYPES_DETERMINISTICALLY) | value clips; splines |
+| museum (testPcpMuseum composition results, 151 cases) | 143 / 151 identical to the baselines | expression variables (asset paths, sublayers, variant selections); two `_graph` cases print Pcp's graph dump; BasicInherits and SubrootReferenceAndVariants, whose root layers OpenUSD v26.08 itself refuses to read |
 | sdf-parsing (testSdfParsing) | 69 printed as expected, 113 bad files rejected, 8 differ | the same spline and array-edit files; two baselines made with a test plugin's metadata registered |

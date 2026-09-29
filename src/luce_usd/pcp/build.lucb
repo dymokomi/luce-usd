@@ -21,6 +21,8 @@ struct Frame:
     ## graphs already hold are skipped.
     var kind: ArcType
     var skip_duplicates: bool
+    ## The arc's map to the parent node.
+    var map: const MapFunction*
 
 ## A composition: the layers and layer stacks it opened, its root layer
 ## stack, and the indexes of the root stack's prims (each once).
@@ -32,12 +34,17 @@ pub struct Composer:
     pub var root_stack: usize
     ## Path texts whose prims' payloads are not loaded (a prefix each).
     pub var unloaded: Growing[Growing[u8]]
+    ## Path texts one of which a prim's must contain for its payloads to
+    ## load (none: any).
+    pub var loaded_containing: Growing[Growing[u8]]
     ## Variant fallbacks: (set, selection) token pairs, preferred first.
     pub var variant_fallbacks: Growing[u32]
     ## The prim whose index is being built (payload loading asks about it).
     var composing: u32
-    var cached_paths: Growing[u32]
-    var cached: Growing[PrimIndex]
+    ## Built indexes, each on the heap so pointers to them stay valid, and
+    ## per path id the index's slot + 1 (0: not built).
+    var cached: Growing[PrimIndex*]
+    var slots: Growing[u32]
 
     ## A composition of the layer stack rooted at `root` (an identifier),
     ## with `session` (an identifier, or "") before it.
@@ -62,18 +69,23 @@ pub struct Composer:
         self.problems = problems
         self.root_stack = root_stack
         self.unloaded = Growing[Growing[u8]]()
+        self.loaded_containing = Growing[Growing[u8]]()
         self.variant_fallbacks = Growing[u32]()
         self.composing = absolute_root
-        self.cached_paths = Growing[u32]()
-        self.cached = Growing[PrimIndex]()
+        self.cached = Growing[PrimIndex*]()
+        self.slots = Growing[u32]()
 
     pub mutating func close():
         for at in 0..<self.unloaded.count: self.unloaded.items[at].close()
         self.unloaded.close()
+        for at in 0..<self.loaded_containing.count: self.loaded_containing.items[at].close()
+        self.loaded_containing.close()
         self.variant_fallbacks.close()
-        for at in 0..<self.cached.count: self.cached.items[at].close()
+        for at in 0..<self.cached.count:
+            self.cached.items[at].close()
+            free(PrimIndex[](self.cached.items[at], 1)) in memory.heap
         self.cached.close()
-        self.cached_paths.close()
+        self.slots.close()
         self.problems.close()
         self.stacks.close()
         self.layers.close()
@@ -84,8 +96,7 @@ pub struct Composer:
     ## The index of prim `path` of the root layer stack (built once):
     ## culled and stored in strength order (PcpComputePrimIndex).
     pub mutating func index(path: u32) -> const PrimIndex*!:
-        for at in 0..<self.cached_paths.count:
-            if self.cached_paths.items[at] == path: return &self.cached.items[at]
+        if let found = self.cached_index(path): return found
         let outer = self.composing
         self.composing = path
         defer self.composing = outer
@@ -95,10 +106,21 @@ pub struct Composer:
         built.instanceable = try self.is_instanceable(&built)
         var made = try finalized(&built)
         errdefer made.close()
-        try self.cached_paths.push(path)
-        errdefer self.cached_paths.count -= 1
-        try self.cached.push(made)
-        return &self.cached.items[self.cached.count - 1]
+        let storage = try alloc PrimIndex[1] in memory.heap
+        storage[0] = made
+        self.cached.push(storage.data) catch failure:
+            free(storage) in memory.heap
+            error(failure.code, failure.message)
+        # The heap copy owns the index now.
+        made = PrimIndex()
+        while self.slots.count <= (usize)path: try self.slots.push(0)
+        self.slots.items[(usize)path] = (u32)self.cached.count
+        return storage.data
+
+    ## The index of `path` if it was built.
+    func cached_index(path: u32) -> const PrimIndex*?:
+        if (usize)path >= self.slots.count or self.slots.items[(usize)path] == 0: return none
+        return self.cached.items[(usize)self.slots.items[(usize)path] - 1]
 
     ## The index of `path` in layer stack `stack` (Pcp_BuildPrimIndex).
     ## `outer`: an outermost build, which evaluates variant sets and
@@ -117,6 +139,15 @@ pub struct Composer:
         else:
             indexer.index = try self.ancestral(stack, path, frame, outer)
         if not contribute_root: indexer.index.set_inert(self.names, 0)
+        # A prim a relocation moved away has no opinions here
+        # (_ElidePrimIndexIfProhibited).
+        if self.names.kind(path) != PathKind.variant and self.prohibited(&indexer.index, 0):
+            indexer.index.set_inert(self.names, 0)
+            let count = indexer.index.nodes.items[0].children.count
+            for at in 0..<count: elide_subtree(&indexer.index, self.names, indexer.index.nodes.items[0].children.items[at])
+            let elided = indexer.index
+            indexer.index = PrimIndex()
+            return elided
         try indexer.add_tasks(0, all_tasks & ~ancestral_variant_tasks)
         try self.run_tasks(&indexer)
         let done = indexer.index
@@ -179,15 +210,32 @@ pub struct Composer:
         try text.assign(prefix.bytes)
         try self.unloaded.push(text)
 
-    ## Whether the payloads of the prim being composed load.
-    mutating func loads_payloads() -> bool!:
-        if self.unloaded.count == 0: return true
+    ## Load payloads only for prims whose path text contains `part` (with
+    ## several calls, any of them).
+    pub mutating func include_payloads_containing(part: str) -> !:
+        var text = Growing[u8]()
+        errdefer text.close()
+        try text.assign(part.bytes)
+        try self.loaded_containing.push(text)
+
+    ## Whether every payload loads.
+    func loads_all_payloads() -> bool:
+        return self.unloaded.count == 0 and self.loaded_containing.count == 0
+
+    ## Whether the payloads of the prim at `path` load.
+    mutating func payload_included(path: u32) -> bool!:
         var text = Growing[u8]()
         defer text.close()
-        try self.names.write_path(self.composing, &text)
+        try self.names.write_path(path, &text)
         for prefix in self.unloaded.view():
             if text.count >= prefix.count and (str)text.items[..<prefix.count] == (str)prefix.view(): return false
-        return true
+        if self.loaded_containing.count == 0: return true
+        for part in self.loaded_containing.view():
+            var at: usize = 0
+            while at + part.count <= text.count:
+                if (str)text.items[at..<at + part.count] == (str)part.view(): return true
+                at += 1
+        return false
 
     ## Whether any layer of `stack` has a spec at `path` (PcpComposeSiteHasSpecs).
     pub func site_has_specs(stack: usize, path: u32) -> bool:
@@ -201,7 +249,9 @@ pub struct Composer:
         while true:
             let task = indexer.pop(self.names) else return
             let kind = task.kind
-            if kind == task_references: try self.eval_arcs(indexer, task.node, false)
+            if kind == task_relocations: try self.eval_relocations(indexer, task.node)
+            elif kind == task_implied_relocations: try self.eval_implied_relocations(indexer, task.node)
+            elif kind == task_references: try self.eval_arcs(indexer, task.node, false)
             elif kind == task_payloads: try self.eval_arcs(indexer, task.node, true)
             elif kind == task_inherits: try self.eval_class_arcs(indexer, task.node, ArcType.inherit)
             elif kind == task_specializes: try self.eval_class_arcs(indexer, task.node, ArcType.specialize)

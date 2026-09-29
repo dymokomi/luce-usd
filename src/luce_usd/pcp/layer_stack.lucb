@@ -5,7 +5,8 @@
 ## its sublayer offset composed with its parent's, and scaled when its
 ## timeCodesPerSecond differs. A sublayer that is missing or already an
 ## ancestor (a cycle) is skipped with an error; the same layer may appear
-## twice on different branches.
+## twice on different branches. Its relocations come from its layers'
+## layerRelocates (relocations.lucb).
 
 ## One layer stack.
 pub struct LayerStack:
@@ -14,10 +15,12 @@ pub struct LayerStack:
     pub var layers: Growing[usize]
     pub var offsets: Growing[Offset]
     pub var time_codes_per_second: f64
+    pub var relocates: Growing[Relocate]
 
     pub mutating func close():
         self.layers.close()
         self.offsets.close()
+        self.relocates.close()
 
     ## Whether any layer's offset is not the identity.
     pub func has_offsets() -> bool:
@@ -44,7 +47,7 @@ pub struct Stacks:
         for at in 0..<self.stacks.count:
             let stack = &self.stacks.items[at]
             if stack.root == root and stack.session == session: return at
-        var stack = LayerStack(root = root, session = session, layers = Growing[usize](), offsets = Growing[Offset](), time_codes_per_second = layers.time_codes_per_second(root))
+        var stack = LayerStack(root = root, session = session, layers = Growing[usize](), offsets = Growing[Offset](), time_codes_per_second = layers.time_codes_per_second(root), relocates = Growing[Relocate]())
         errdefer stack.close()
         var seen = Growing[usize]()
         defer seen.close()
@@ -65,6 +68,7 @@ pub struct Stacks:
             if session_owner != 0: break
             if let found = layers.field(layer, owner_key): session_owner = found.as_token()
         try build(layers, root, root_offset, layers.time_codes_per_second(root), session_owner, &stack, &seen, problems)
+        try compute_relocations(layers, &stack, problems)
         try self.stacks.push(stack)
         return self.stacks.count - 1
 

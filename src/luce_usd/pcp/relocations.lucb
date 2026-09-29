@@ -1,0 +1,229 @@
+## Relocations, after Pcp_ComputeRelocationsForLayerStack and
+## _FilterRelocationsForPath (pxr/usd/pcp/layerStack.cpp). A layer stack's
+## relocates come from its layers' layerRelocates, strongest layer first
+## for a source (prim-level relocates are ignored in USD mode). Entries
+## that are invalid or conflict (two sources with one target, a target that
+## is another's source or lies under one, a source under another source)
+## are dropped. Each entry keeps its incremental source (as authored) and
+## its origin: the source with any ancestor that is itself a relocation's
+## target mapped back to where that came from.
+
+## One relocation: `source` moves to `target` (empty_path: to nowhere).
+pub struct Relocate:
+    pub var source: u32
+    pub var target: u32
+    pub var origin: u32
+
+## Build `stack.relocates` from its layers.
+func compute_relocations(layers: Layers*, stack: LayerStack*, problems: Problems*) -> !:
+    let names = layers.names
+    for layer in stack.layers.view():
+        let found = layers.field(layer, layers.layer(layer).keys.layer_relocates) else continue
+        let pairs = found.ids()
+        var at: usize = 0
+        while at + 1 < pairs.length:
+            let source = pairs[at]
+            let target = pairs[at + 1]
+            at += 2
+            if not valid_relocate(names, source, target):
+                try problems.add("Invalid authored relocation")
+                continue
+            var known = false
+            for relocate in stack.relocates.view(): known = known or relocate.source == source
+            if not known: try stack.relocates.push(Relocate(source = source, target = target, origin = source))
+    if stack.relocates.count == 0: return
+    try drop_conflicts(names, stack, problems)
+    for at in 0..<stack.relocates.count: stack.relocates.items[at].origin = try origin_of(names, stack.relocates.view(), stack.relocates.items[at].source, 0)
+
+## _IsValidRelocatesEntryForComposing: absolute prim paths without variant
+## selections, a source that is not a root prim, a target (unless empty)
+## that is neither the source nor above or below it.
+func valid_relocate(names: const Names*, source: u32, target: u32) -> bool:
+    if source == empty_path or not plain_prim(names, source): return false
+    if names.node(source).depth == 1: return false
+    if target == empty_path: return true
+    if not plain_prim(names, target) or source == target: return false
+    return not names.has_prefix(target, source) and not names.has_prefix(source, target)
+
+func plain_prim(names: const Names*, path: u32) -> bool:
+    return names.is_absolute(path) and names.is_prim(path) and not names.has_variant_selection(path)
+
+## _ValidateAndRemoveConflictingRelocates.
+func drop_conflicts(names: Names*, stack: LayerStack*, problems: Problems*) -> !:
+    let relocates = stack.relocates.view()
+    var dropped = Growing[bool]()
+    defer dropped.close()
+    try dropped.fill(relocates.length, false)
+    for at in 0..<relocates.length:
+        let entry = relocates[at]
+        if entry.target != empty_path:
+            for other in 0..<relocates.length:
+                if other == at: continue
+                # One target for two sources: all of them go.
+                if relocates[other].target == entry.target: dropped.items[at] = true
+                # A target that is another's source: both go.
+                if relocates[other].source == entry.target:
+                    dropped.items[at] = true
+                    dropped.items[other] = true
+            var up = names.parent(entry.target)
+            while up != absolute_root and up > relative_root:
+                if find_source(relocates, up) != none: dropped.items[at] = true
+                up = names.parent(up)
+        var up = names.parent(entry.source)
+        while up > relative_root and names.node(up).depth > 1:
+            if find_source(relocates, up) != none: dropped.items[at] = true
+            up = names.parent(up)
+    var kept: usize = 0
+    for at in 0..<relocates.length:
+        if dropped.items[at]:
+            try problems.add("Conflicting relocation")
+            continue
+        stack.relocates.items[kept] = stack.relocates.items[at]
+        kept += 1
+    stack.relocates.count = kept
+
+func find_source(relocates: const Relocate[], source: u32) -> usize?:
+    for at in 0..<relocates.length:
+        if relocates[at].source == source: return at
+    return none
+
+func find_target(relocates: const Relocate[], target: u32) -> usize?:
+    for at in 0..<relocates.length:
+        if relocates[at].target == target: return at
+    return none
+
+## The source's origin (_ComputeSourceOriginForTargetIfNeeded): the nearest
+## ancestor (or itself) another relocation targets, replaced by that
+## relocation's own origin.
+func origin_of(names: Names*, relocates: const Relocate[], source: u32, depth: usize) -> u32!:
+    if depth > 64: return source
+    var up = source
+    while up > relative_root and up != absolute_root:
+        if let found = find_target(relocates, up):
+            let origin = try origin_of(names, relocates, relocates[found].source, depth + 1)
+            return try names.replace_prefix(source, up, origin)
+        up = names.parent(up)
+    return source
+
+extend LayerStack:
+    ## HasRelocates.
+    pub func has_relocates() -> bool:
+        return self.relocates.count > 0
+
+    ## The incremental source relocated to `target`, if any.
+    pub func relocated_to(target: u32) -> u32?:
+        if target == empty_path: return none
+        let found = find_target(self.relocates.view(), target) else return none
+        return self.relocates.items[found].source
+
+    ## Whether `source` is relocated (incrementally).
+    pub func relocates_source(source: u32) -> bool:
+        return find_source(self.relocates.view(), source) != none
+
+extend Composer:
+    ## The map of an arc from `source` to a node at `target_path`
+    ## (_CreateMapExpressionForArc): source to target (variant selections
+    ## stripped), after the target layer stack's relocations at and below
+    ## the target when it has any.
+    mutating func arc_map(stack: usize, source: u32, target_path: u32, offset: Offset) -> MapFunction!:
+        let names = self.names
+        let target = try names.strip_variants(target_path)
+        var arc = try MapFunction.of_pair(source, target, offset)
+        let layer_stack = self.stacks.stack(stack)
+        if not layer_stack.has_relocates(): return arc
+        defer arc.close()
+        var relocated = try MapFunction.deferred_of(try self.relocation_pairs(stack, target))
+        defer relocated.close()
+        return try relocated.compose(names, &arc)
+
+    ## The relocations affecting namespace at and below `path`
+    ## (_FilterRelocationsForPath): origin to target, then incremental
+    ## source to target for targets not yet seen, and the root identity.
+    mutating func relocation_pairs(stack: usize, path: u32) -> PathPairs!:
+        let names = self.names
+        let relocates = self.stacks.stack(stack).relocates.view()
+        var pairs = PathPairs.empty(true)
+        errdefer pairs.close()
+        for relocate in relocates:
+            if relocate.target == empty_path or not names.has_prefix(relocate.origin, path): continue
+            try pairs.sources.push(relocate.origin)
+            try pairs.targets.push(relocate.target)
+        for relocate in relocates:
+            if relocate.target == empty_path or not names.has_prefix(relocate.source, path): continue
+            var seen = false
+            for target in pairs.targets.view(): seen = seen or target == relocate.target
+            if seen: continue
+            try pairs.sources.push(relocate.source)
+            try pairs.targets.push(relocate.target)
+        return pairs
+
+    ## A node at a relocation's target brings the relocated source
+    ## (_EvalNodeRelocations): its other arcs are elided, and a relocate
+    ## arc adds the source's index, which only holds opinions below it.
+    mutating func eval_relocations(indexer: Indexer*, node: u32) -> !:
+        let index = &indexer.index
+        if not index.node(node).contributes(): return
+        let stack = index.node(node).stack
+        let source = self.stacks.stack(stack).relocated_to(index.node(node).path) else return
+        var children = Growing[u32]()
+        defer children.close()
+        try children.assign(index.node(node).children.view())
+        for child in children.view():
+            if index.node(child).arc != ArcType.variant: elide_subtree(index, self.names, child)
+        var options = ArcOptions.plain()
+        options.contribute = false
+        options.ancestral = true
+        let added = try self.add_arc(indexer, ArcType.relocate, node, (i32)node, stack, source, MapFunction.identity(), 0, namespace_depth(self.names, index.node(node).path), options)
+        if let relocated = added: self.elide_relocated(index, relocated)
+
+    ## Elide the subtrees under `node` rooted at a relocation's source
+    ## (_ElideRelocatedSubtrees): their opinions moved with it.
+    func elide_relocated(index: PrimIndex*, node: u32):
+        let count = index.node(node).children.count
+        for at in 0..<count:
+            let child = index.node(node).children.items[at]
+            if index.node(child).arc == ArcType.relocate: continue
+            if index.node(child).contributes() and self.stacks.stack(index.node(child).stack).relocates_source(index.node(child).path):
+                elide_subtree(index, self.names, child)
+                continue
+            self.elide_relocated(index, child)
+
+    ## A relocation node implies its source to its grandparent, mapped
+    ## across its parent's arc (_EvalImpliedRelocations).
+    mutating func eval_implied_relocations(indexer: Indexer*, node: u32) -> !:
+        let index = &indexer.index
+        let entry = index.node(node)
+        if entry.arc != ArcType.relocate or entry.due_to_ancestor or entry.parent < 0: return
+        let parent = (u32)entry.parent
+        let grandparent = index.node(parent).parent
+        if grandparent < 0: return
+        # A const binding first: calling map on the field of index.node(...)
+        # directly makes the C backend drop the const (reported to main).
+        let across: const MapFunction* = &index.node(parent).map_to_parent
+        let source = try across.map(self.names, index.node(node).path, false)
+        if source == empty_path: return
+        for child in index.node((u32)grandparent).children.view():
+            if index.node(child).path == source and index.node(child).arc == ArcType.relocate: return
+        var options = ArcOptions.plain()
+        options.contribute = false
+        let stack = index.node((u32)grandparent).stack
+        discard(try self.add_arc(indexer, ArcType.relocate, (u32)grandparent, (i32)node, stack, source, MapFunction.identity(), 0, namespace_depth(self.names, index.node((u32)grandparent).path), options))
+
+    ## Whether the index is of a prim a relocation moved away
+    ## (_ComposeIsProhibitedPrimChild): a contributing node's site is a
+    ## relocation's source.
+    func prohibited(index: const PrimIndex*, node: u32) -> bool:
+        let entry = index.node(node)
+        if entry.culled: return false
+        if not entry.inert and self.stacks.stack(entry.stack).relocates_source(entry.path): return true
+        for child in entry.children.view():
+            if self.prohibited(index, child): return true
+        return false
+
+## Cull a subtree, no longer contributing even ancestrally (_ElideSubtree
+## with culling).
+func elide_subtree(index: PrimIndex*, names: const Names*, node: u32):
+    index.set_culled(names, node)
+    index.nodes.items[(usize)node].restricted = 1
+    let count = index.nodes.items[(usize)node].children.count
+    for at in 0..<count: elide_subtree(index, names, index.nodes.items[(usize)node].children.items[at])

@@ -87,8 +87,7 @@ extend Composer:
     ## being composed, else the rebuilt parent's.
     mutating func ancestor_is_instance(stack: usize, parent: u32, index: const PrimIndex*) -> bool!:
         if stack == self.root_stack and self.names.has_prefix(self.composing, parent):
-            for at in 0..<self.cached_paths.count:
-                if self.cached_paths.items[at] == parent: return self.cached.items[at].instanceable
+            if let found = self.cached_index(parent): return found.instanceable
         return try self.is_instanceable(index)
 
     ## The index's instance key (PcpInstanceKey): the instanceable arcs met

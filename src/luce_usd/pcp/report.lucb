@@ -7,8 +7,9 @@
 
 ## Print the composition of the layer at `root` (as given on a command
 ## line; `session` too, or "") into `out`, leaving unloaded the payloads of
-## prims whose path starts with `unloaded` (unless it is "").
-pub func composition_report(names: Names*, root: str, session: str, unloaded: str, out: Growing[u8]*) -> !:
+## prims whose path starts with `unloaded`, and (unless it is "") loading
+## only those of prims whose path contains `loaded_containing`.
+pub func composition_report(names: Names*, root: str, session: str, unloaded: str, loaded_containing: str, out: Growing[u8]*) -> !:
     var root_id = Growing[u8]()
     defer root_id.close()
     try ar.absolute(root, &root_id)
@@ -25,6 +26,7 @@ pub func composition_report(names: Names*, root: str, session: str, unloaded: st
     var composer = try Composer(names, (str)root_id.view(), (str)session_id.view())
     defer composer.close()
     if unloaded.length > 0: try composer.exclude_payloads(unloaded)
+    if loaded_containing.length > 0: try composer.include_payloads_containing(loaded_containing)
     # The test's default fallbacks, {'standin': ['render']}.
     try composer.add_variant_fallback("standin", "render")
     let base = ar.directory_of((str)root_id.view())
@@ -65,7 +67,9 @@ func report_prim(composer: Composer*, path: u32, base: str, out: Growing[u8]*, p
     try variant_selections(composer, index, out)
     var children = Growing[u32]()
     defer children.close()
-    try composer.child_names(index, &children)
+    var prohibited = Growing[u32]()
+    defer prohibited.close()
+    try composer.prohibited_names(index, &children, &prohibited)
     var at = children.count
     while at > 0:
         at -= 1
@@ -73,6 +77,10 @@ func report_prim(composer: Composer*, path: u32, base: str, out: Growing[u8]*, p
     if children.count > 0:
         try put(out, "\nChild names:\n     ")
         try name_list(names, children.view(), out)
+    if prohibited.count > 0:
+        sort_names(names, &prohibited)
+        try put(out, "\nProhibited child names:\n     ")
+        try name_list(names, prohibited.view(), out)
     var properties = Growing[u32]()
     defer properties.close()
     try composer.property_names(index, &properties)
@@ -123,7 +131,7 @@ func target_section(composer: Composer*, index: const PrimIndex*, path: u32, pro
     defer deleted.close()
     var first = true
     for name in properties:
-        try composer.target_paths(index, name, connections, &targets, &deleted)
+        try composer.target_paths(index, name, connections, true, &targets, &deleted)
         if targets.count == 0: continue
         if first:
             try put(out, heading)
@@ -318,7 +326,7 @@ func deleted_section(composer: Composer*, index: const PrimIndex*, path: u32, pr
     for name in properties:
         var relationship = false
         for known in relationships: relationship = relationship or known == name
-        try composer.target_paths(index, name, not relationship, &targets, &deleted)
+        try composer.target_paths(index, name, not relationship, true, &targets, &deleted)
         if deleted.count == 0: continue
         if first:
             try put(out, "\nDeleted target paths:\n")

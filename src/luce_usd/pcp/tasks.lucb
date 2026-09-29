@@ -8,6 +8,8 @@
 ## descendants first, then strongest first.
 
 ## Task kinds in priority order (Pcp's Task::Type).
+let task_relocations: u32 = 1
+let task_implied_relocations: u32 = 2
 let task_references: u32 = 4
 let task_payloads: u32 = 8
 let task_inherits: u32 = 16
@@ -26,7 +28,7 @@ let task_variant_none: u32 = 65536
 ## Every kind; the arcs a node's own opinions express; the ancestral and
 ## the plain variant kinds.
 let all_tasks: u32 = 0x1FFFF
-let expressed_arc_tasks: u32 = task_references | task_payloads | task_inherits | task_specializes
+let expressed_arc_tasks: u32 = task_relocations | task_references | task_payloads | task_inherits | task_specializes
 let ancestral_variant_tasks: u32 = task_ancestral_variant_sets
 let variant_tasks: u32 = task_variant_sets
 
@@ -81,7 +83,9 @@ struct Indexer:
         if not self.outer: mask = mask & ~variant_tasks
         let children = self.index.nodes.items[(usize)node].children.view()
         for child in children: try self.add_tasks(child, mask)
-        for kind in [task_ancestral_variant_sets, task_variant_sets, task_specializes, task_inherits, task_payloads, task_references]:
+        # Only a relocation node implies relocations to its grandparent.
+        if self.index.nodes.items[(usize)node].arc != ArcType.relocate: mask = mask & ~task_implied_relocations
+        for kind in [task_ancestral_variant_sets, task_variant_sets, task_specializes, task_inherits, task_payloads, task_references, task_relocations, task_implied_relocations]:
             if mask & kind != 0: try self.add(Task(kind = kind, node = node, path = 0, name = 0, number = 0))
 
     ## The next task, highest priority first (none when done).

@@ -1,0 +1,35 @@
+#usda 1.0
+(
+    """
+    This model's CharRig relocates the Path prim from the PathRig out into the anim interface scope.
+    """
+)
+
+def Prim "Model"
+{
+    def Scope "Anim" (
+        doc = "This scope has an additional relocation that must compose together with the ancestral relocation above."
+    )
+    {
+        def Path "Path" (
+            doc = "This path prim is relocated out from the PathRig into charRig's anim interface."
+        )
+        {
+            def Scope "AnimScope"
+            {
+                custom double track
+            }
+        }
+    }
+
+    def Scope "Rig"
+    {
+        def Scope "PathRig"
+        {
+            rel relationshipToPathAvar = </Model/Anim/Path/AnimScope.track> (
+                doc = "This relationship needs to target the path prim even after it gets relocated."
+            )
+        }
+    }
+}
+

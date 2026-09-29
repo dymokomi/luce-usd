@@ -27,14 +27,13 @@ extend Composer:
             let field = data.get(spec, data.keys.inherit_paths if kind == ArcType.inherit else data.keys.specializes) else continue
             let list = field.list_op() else continue
             try apply_list_op(list, &paths)
-        let target = try names.strip_variants(node_path)
         for number in 0..<paths.count:
             let path = (u32)paths.items[number].a
             if path != empty_path and not (names.is_prim(path) and not names.has_variant_selection(path)):
                 try self.problems.add("Invalid inherit or specialize prim path")
                 continue
-            var map = try MapFunction.of_pair(path, target, Offset.identity())
-            map.root_identity = true
+            # The class maps to the instance, every other path to itself.
+            let map = try with_root(names, try self.arc_map(stack, path, node_path, Offset.identity()))
             discard(try self.add_class_arc(indexer, path, kind, node, node, map, (i32)number, 0, empty_path))
 
     ## Add one class arc under `parent` (_AddClassBasedArc), or find the
@@ -50,7 +49,10 @@ extend Composer:
             owned.close()
             return none
         let stack = index.node(parent).stack
-        if let child = self.existing_class_arc(indexer, path, kind, parent, origin, &owned):
+        let existing = self.existing_class_arc(indexer, path, kind, parent, origin, &owned) catch failure:
+            owned.close()
+            error(failure.code, failure.message)
+        if let child = existing:
             # An implied specializes to the root prefers the stronger origin.
             let implied = kind == ArcType.specialize and parent == 0 and parent != origin
             if not implied or index.compare_nodes(origin, (u32)index.node(child).origin) >= 0:
@@ -77,7 +79,7 @@ extend Composer:
 
     ## A child of `parent` that already is this class arc: the same site,
     ## or under a relocation, the same kind, origin depth and map.
-    func existing_class_arc(indexer: const Indexer*, path: u32, kind: ArcType, parent: u32, origin: u32, map: const MapFunction*) -> u32?:
+    func existing_class_arc(indexer: const Indexer*, path: u32, kind: ArcType, parent: u32, origin: u32, map: const MapFunction*) -> u32?!:
         let index = &indexer.index
         var parent_arc = index.node(parent).arc
         if parent == 0:
@@ -86,7 +88,7 @@ extend Composer:
         let depth = index.depth_below_introduction(self.names, origin)
         for child in index.node(parent).children.view():
             let entry = index.node(child)
-            if entry.arc == kind and entry.origin >= 0 and index.depth_below_introduction(self.names, (u32)entry.origin) == depth and entry.map_to_parent.equals(map): return child
+            if entry.arc == kind and entry.origin >= 0 and index.depth_below_introduction(self.names, (u32)entry.origin) == depth and try entry.map_to_parent.equals(self.names, map): return child
         return none
 
     ## Copy specializes node `node` under the root (_PropagateNodeToRoot),
@@ -108,9 +110,8 @@ extend Composer:
         let index = &indexer.index
         if node == 0 or not index.has_class_based_child(node): return
         # Classes map across any arc: add the root identity.
-        var transfer = try index.node(node).map_to_parent.copy()
+        var transfer = try index.node(node).map_to_parent.with_root_identity(self.names)
         defer transfer.close()
-        transfer.root_identity = true
         try self.implied_class_tree(indexer, (u32)index.node(node).parent, node, &transfer, true)
 
     ## Imply the class arcs under `source` (a whole class hierarchy) to
@@ -120,9 +121,8 @@ extend Composer:
         let index = &indexer.index
         if index.node(destination).arc == ArcType.relocate:
             # Relocation nodes hold no implied classes: go to their parent.
-            var outer = try index.node(destination).map_to_parent.copy()
+            var outer = try index.node(destination).map_to_parent.with_root_identity(names)
             defer outer.close()
-            outer.root_identity = true
             var composed = try outer.compose(names, transfer)
             defer composed.close()
             try self.implied_class_tree(indexer, (u32)index.node(destination).parent, source, &composed, start)

@@ -4,41 +4,33 @@
 ## pair whose source is its longest prefix; a result that a pair with a
 ## longer target would also claim is ambiguous and does not map. Composing
 ## f after g maps g's targets through f, then adds f's pairs whose sources
-## g's inverse reaches and g's pairs do not already cover.
+## g's inverse reaches and g's pairs do not already cover. A layer stack's
+## relocations defer composition (DeferredComposition): such a function is
+## a chain of pair sets a path goes through in turn, innermost first, and
+## is folded into one set only where a single set is needed.
 
-pub struct MapFunction:
+## One set of path pairs.
+pub struct PathPairs:
     pub var sources: Growing[u32]
     pub var targets: Growing[u32]
     pub var root_identity: bool
-    pub var offset: Offset
 
-    ## The identity map (PcpMapFunction::Identity).
-    pub static func identity() -> MapFunction:
-        return MapFunction(sources = Growing[u32](), targets = Growing[u32](), root_identity = true, offset = Offset.identity())
-
-    ## The map of one pair; "/" to "/" becomes the root identity.
-    pub static func of_pair(source: u32, target: u32, offset: Offset) -> MapFunction!:
-        var made = MapFunction(sources = Growing[u32](), targets = Growing[u32](), root_identity = false, offset = offset)
-        errdefer made.close()
-        if source == absolute_root and target == absolute_root: made.root_identity = true
-        else:
-            try made.sources.push(source)
-            try made.targets.push(target)
-        return made
+    pub static func empty(root_identity: bool) -> PathPairs:
+        return PathPairs(sources = Growing[u32](), targets = Growing[u32](), root_identity = root_identity)
 
     pub mutating func close():
         self.sources.close()
         self.targets.close()
 
-    pub func copy() -> MapFunction!:
-        var made = MapFunction(sources = Growing[u32](), targets = Growing[u32](), root_identity = self.root_identity, offset = self.offset)
+    pub func copy() -> PathPairs!:
+        var made = PathPairs.empty(self.root_identity)
         errdefer made.close()
         try made.sources.assign(self.sources.view())
         try made.targets.assign(self.targets.view())
         return made
 
-    pub func is_identity() -> bool:
-        return self.root_identity and self.sources.count == 0 and self.offset.is_identity()
+    func is_identity() -> bool:
+        return self.root_identity and self.sources.count == 0
 
     ## `path` mapped from the source namespace to the target one (from
     ## target to source when `invert`); empty_path when it does not map.
@@ -58,9 +50,9 @@ pub struct MapFunction:
         if better < to_side.length and better != best: return empty_path
         return result
 
-    ## `self` after `inner`: inner's source namespace to self's target one.
-    pub func compose(names: Names*, inner: const MapFunction*) -> MapFunction!:
-        var made = MapFunction(sources = Growing[u32](), targets = Growing[u32](), root_identity = self.root_identity and inner.root_identity, offset = self.offset.times(inner.offset))
+    ## `self` after `inner` (_ComposePathPairs).
+    func compose(names: Names*, inner: const PathPairs*) -> PathPairs!:
+        var made = PathPairs.empty(self.root_identity and inner.root_identity)
         errdefer made.close()
         for at in 0..<inner.sources.count:
             try made.sources.push(inner.sources.items[at])
@@ -76,24 +68,170 @@ pub struct MapFunction:
             try made.targets.push(self.targets.items[at])
         return made
 
-    ## The map the other way (the offset inverted too).
-    pub func inverse() -> MapFunction!:
-        var made = MapFunction(sources = Growing[u32](), targets = Growing[u32](), root_identity = self.root_identity, offset = Offset(offset = -self.offset.offset / self.offset.scale, scale = 1.0 / self.offset.scale))
-        errdefer made.close()
-        try made.sources.assign(self.targets.view())
-        try made.targets.assign(self.sources.view())
-        return made
-
-    ## Whether two maps are the same: pairs, root identity and offset.
-    pub func equals(other: const MapFunction*) -> bool:
+    ## Whether two sets hold the same pairs.
+    func same_as(other: const PathPairs*) -> bool:
         if self.root_identity != other.root_identity or self.sources.count != other.sources.count: return false
-        if self.offset.offset != other.offset.offset or self.offset.scale != other.offset.scale: return false
         for at in 0..<self.sources.count:
             var found = false
             for there in 0..<other.sources.count:
                 found = found or (other.sources.items[there] == self.sources.items[at] and other.targets.items[there] == self.targets.items[at])
             if not found: return false
         return true
+
+pub struct MapFunction:
+    ## The pairs, unless composition was deferred.
+    pub var pairs: PathPairs
+    ## A deferred composition's sets, outermost first (empty otherwise).
+    var chain: Growing[PathPairs]
+    pub var offset: Offset
+
+    ## The identity map (PcpMapFunction::Identity).
+    pub static func identity() -> MapFunction:
+        return MapFunction(pairs = PathPairs.empty(true), chain = Growing[PathPairs](), offset = Offset.identity())
+
+    ## The map of one pair; "/" to "/" becomes the root identity.
+    pub static func of_pair(source: u32, target: u32, offset: Offset) -> MapFunction!:
+        var made = MapFunction(pairs = PathPairs.empty(false), chain = Growing[PathPairs](), offset = offset)
+        errdefer made.close()
+        if source == absolute_root and target == absolute_root: made.pairs.root_identity = true
+        else:
+            try made.pairs.sources.push(source)
+            try made.pairs.targets.push(target)
+        return made
+
+    ## The map of `pairs` (taken), its composition deferred
+    ## (PcpMapFunction::DeferredComposition); the identity stays plain.
+    pub static func deferred_of(pairs: PathPairs) -> MapFunction!:
+        var owned = pairs
+        if owned.is_identity(): return MapFunction(pairs = owned, chain = Growing[PathPairs](), offset = Offset.identity())
+        var made = MapFunction(pairs = PathPairs.empty(true), chain = Growing[PathPairs](), offset = Offset.identity())
+        made.chain.push(owned) catch failure:
+            owned.close()
+            error(failure.code, failure.message)
+        return made
+
+    pub mutating func close():
+        self.pairs.close()
+        for at in 0..<self.chain.count: self.chain.items[at].close()
+        self.chain.close()
+
+    pub func copy() -> MapFunction!:
+        var made = MapFunction(pairs = try self.pairs.copy(), chain = Growing[PathPairs](), offset = self.offset)
+        errdefer made.close()
+        for set in self.chain.view():
+            var copied = try set.copy()
+            made.chain.push(copied) catch failure:
+                copied.close()
+                error(failure.code, failure.message)
+        return made
+
+    func deferred() -> bool:
+        return self.chain.count > 0
+
+    ## IsIdentity: every path maps to itself, with no offset.
+    pub func is_identity() -> bool:
+        return self.is_identity_mapping() and self.offset.is_identity()
+
+    func is_identity_mapping() -> bool:
+        if not self.deferred(): return self.pairs.is_identity()
+        for set in self.chain.view():
+            if not set.is_identity(): return false
+        return true
+
+    ## HasRootIdentity.
+    pub func has_root_identity() -> bool:
+        if not self.deferred(): return self.pairs.root_identity
+        for set in self.chain.view():
+            if not set.root_identity: return false
+        return true
+
+    ## `path` mapped from the source namespace to the target one (from
+    ## target to source when `invert`); empty_path when it does not map.
+    pub func map(names: Names*, path: u32, invert: bool) -> u32!:
+        if not self.deferred(): return try self.pairs.map(names, path, invert)
+        var result = path
+        let count = self.chain.count
+        for step in 0..<count:
+            # Inverted: outermost first; else innermost first.
+            let set = &self.chain.items[step if invert else count - 1 - step]
+            result = try set.map(names, result, invert)
+            if result == empty_path: return result
+        return result
+
+    ## `self` after `inner`: inner's source namespace to self's target one.
+    pub func compose(names: Names*, inner: const MapFunction*) -> MapFunction!:
+        if self.is_identity(): return try inner.copy()
+        if inner.is_identity(): return try self.copy()
+        let offset = self.offset.times(inner.offset)
+        if not self.deferred() and not inner.deferred():
+            return MapFunction(pairs = try self.pairs.compose(names, &inner.pairs), chain = Growing[PathPairs](), offset = offset)
+        var made = MapFunction(pairs = PathPairs.empty(true), chain = Growing[PathPairs](), offset = offset)
+        errdefer made.close()
+        try made.append_sets(&self)
+        try made.append_sets(inner)
+        return made
+
+    mutating func append_sets(other: const MapFunction*) -> !:
+        if not other.deferred():
+            var copied = try other.pairs.copy()
+            self.chain.push(copied) catch failure:
+                copied.close()
+                error(failure.code, failure.message)
+            return
+        for set in other.chain.view():
+            var copied = try set.copy()
+            self.chain.push(copied) catch failure:
+                copied.close()
+                error(failure.code, failure.message)
+
+    ## The pairs a deferred chain folds into (_GetNormalized).
+    pub func normalized(names: Names*) -> PathPairs!:
+        if not self.deferred(): return try self.pairs.copy()
+        var result = try self.chain.items[self.chain.count - 1].copy()
+        var at = self.chain.count - 1
+        while at > 0:
+            at -= 1
+            let folded = self.chain.items[at].compose(names, &result) catch failure:
+                result.close()
+                error(failure.code, failure.message)
+            result.close()
+            result = folded
+        return result
+
+    ## AddRootIdentity: `/` maps to `/` too.
+    pub func with_root_identity(names: Names*) -> MapFunction!:
+        if self.has_root_identity(): return try self.copy()
+        var pairs = try self.normalized(names)
+        pairs.root_identity = true
+        return MapFunction(pairs = pairs, chain = Growing[PathPairs](), offset = self.offset)
+
+    ## The map the other way (the offset inverted too).
+    pub func inverse() -> MapFunction!:
+        let offset = Offset(offset = -self.offset.offset / self.offset.scale, scale = 1.0 / self.offset.scale)
+        var made = MapFunction(pairs = PathPairs.empty(self.pairs.root_identity), chain = Growing[PathPairs](), offset = offset)
+        errdefer made.close()
+        try made.pairs.sources.assign(self.pairs.targets.view())
+        try made.pairs.targets.assign(self.pairs.sources.view())
+        var at = self.chain.count
+        while at > 0:
+            at -= 1
+            var flipped = PathPairs.empty(self.chain.items[at].root_identity)
+            try flipped.sources.assign(self.chain.items[at].targets.view())
+            try flipped.targets.assign(self.chain.items[at].sources.view())
+            made.chain.push(flipped) catch failure:
+                flipped.close()
+                error(failure.code, failure.message)
+        return made
+
+    ## Whether two maps are the same once folded: pairs, root identity and
+    ## offset.
+    pub func equals(names: Names*, other: const MapFunction*) -> bool!:
+        if self.offset.offset != other.offset.offset or self.offset.scale != other.offset.scale: return false
+        var mine = try self.normalized(names)
+        defer mine.close()
+        var theirs = try other.normalized(names)
+        defer theirs.close()
+        return mine.same_as(&theirs)
 
     ## The map of the class arc `class_arc` implied across `self`, the
     ## transfer from a node to its parent (PcpMapFunction::ImpliedClass):
@@ -102,25 +240,35 @@ pub struct MapFunction:
     ## identity, and the class arc's offset.
     pub func implied_class(names: Names*, class_arc: const MapFunction*) -> MapFunction!:
         if self.is_identity() or class_arc.is_identity(): return try class_arc.copy()
-        var made = MapFunction(sources = Growing[u32](), targets = Growing[u32](), root_identity = true, offset = class_arc.offset)
+        var transfer = try self.normalized(names)
+        defer transfer.close()
+        var arc = try class_arc.normalized(names)
+        defer arc.close()
+        var made = MapFunction(pairs = PathPairs.empty(true), chain = Growing[PathPairs](), offset = class_arc.offset)
         errdefer made.close()
-        for at in 0..<class_arc.sources.count:
-            let source = try self.map(names, class_arc.sources.items[at], false)
+        for at in 0..<arc.sources.count:
+            let source = try transfer.map(names, arc.sources.items[at], false)
             if source == empty_path: continue
-            try made.sources.push(source)
-            try made.targets.push(try self.map(names, class_arc.targets.items[at], false))
-        for at in 0..<self.sources.count:
-            let transfer_source = self.sources.items[at]
-            for pair in 0..<class_arc.sources.count:
-                let class_target = class_arc.targets.items[pair]
+            try made.pairs.sources.push(source)
+            try made.pairs.targets.push(try transfer.map(names, arc.targets.items[at], false))
+        for at in 0..<transfer.sources.count:
+            let transfer_source = transfer.sources.items[at]
+            for pair in 0..<arc.sources.count:
+                let class_target = arc.targets.items[pair]
                 if transfer_source == class_target or not names.has_prefix(transfer_source, class_target): continue
-                let source = try names.replace_prefix(transfer_source, class_target, class_arc.sources.items[pair])
-                if try class_arc.map(names, source, false) != transfer_source: continue
-                let mapped = try self.map(names, source, false)
+                let source = try names.replace_prefix(transfer_source, class_target, arc.sources.items[pair])
+                if try arc.map(names, source, false) != transfer_source: continue
+                let mapped = try transfer.map(names, source, false)
                 if mapped == empty_path: continue
-                try made.sources.push(mapped)
-                try made.targets.push(self.targets.items[at])
+                try made.pairs.sources.push(mapped)
+                try made.pairs.targets.push(transfer.targets.items[at])
         return made
+
+## `map` (taken) with the root identity added.
+func with_root(names: Names*, map: MapFunction) -> MapFunction!:
+    var owned = map
+    defer owned.close()
+    return try owned.with_root_identity(names)
 
 ## The index in `side` of the longest path that is a prefix of `path` with
 ## at least `floor` depth, or side.length.

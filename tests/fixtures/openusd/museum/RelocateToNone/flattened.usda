@@ -1,0 +1,71 @@
+#usda 1.0
+(
+    """
+    These cases exercise deleting prims via relocation.
+    """
+)
+
+def "Char"
+{
+    rel relationship1 = </Char/ToBeDeleted/Child> (
+        doc = """This relationship target will be invalid in root.usda
+            when ToBeDeleted is deleted via relocation"""
+    )
+    rel relationship2 = </Char/Relocated/Child> (
+        doc = """This relationship target will be valid and remapped in
+            root.usda when ToBeRelocated is relocated to Relocated"""
+    )
+    rel relationship3 = </Char/Relocated/ToBeDeletedChild> (
+        doc = """This relationship target will be invalid in root.usda
+            when its mapped path Relocated/ToBeDeletedChild is deleted
+            via relocation"""
+    )
+
+    def "Relocated" (
+        doc = "Valid opinion at relocated path"
+    )
+    {
+        def "Child" (
+            doc = "Valid opinion at child of relocated path"
+        )
+        {
+        }
+    }
+}
+
+def "Good_SubrootRefToRelocated" (
+    doc = "Reference to post-relocation prim is valid"
+)
+{
+    def "Child" (
+        doc = "Valid opinion at child of relocated path"
+    )
+    {
+    }
+}
+
+def "Good_SubrootRefToRelocatedChild" (
+    doc = "Reference to post-relocation prim child is valid"
+)
+{
+}
+
+def "Bad_SubrootRefToDeleted" (
+    doc = "Reference to deleted via relocation prim is invalid"
+)
+{
+}
+
+def "Bad_SubrootRefToPreRelocated" (
+    doc = "Reference to pre-relocation prim is invalid"
+)
+{
+}
+
+def "Bad_SubrootRefToDeletedRelocatedChild" (
+    doc = """Reference to post-relocation prim child that has been
+        deleted via relocation prim is invalid"""
+)
+{
+}
+
