@@ -1,0 +1,10 @@
+## Usd.serialization names a file's serialization by its signature, whatever the
+## extension says, and fails on a file that is not USD.
+from usd import Usd
+
+pub func format_tests() -> unit!:
+    assert(Usd.serialization("tests/fixtures/empty.usda") == "usda")
+    assert(Usd.serialization("tests/fixtures/text_named.usd") == "usda")
+    var rejected = false
+    discard(Usd.serialization("tests/fixtures/not_usd.txt")) catch failure: rejected = true
+    assert(rejected)

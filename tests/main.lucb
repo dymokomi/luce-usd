@@ -1,0 +1,7 @@
+## luce-usd's Base gate: every module check in turn. Each check asserts;
+## the first failure stops the run with its location.
+import sniff_checks
+
+pub func main(arguments: str[]) -> i32!:
+    try sniff_checks.exercise()
+    return 0

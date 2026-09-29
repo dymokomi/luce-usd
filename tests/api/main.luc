@@ -1,0 +1,6 @@
+# luce-usd's Luce API tests: what luced-3d calls.
+from format_tests import format_tests
+
+pub func main(arguments: list[str]) -> int!:
+    format_tests()
+    return 0

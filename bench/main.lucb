@@ -1,0 +1,69 @@
+## luce-usd's benchmark. Prints one `name<TAB>milliseconds<TAB>count` line per
+## case; run.py builds it with --native --opt 3 and makes the table.
+##
+## The reference rows time luce-geocore's own .prism codec on the same
+## geometry, so the USD rows (added as the readers and writers land) read as
+## ratios against it: the 837x837 quad grid (702,244 points, 700,569 faces)
+## with a corner uv, as geocore's bench saves it.
+import time
+import interop
+import memory
+import geocore
+from geocore import Vector3, Mesh, GeometrySet
+from geocore_kernel import save_geometry, load_geometry, adopt_set
+from geocore_growing import Growing
+from usd_kernel import read_file, most_bytes
+from io import path
+
+func row(name: str, started: u64, count: usize):
+    print(f"{name}\t{(f64)time.since(started) / 1000000.0}\t{count}\t")
+
+## The n×n quad grid of geocore's verb benchmark.
+func quad_grid(n: usize) -> interop.Reference[Mesh]!:
+    let points = try alloc Vector3[(n + 1) * (n + 1)] in memory.heap
+    defer free(points) in memory.heap
+    let sizes = try alloc i64[n * n] in memory.heap
+    defer free(sizes) in memory.heap
+    let corners = try alloc i64[n * n * 4] in memory.heap
+    defer free(corners) in memory.heap
+    for z in 0..<n + 1:
+        for x in 0..<n + 1: points[z * (n + 1) + x] = Vector3((f64)x - (f64)n * 0.5, 0.0, (f64)z - (f64)n * 0.5)
+    for z in 0..<n:
+        for x in 0..<n:
+            let a = (i64)(z * (n + 1) + x)
+            let face = z * n + x
+            sizes[face] = 4
+            corners[face * 4] = a
+            corners[face * 4 + 1] = a + (i64)n + 1
+            corners[face * 4 + 2] = a + (i64)n + 2
+            corners[face * 4 + 3] = a + 1
+    return try interop.Reference[Mesh].adopt(try new Mesh(points, sizes, corners) in memory.heap, geocore.mesh_type, memory.heap)
+
+## A path in the temporary directory.
+func temporary(file: Growing[u8]*, name: str) -> !:
+    try file.assign(path.temp().bytes)
+    try file.push(47)
+    for byte in name.bytes: try file.push(byte)
+
+pub func main(arguments: str[]) -> i32!:
+    let grid = try quad_grid(837)
+    defer grid.release()
+    let mapped = try geocore.AttributeKernels.uv_project(grid, 1.0)
+    defer mapped.release()
+    let textured = try GeometrySet.of_mesh(mapped)
+    defer textured.release()
+    var file = Growing[u8]()
+    defer file.close()
+    try temporary(&file, "luce-usd-bench.prism")
+    var started = time.now()
+    let saved = try save_geometry(textured.value(), (str)file.view(), 1, 268435456)
+    row("Reference: save the grid with uv to .prism (bytes)", started, saved)
+    started = time.now()
+    let loaded = try adopt_set(try load_geometry((str)file.view()))
+    row("Reference: load that .prism (faces)", started, (usize)((try loaded.value().mesh()) else trap("mesh")).value().face_count())
+    loaded.release()
+    started = time.now()
+    let bytes = try read_file((str)file.view(), most_bytes)
+    row("Reference: read that file whole (bytes)", started, bytes.length)
+    free(bytes) in memory.heap
+    return 0

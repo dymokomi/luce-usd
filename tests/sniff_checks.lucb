@@ -1,0 +1,25 @@
+## Format sniffing: each signature is recognized, short and foreign
+## prefixes fail with `invalid`.
+from usd_kernel import Format, detect_format, format_name, invalid
+
+pub func exercise() -> !:
+    assert((try detect_format("#usda 1.0\n".bytes)) == Format.usda)
+    assert((try detect_format("PXR-USDC".bytes)) == Format.usdc)
+    var zip: u8[4]
+    zip[0] = 0x50
+    zip[1] = 0x4b
+    zip[2] = 0x03
+    zip[3] = 0x04
+    assert((try detect_format(zip[..<4])) == Format.usdz)
+    assert(format_name(Format.usdc) == "usdc")
+    rejected("")
+    rejected("#usd")
+    rejected("#usda")
+    rejected("PXR-USD")
+    rejected("solid cube\n")
+
+func rejected(text: str):
+    discard(detect_format(text.bytes)) catch failure:
+        assert(failure.code == invalid)
+        return
+    assert(false)

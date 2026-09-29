@@ -1,0 +1,26 @@
+luce-usd
+Copyright 2026 The Luce authors
+
+luce-usd is a rewrite in Luce of parts of OpenUSD (Universal Scene
+Description), and is a derivative work of OpenUSD. It follows OpenUSD's
+data model, file formats and composition algorithms, and ports their
+structure from the C++ sources of release v26.08.
+
+OpenUSD is available at https://github.com/PixarAnimationStudios/OpenUSD
+and is licensed under the Tomorrow Open Source Technology License 1.0,
+included in licenses/OPENUSD-TOST-1.0.txt. That license is the Apache
+License 2.0 with a different Section 6 ("Trademarks"): it grants no
+permission to use Pixar's trade names, trademarks or product names.
+
+OpenUSD's NOTICE file reads:
+
+    Universal Scene Description
+    Copyright 2016 Pixar
+
+    All rights reserved.
+
+    This product includes software developed at:
+
+    Pixar (http://www.pixar.com/).
+
+luce-usd itself is licensed under the Apache License 2.0 (LICENSE).

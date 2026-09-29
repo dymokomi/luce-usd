@@ -1,0 +1,18 @@
+## The usd_kernel export: luce-usd's Base internals for Base code in other
+## packages and for the package's own checks. Luce code uses `usd`.
+import luce_usd.errors as errors
+import luce_usd.source as source
+import luce_usd.sniff as sniff
+
+pub let invalid = errors.invalid
+pub let unsupported = errors.unsupported
+pub let limit = errors.limit
+
+pub let read_file = source.read
+pub let read_prefix = source.read_prefix
+## The largest file read_file takes whole (pass it: function values drop defaults).
+pub let most_bytes = source.most_bytes
+
+pub type Format = sniff.Format
+pub let detect_format = sniff.detect
+pub let format_name = sniff.extension

@@ -1,0 +1,10 @@
+## luce-usd's error codes, one per kind of failure. Messages say what and
+## where (the file, the prim path or the byte offset).
+
+## The bytes are not a USD layer of the kind asked for, or are malformed.
+pub let invalid: ErrorCode = ErrorCode.package(700)
+## Valid USD that this port does not read or write yet (a newer crate
+## version, a value type or schema outside the mapping).
+pub let unsupported: ErrorCode = ErrorCode.package(701)
+## A size or count past one of the package's budgets.
+pub let limit: ErrorCode = ErrorCode.package(702)

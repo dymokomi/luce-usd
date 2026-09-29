@@ -1,0 +1,77 @@
+## Reading layer bytes from disk: whole files in one allocation sized from
+## the file's metadata (as luce-obj reads OBJ text), and short prefixes for
+## sniffing a file's format.
+import c
+import memory
+import strings
+import utf8
+import files
+
+## The largest file luce-usd reads whole: 4 GiB.
+pub let most_bytes: usize = 4294967296
+
+## `path` as a NUL-terminated native string on memory.heap; release it with
+## strings.release.
+func native_path(path: str) -> str!:
+    if path.length == 0 or not utf8.valid(path.bytes):
+        error(files.invalid_options, "a path must be nonempty UTF-8")
+    for byte in path.bytes:
+        if byte == 0:
+            error(files.invalid_options, "a path cannot contain NUL")
+    return try strings.copy(path)
+
+## The bytes of the file at `path`, at most `limit` of them, on memory.heap.
+## An empty file returns an empty span (nothing to free).
+pub func read(path: str, limit: usize = most_bytes) -> u8[]!:
+    let native = try native_path(path)
+    defer strings.release(native)
+    var file = try files.File.open((c.str)native)
+    defer file.destroy()
+    let info = try file.metadata()
+    # One byte more than the size tells an exact fit from a file that grew.
+    var capacity = (usize)info.size + 1 if info.size >= 0 else 4096
+    if capacity > limit + 1:
+        capacity = limit + 1
+    var data = try alloc u8[capacity] in memory.heap
+    errdefer free(data) in memory.heap
+    var used: usize = 0
+    while true:
+        if used == data.length:
+            if used > limit:
+                error(files.too_large, "the file exceeds the read limit")
+            var larger = data.length * 2
+            if larger > limit + 1:
+                larger = limit + 1
+            let grown = try alloc u8[larger] in memory.heap
+            memory.copy(grown, data, used)
+            free(data) in memory.heap
+            data = grown
+        let count = try file.read(data[used..])
+        if count == 0:
+            break
+        used += count
+    if used > limit:
+        error(files.too_large, "the file exceeds the read limit")
+    try file.close()
+    if used == 0:
+        # A zero-length span frees nothing, so return the block now.
+        free(data) in memory.heap
+        var empty: u8[]
+        return empty
+    return data[..<used]
+
+## Up to `buffer.length` leading bytes of the file at `path`, read into
+## `buffer`; the count read.
+pub func read_prefix(path: str, buffer: u8[]) -> usize!:
+    let native = try native_path(path)
+    defer strings.release(native)
+    var file = try files.File.open((c.str)native)
+    defer file.destroy()
+    var used: usize = 0
+    while used < buffer.length:
+        let count = try file.read(buffer[used..])
+        if count == 0:
+            break
+        used += count
+    try file.close()
+    return used

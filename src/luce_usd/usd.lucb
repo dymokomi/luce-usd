@@ -1,0 +1,18 @@
+## The luce-usd export: Universal Scene Description for Luce. Loading and
+## saving luce-geocore GeometrySets as .usda, .usdc and .usdz files, and
+## layer-level conversion. Everything here is a thin entry point; the work
+## is in the sdf/, usda/, usdc/, usdz/, pcp/, stage/ and usd_geom/ modules.
+import interop
+import luce_usd.source as source
+import luce_usd.sniff as sniff
+
+pub struct Usd:
+    let reserved: u8 = 0
+
+    ## The serialization the file at `path` holds, by its signature: "usda",
+    ## "usdc" or "usdz". Fails on a file that is none of them.
+    pub static func serialization(path: str) -> interop.Owned[str]!:
+        var prefix: u8[8]
+        let count = try source.read_prefix(path, prefix[..<8])
+        let found = try sniff.detect(prefix[..<count])
+        return try interop.copy_text(sniff.extension(found))
