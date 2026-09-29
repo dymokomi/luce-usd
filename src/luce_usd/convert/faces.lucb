@@ -1,10 +1,11 @@
 ## The merged faces, in three parallel passes over chunks of each prim's
 ## faces: where each chunk's corners start; which faces geocore can hold
-## (at least 3 corners and an area, by the test geocore's assembly applies
-## to the placed points); then the offsets, corners, display triangles and
-## the maps back to each prim's faces and corners. Every face gets its
-## display triangles here (triangulate.lucb for faces of five corners or
-## more).
+## (at least 3 corners) and their normals (zero for a face without an area,
+## by the test geocore's assembly applies to the placed points); then the
+## offsets, corners, display triangles and the maps back to each prim's
+## faces and corners. Triangles and convex quads get their display
+## triangles here; larger faces are ear clipped by geocore, which falls
+## back to a fan for faces that do not clip. N-gons stay n-gons.
 
 struct FaceChunk:
     var source: usize
@@ -14,6 +15,8 @@ struct FaceChunk:
     var corner_first: usize
     var kept_faces: usize
     var kept_corners: usize
+    ## Kept faces without an area.
+    var flat_faces: usize
     var out_face: usize
     var out_corner: usize
 
@@ -47,7 +50,7 @@ func build_faces(build: MeshBuild*, stage: const Stage*, warnings: Warnings*) ->
     try chunks_of(counts.view(), &plain)
     var chunks = Growing[FaceChunk]()
     defer chunks.close()
-    for chunk in plain.view(): try chunks.push(FaceChunk(source = chunk.source, first = chunk.first, end = chunk.end, corner_first = 0, kept_faces = 0, kept_corners = 0, out_face = 0, out_corner = 0))
+    for chunk in plain.view(): try chunks.push(FaceChunk(source = chunk.source, first = chunk.first, end = chunk.end, corner_first = 0, kept_faces = 0, kept_corners = 0, flat_faces = 0, out_face = 0, out_corner = 0))
     var keep = try Column[u8].allocate(source_faces)
     defer keep.release()
     var source_normals = try Column[Float3].allocate(source_faces)
@@ -71,6 +74,7 @@ func build_faces(build: MeshBuild*, stage: const Stage*, warnings: Warnings*) ->
     var faces: usize = 0
     var corners: usize = 0
     var dropped: usize = 0
+    var flat: usize = 0
     var last = build.sources.count
     for index in 0..<chunks.count:
         let chunk = &chunks.items[index]
@@ -83,12 +87,9 @@ func build_faces(build: MeshBuild*, stage: const Stage*, warnings: Warnings*) ->
         faces += chunk.kept_faces
         corners += chunk.kept_corners
         dropped += (chunk.end - chunk.first) - chunk.kept_faces
-    if dropped > 0:
-        var line = Growing[u8]()
-        defer line.close()
-        try append_count(&line, dropped)
-        for byte in " faces with fewer than 3 corners or no area were dropped".bytes: try line.push(byte)
-        try warnings.add((str)line.view())
+        flat += chunk.flat_faces
+    if dropped > 0: try count_warning(warnings, dropped, " faces with fewer than 3 corners were dropped")
+    if flat > 0: try count_warning(warnings, flat, " faces have no area (their points coincide or lie on a line)")
     build.faces = faces
     build.corner_total = corners
     build.offsets = try Column[i32].allocate(faces + 1)
@@ -126,18 +127,22 @@ func keep_chunk(context: void*?, index: usize):
     var corner = chunk.corner_first
     var faces: usize = 0
     var corners: usize = 0
+    var flat: usize = 0
     for face in chunk.first..<chunk.end:
         let count = (usize)counts[face]
-        var kept = false
-        if count >= 3:
+        let kept = count >= 3
+        if kept:
             let area = area_of(points, indices[corner..<corner + count])
             if area.3:
-                kept = true
                 # Unit normal as geocore's assembly computes it; reversed faces
                 # face the other way.
                 let length = math.sqrt(area.0 * area.0 + area.1 * area.1 + area.2 * area.2)
                 let sign = -1.0 if source.flip else 1.0
                 work.source_normals[source.source_face_base + face] = Float3((f32)(area.0 * sign / length), (f32)(area.1 * sign / length), (f32)(area.2 * sign / length))
+            else:
+                # Kept without an area: a zero normal, as geocore gives it.
+                work.source_normals[source.source_face_base + face] = Float3(0.0, 0.0, 0.0)
+                flat += 1
         work.keep[source.source_face_base + face] = 1 if kept else 0
         if kept:
             faces += 1
@@ -145,6 +150,7 @@ func keep_chunk(context: void*?, index: usize):
         corner += count
     chunk.kept_faces = faces
     chunk.kept_corners = corners
+    chunk.flat_faces = flat
 
 ## A face's area normal and whether it passes geocore's area test
 ## (polygon_triangulation's area_normal on the corner fan from the first
@@ -209,7 +215,7 @@ func write_chunk(context: void*?, index: usize):
         elif count == 4:
             write_quad(work.corners[out_corner..<out_corner + 4], points, base, first, triangles)
         else:
-            triangulate_face(points, work.corners[out_corner..<out_corner + count], base, first, triangles)
+            for k in 0..<triangles.length: triangles[k] = -1
         out_face += 1
         out_corner += count
         corner += count
@@ -253,3 +259,11 @@ func append_count(out: Growing[u8]*, value: usize) -> !:
         rest = rest // 10
         if rest == 0: break
     for byte in digits[at..]: try out.push(byte)
+
+## A warning "<count><text>".
+func count_warning(warnings: Warnings*, count: usize, text: str) -> !:
+    var line = Growing[u8]()
+    defer line.close()
+    try append_count(&line, count)
+    for byte in text.bytes: try line.push(byte)
+    try warnings.add((str)line.view())

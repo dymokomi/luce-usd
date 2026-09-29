@@ -34,8 +34,11 @@ between are interpolated linearly.
 
 - **Winding.** `leftHanded` meshes, and meshes under a mirroring transform,
   have their faces reversed, keeping the first corner.
-- **Dropped faces.** Faces with fewer than 3 corners or no area are
-  dropped. A face of more than 256 corners skips its prim.
+- **Faces** keep their corners: n-gons stay n-gons. Faces with fewer than
+  3 corners are dropped. A face without an area (its points coincide or lie
+  on a line) is kept with a zero normal, and counted in a warning; a
+  self-intersecting face displays as a fan. A face of more than 256 corners
+  skips its prim.
 - **Primvars** become attributes by interpolation:
 
   | USD interpolation | Attribute domain |

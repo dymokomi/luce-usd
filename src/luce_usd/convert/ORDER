@@ -2,7 +2,6 @@ common.lucb
 meshes.lucb
 intrinsics.lucb
 faces.lucb
-triangulate.lucb
 primvars.lucb
 primvar_fill.lucb
 mesh_extras.lucb

@@ -94,7 +94,7 @@ func import_meshes_at(at_time: f64, convert_units: bool, check: func(const Mesh*
     defer dispose_set(set)
     let mesh = set_mesh(set) else trap("no mesh")
     try check(mesh, set, &names)
-    assert(contains((str)warnings.text.view(), "1 faces with fewer than 3 corners or no area were dropped"))
+    assert(contains((str)warnings.text.view(), "1 faces with fewer than 3 corners were dropped"))
     assert(contains((str)warnings.text.view(), "different subdivision schemes"))
 
 func contains(text: str, part: str) -> bool:
@@ -376,10 +376,11 @@ func same_instances(first: const GeometrySet*, second: const GeometrySet*) -> !:
         assert(near(ta.x, tb.x) and near(ta.z, tb.z) and math.abs(ra.z - rb.z) < 2e-3)
         assert((try first.instance_visible(at)) == (try second.instance_visible(at)))
 
-## Faces of five corners or more: a concave one is ear clipped (no display
-## triangle covers its notch), a self-intersecting one still imports.
+## N-gons stay n-gons: a concave face is ear clipped (no display triangle
+## covers its notch), a self-intersecting one displays as a fan, and a face
+## without an area is kept with a zero normal and a warning.
 pub func folded_faces() -> !:
-    let text = "#usda 1.0\ndef Mesh \"Folded\"\n{\n    int[] faceVertexCounts = [6, 5]\n    int[] faceVertexIndices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]\n    point3f[] points = [(0, 0, 0), (2, 0, 0), (2, 1, 0), (1, 1, 0), (1, 2, 0), (0, 2, 0), (0, 0, 1), (2, 0, 1), (0, 1, 1), (2, 1, 1), (1, -1, 1)]\n}\n"
+    let text = "#usda 1.0\ndef Mesh \"Folded\"\n{\n    int[] faceVertexCounts = [6, 5, 3]\n    int[] faceVertexIndices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]\n    point3f[] points = [(0, 0, 0), (2, 0, 0), (2, 1, 0), (1, 1, 0), (1, 2, 0), (0, 2, 0), (0, 0, 1), (2, 0, 1), (0, 1, 1), (2, 1, 1), (1, -1, 1), (0, 0, 2), (1, 0, 2), (2, 0, 2)]\n}\n"
     var names = try Names()
     defer names.close()
     var layer = try LayerData(&names)
@@ -391,10 +392,13 @@ pub func folded_faces() -> !:
     let set = try import_layer(&layer, &options, &warnings)
     defer dispose_set(set)
     let mesh = set_mesh(set) else trap("no mesh")
-    assert(mesh.face_count() == 2)
+    assert(mesh.face_count() == 3 and (try mesh.face_size(0)) == 6 and (try mesh.face_size(1)) == 5)
+    let flat = try mesh.face_normal(2)
+    assert(flat.x == 0.0 and flat.y == 0.0 and flat.z == 0.0)
+    assert(contains((str)warnings.text.view(), "1 faces have no area"))
     let triangles = triangle_span(mesh)
     let corners = corner_span(mesh)
-    assert(triangles.length == 7 * 3)
+    assert(triangles.length == 8 * 3)
     var area: f64 = 0.0
     for at in 0..<(usize)4:
         let a = try mesh.point((i64)corners[(usize)triangles[at * 3]])

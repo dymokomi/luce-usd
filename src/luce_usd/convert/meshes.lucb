@@ -2,9 +2,9 @@
 ## faceVertexCounts, faceVertexIndices, orientation). Each prim's points are
 ## placed by its world transform into one f32 column over an f64 origin;
 ## faces keep their prim's order, wound counterclockwise (a left-handed prim
-## or a mirroring transform reverses them, first corner kept). Faces
-## geocore cannot hold are dropped with a warning: fewer than 3 corners, or
-## no area. A prim whose indices do not fit its points is skipped, as USD
+## or a mirroring transform reverses them, first corner kept). Faces with
+## fewer than 3 corners are dropped, and faces without an area kept, each
+## with a warning. A prim whose indices do not fit its points is skipped, as USD
 ## renderers skip invalid meshes. Every pass over elements runs in parallel
 ## chunks.
 
