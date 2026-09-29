@@ -1,0 +1,255 @@
+## The merged faces, in three parallel passes over chunks of each prim's
+## faces: where each chunk's corners start; which faces geocore can hold
+## (at least 3 corners and an area, by the test geocore's assembly applies
+## to the placed points); then the offsets, corners, display triangles and
+## the maps back to each prim's faces and corners. Triangles and convex
+## quads get their display triangles here; larger faces are ear clipped by
+## geocore.
+
+struct FaceChunk:
+    var source: usize
+    var first: usize
+    var end: usize
+    ## The prim's corner at this chunk's first face.
+    var corner_first: usize
+    var kept_faces: usize
+    var kept_corners: usize
+    var out_face: usize
+    var out_corner: usize
+
+struct FaceWork:
+    var sources: const MeshSource[]
+    var chunks: FaceChunk[]
+    var positions: const Float3[]
+    ## One flag per source face (at the prim's source_face_base): kept.
+    var keep: u8[]
+    ## Each kept source face's unit normal, then each output face's.
+    var source_normals: Float3[]
+    var normals: Float3[]
+    var offsets: i32[]
+    var corners: i32[]
+    var triangles: i32[]
+    var face_source: i32[]
+    var corner_source: i32[]
+
+## Build the offsets, corners and triangles of the merged mesh; warn about
+## dropped faces.
+func build_faces(build: MeshBuild*, stage: const Stage*, warnings: Warnings*) -> !:
+    var counts = Growing[usize]()
+    defer counts.close()
+    var source_faces: usize = 0
+    for index in 0..<build.sources.count:
+        build.sources.items[index].source_face_base = source_faces
+        source_faces += build.sources.items[index].face_count
+        try counts.push(build.sources.items[index].face_count)
+    var plain = Growing[Chunk]()
+    defer plain.close()
+    try chunks_of(counts.view(), &plain)
+    var chunks = Growing[FaceChunk]()
+    defer chunks.close()
+    for chunk in plain.view(): try chunks.push(FaceChunk(source = chunk.source, first = chunk.first, end = chunk.end, corner_first = 0, kept_faces = 0, kept_corners = 0, out_face = 0, out_corner = 0))
+    var keep = try Column[u8].allocate(source_faces)
+    defer keep.release()
+    var source_normals = try Column[Float3].allocate(source_faces)
+    defer source_normals.release()
+    var unset: i32[]
+    var no_normals: Float3[]
+    var work = FaceWork(sources = build.sources.items[..<build.sources.count], chunks = chunks.items[..<chunks.count], positions = build.positions.view(), keep = keep.span(), source_normals = source_normals.span(), normals = no_normals, offsets = unset, corners = unset, triangles = unset, face_source = unset, corner_source = unset)
+    pool.run(chunks.count, sum_chunk, (void*)&work)
+    # Chunk corner starts within each prim.
+    var at: usize = 0
+    while at < chunks.count:
+        var corner: usize = 0
+        let source = chunks.items[at].source
+        while at < chunks.count and chunks.items[at].source == source:
+            let size = chunks.items[at].kept_corners
+            chunks.items[at].corner_first = corner
+            corner += size
+            at += 1
+    pool.run(chunks.count, keep_chunk, (void*)&work)
+    # Output starts: prims in order, chunks in order within each.
+    var faces: usize = 0
+    var corners: usize = 0
+    var dropped: usize = 0
+    var last = build.sources.count
+    for index in 0..<chunks.count:
+        let chunk = &chunks.items[index]
+        if chunk.source != last:
+            last = chunk.source
+            build.sources.items[last].face_base = faces
+            build.sources.items[last].corner_base = corners
+        chunk.out_face = faces
+        chunk.out_corner = corners
+        faces += chunk.kept_faces
+        corners += chunk.kept_corners
+        dropped += (chunk.end - chunk.first) - chunk.kept_faces
+    if dropped > 0:
+        var line = Growing[u8]()
+        defer line.close()
+        try append_count(&line, dropped)
+        for byte in " faces with fewer than 3 corners or no area were dropped".bytes: try line.push(byte)
+        try warnings.add((str)line.view())
+    build.faces = faces
+    build.corner_total = corners
+    build.offsets = try Column[i32].allocate(faces + 1)
+    build.corners = try Column[i32].allocate(corners)
+    build.triangles = try Column[i32].allocate(corners * 3 - faces * 6 if faces > 0 else 0)
+    build.face_source = try Column[i32].allocate(faces)
+    build.corner_source = try Column[i32].allocate(corners)
+    build.normals = try Column[Float3].allocate(faces)
+    work.normals = build.normals.span()
+    work.offsets = build.offsets.span()
+    work.corners = build.corners.span()
+    work.triangles = build.triangles.span()
+    work.face_source = build.face_source.span()
+    work.corner_source = build.corner_source.span()
+    pool.run(chunks.count, write_chunk, (void*)&work)
+    work.offsets[faces] = (i32)corners
+
+## A chunk's corner total (kept_corners holds it until the keep pass).
+func sum_chunk(context: void*?, index: usize):
+    let work = (FaceWork*)(context else return)
+    let chunk = &work.chunks[index]
+    let counts = ints_of(&work.sources[chunk.source].counts)
+    var total: usize = 0
+    for face in chunk.first..<chunk.end: total += (usize)counts[face]
+    chunk.kept_corners = total
+
+## Which of a chunk's faces stay, and how many faces and corners they have.
+func keep_chunk(context: void*?, index: usize):
+    let work = (FaceWork*)(context else return)
+    let chunk = &work.chunks[index]
+    let source = &work.sources[chunk.source]
+    let counts = ints_of(&source.counts)
+    let indices = ints_of(&source.indices)
+    let points = work.positions[source.point_base..<source.point_base + source.point_count]
+    var corner = chunk.corner_first
+    var faces: usize = 0
+    var corners: usize = 0
+    for face in chunk.first..<chunk.end:
+        let count = (usize)counts[face]
+        var kept = false
+        if count >= 3:
+            let area = area_of(points, indices[corner..<corner + count])
+            if area.3:
+                kept = true
+                # Unit normal as geocore's assembly computes it; reversed faces
+                # face the other way.
+                let length = math.sqrt(area.0 * area.0 + area.1 * area.1 + area.2 * area.2)
+                let sign = -1.0 if source.flip else 1.0
+                work.source_normals[source.source_face_base + face] = Float3((f32)(area.0 * sign / length), (f32)(area.1 * sign / length), (f32)(area.2 * sign / length))
+        work.keep[source.source_face_base + face] = 1 if kept else 0
+        if kept:
+            faces += 1
+            corners += count
+        corner += count
+    chunk.kept_faces = faces
+    chunk.kept_corners = corners
+
+## A face's area normal and whether it passes geocore's area test
+## (polygon_triangulation's area_normal on the corner fan from the first
+## point): a finite area normal longer than max(1e-30, extent² * 1e-14).
+func area_of(points: const Float3[], face: const i32[]) -> (f64, f64, f64, bool):
+    let origin = points[(usize)face[0]]
+    let ox = (f64)origin.x
+    let oy = (f64)origin.y
+    let oz = (f64)origin.z
+    var nx: f64 = 0.0
+    var ny: f64 = 0.0
+    var nz: f64 = 0.0
+    var extent2: f64 = 0.0
+    for at in 0..<face.length:
+        let p = points[(usize)face[at]]
+        let q = points[(usize)face[(at + 1) % face.length]]
+        let ax = (f64)p.x - ox
+        let ay = (f64)p.y - oy
+        let az = (f64)p.z - oz
+        let bx = (f64)q.x - ox
+        let by = (f64)q.y - oy
+        let bz = (f64)q.z - oz
+        extent2 = math.max(extent2, ax * ax + ay * ay + az * az)
+        nx += ay * bz - az * by
+        ny += az * bx - ax * bz
+        nz += ax * by - ay * bx
+    let length = math.sqrt(nx * nx + ny * ny + nz * nz)
+    let passes = math.is_finite(length) and math.is_finite(extent2) and length > math.max(1e-30, extent2 * 1e-14)
+    return (nx, ny, nz, passes)
+
+## Write a chunk's kept faces: offsets, corners (reversed after the first
+## for flipped prims), display triangles and the maps back.
+func write_chunk(context: void*?, index: usize):
+    let work = (FaceWork*)(context else return)
+    let chunk = &work.chunks[index]
+    let source = &work.sources[chunk.source]
+    let counts = ints_of(&source.counts)
+    let indices = ints_of(&source.indices)
+    let points = work.positions[source.point_base..<source.point_base + source.point_count]
+    let base = (i32)source.point_base
+    var corner = chunk.corner_first
+    var out_face = chunk.out_face
+    var out_corner = chunk.out_corner
+    for face in chunk.first..<chunk.end:
+        let count = (usize)counts[face]
+        if work.keep[source.source_face_base + face] == 0:
+            corner += count
+            continue
+        work.offsets[out_face] = (i32)out_corner
+        work.face_source[out_face] = (i32)face
+        work.normals[out_face] = work.source_normals[source.source_face_base + face]
+        for k in 0..<count:
+            let taken = corner + (0 if k == 0 else count - k) if source.flip else corner + k
+            work.corners[out_corner + k] = indices[taken] + base
+            work.corner_source[out_corner + k] = (i32)taken
+        let triangles = work.triangles[(out_corner - out_face * 2) * 3..<(out_corner + count - out_face * 2 - 2) * 3]
+        let first = (i32)out_corner
+        if count == 3:
+            triangles[0] = first
+            triangles[1] = first + 1
+            triangles[2] = first + 2
+        elif count == 4:
+            write_quad(work.corners[out_corner..<out_corner + 4], points, base, first, triangles)
+        else:
+            for k in 0..<triangles.length: triangles[k] = -1
+        out_face += 1
+        out_corner += count
+        corner += count
+
+## A quad's two triangles along the diagonal that keeps both facing the
+## quad's normal (either one for a convex quad).
+func write_quad(corners: const i32[], points: const Float3[], base: i32, first: i32, triangles: i32[]):
+    var quad: i32[4] = [corners[0] - base, corners[1] - base, corners[2] - base, corners[3] - base]
+    let normal = area_of(points, quad[..<4])
+    let a = points[(usize)quad[0]]
+    let b = points[(usize)quad[1]]
+    let c = points[(usize)quad[2]]
+    let d = points[(usize)quad[3]]
+    let along_ac = facing(a, b, c, normal) > 0.0 and facing(a, c, d, normal) > 0.0
+    let shift: i32 = 0 if along_ac else 1
+    triangles[0] = first + shift
+    triangles[1] = first + (1 + shift) % 4
+    triangles[2] = first + (2 + shift) % 4
+    triangles[3] = first + shift
+    triangles[4] = first + (2 + shift) % 4
+    triangles[5] = first + (3 + shift) % 4
+
+## The triangle's area normal along `normal`.
+func facing(a: Float3, b: Float3, c: Float3, normal: (f64, f64, f64, bool)) -> f64:
+    let ux = (f64)b.x - (f64)a.x
+    let uy = (f64)b.y - (f64)a.y
+    let uz = (f64)b.z - (f64)a.z
+    let vx = (f64)c.x - (f64)a.x
+    let vy = (f64)c.y - (f64)a.y
+    let vz = (f64)c.z - (f64)a.z
+    return (uy * vz - uz * vy) * normal.0 + (uz * vx - ux * vz) * normal.1 + (ux * vy - uy * vx) * normal.2
+
+## `value` in decimal.
+func append_count(out: Growing[u8]*, value: usize) -> !:
+    var digits: u8[24]
+    var at: usize = 24
+    var rest = value
+    while true:
+        at -= 1
+        digits[at] = (u8)(48 + rest % 10)
+        rest = rest // 10
+        if rest == 0: break
+    for byte in digits[at..]: try out.push(byte)

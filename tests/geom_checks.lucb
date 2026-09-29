@@ -1,0 +1,200 @@
+## UsdGeom reading: xform op stacks (every op kind, inversion, resetting),
+## the walk's visibility, purpose, specifier and instancer-prototype rules,
+## and inherited constant primvars.
+import math
+import memory
+from geocore import Mesh, GeometrySet
+from geocore_kernel import dispose_set, set_mesh, attribute_entry, corner_span, group_bits
+from usd_kernel import ImportOptions, Warnings, import_layer, Names, LayerData, read_usda, read_file, most_bytes, Stage, earliest, gather, Gathered, GprimKind, Matrix4d, local_transform, absolute_root, purpose_render
+
+func near(a: f64, b: f64) -> bool:
+    return math.abs(a - b) < 1e-5
+
+func check_point(matrix: const Matrix4d*, x: f64, y: f64, z: f64, ex: f64, ey: f64, ez: f64):
+    let placed = matrix.point(x, y, z)
+    if not (near(placed.0, ex) and near(placed.1, ey) and near(placed.2, ez)):
+        print(f"placed ({placed.0}, {placed.1}, {placed.2}), expected ({ex}, {ey}, {ez})")
+    assert(near(placed.0, ex) and near(placed.1, ey) and near(placed.2, ez))
+
+pub func transforms() -> !:
+    var buffer: u8[256]
+    let text = try read_file(try format(buffer, f"tests/fixtures/geom/xforms.usda"), most_bytes)
+    defer free(text) in memory.heap
+    var names = try Names()
+    defer names.close()
+    var layer = try LayerData(&names)
+    defer layer.close()
+    try read_usda(text, &layer)
+    var stage = try Stage(&layer, earliest)
+    var found = Gathered()
+    defer found.close()
+    let identity = Matrix4d.identity()
+    try gather(&stage, absolute_root, 1 | purpose_render, &identity, &found)
+    assert(found.gprims.count == 4)
+    let gprims = found.gprims.view()
+    assert(names.name_text(gprims[0].path) == "Quad" and gprims[0].kind == GprimKind.mesh)
+    check_point(&gprims[0].world, 1.0, 0.0, 0.0, 1.0, 4.0, 3.0)
+    check_point(&gprims[0].world, 0.0, 1.0, 0.0, -1.0, 2.0, 3.0)
+    assert(gprims[0].end - gprims[0].first == 1)
+    assert(names.name_text(gprims[1].path) == "Tri")
+    check_point(&gprims[1].world, 1.0, 0.0, 0.0, 6.0, 0.0, 0.0)
+    assert(names.name_text(gprims[2].path) == "Inner")
+    # Local (0, 0, 11), then World: scaled to 22, raised by 3.
+    check_point(&gprims[2].world, 1.0, 0.0, 0.0, 1.0, 2.0, 25.0)
+    assert(names.name_text(gprims[3].path) == "Scatter" and gprims[3].kind == GprimKind.instancer)
+    assert(found.skipped_types.count == 1 and names.text_of(found.skipped_types.items[0]) == "Camera")
+
+## The xform fixture imported: two meshes placed, the empty mesh prim and
+## the instancer left out, the inherited displayColor on the detail.
+pub func imported() -> !:
+    var buffer: u8[256]
+    let text = try read_file(try format(buffer, f"tests/fixtures/geom/xforms.usda"), most_bytes)
+    defer free(text) in memory.heap
+    var names = try Names()
+    defer names.close()
+    var layer = try LayerData(&names)
+    defer layer.close()
+    try read_usda(text, &layer)
+    var warnings = Warnings()
+    defer warnings.close()
+    let options = ImportOptions(time = math.nan, realize = false, purposes = 0, convert_units = false, subdivide_unauthored = true)
+    let set = try import_layer(&layer, &options, &warnings)
+    defer dispose_set(set)
+    let mesh = set_mesh(set) else trap("no mesh")
+    assert(mesh.face_count() == 2 and mesh.point_count() == 7)
+    let second = try mesh.point(1)
+    assert(near(second.x, 1.0) and near(second.y, 4.0) and near(second.z, 3.0))
+    let tri = try mesh.point(5)
+    assert(near(tri.x, 6.0) and near(tri.y, 0.0) and near(tri.z, 0.0))
+    let path = mesh.find_attribute("path", 2)
+    assert(path >= 0)
+    let entry = try attribute_entry(mesh, path)
+    assert(entry.text_at(0) == "/World/Quad" and entry.text_at(1) == "/World/Reset/Tri")
+    let color = mesh.find_attribute("Cd", 3)
+    assert(color >= 0 and near(try mesh.attribute_value(color, 0, 0), 1.0))
+    # The quad says "none"; the triangle's unauthored scheme is Catmull-Clark,
+    # but the quad has more faces... one face each: the first scheme found wins.
+    assert(mesh.find_attribute("subd.scheme", 3) < 0 or near(try mesh.attribute_value(mesh.find_attribute("subd.scheme", 3), 0), 1.0))
+
+## The mesh fixture read at `time` (NaN: startTimeCode).
+func import_meshes_at(at_time: f64, convert_units: bool, check: func(const Mesh*, const GeometrySet*, const Names*) -> unit!) -> !:
+    var buffer: u8[256]
+    let text = try read_file(try format(buffer, f"tests/fixtures/geom/meshes.usda"), most_bytes)
+    defer free(text) in memory.heap
+    var names = try Names()
+    defer names.close()
+    var layer = try LayerData(&names)
+    defer layer.close()
+    try read_usda(text, &layer)
+    var warnings = Warnings()
+    defer warnings.close()
+    let options = ImportOptions(time = at_time, realize = false, purposes = 0, convert_units = convert_units, subdivide_unauthored = true)
+    let set = try import_layer(&layer, &options, &warnings)
+    defer dispose_set(set)
+    let mesh = set_mesh(set) else trap("no mesh")
+    try check(mesh, set, &names)
+    assert(contains((str)warnings.text.view(), "1 faces with fewer than 3 corners or no area were dropped"))
+    assert(contains((str)warnings.text.view(), "different subdivision schemes"))
+
+func contains(text: str, part: str) -> bool:
+    if part.length > text.length: return false
+    for at in 0..<text.length - part.length + 1:
+        if (str)text.bytes[at..<at + part.length] == part: return true
+    return false
+
+func number(mesh: const Mesh*, name: str, domain: i64, element: i64, component: i64) -> f64!:
+    let index = mesh.find_attribute(name, domain)
+    if index < 0:
+        print(f"no attribute {name}")
+        trap("missing attribute")
+    return try mesh.attribute_value(index, element, component)
+
+func text_at(mesh: const Mesh*, name: str, domain: i64, element: usize) -> str!:
+    let index = mesh.find_attribute(name, domain)
+    assert(index >= 0)
+    return (try attribute_entry(mesh, index)).text_at(element)
+
+func in_group(mesh: const Mesh*, name: str, domain: i64, element: usize) -> bool!:
+    let index = mesh.find_attribute(name, domain)
+    assert(index >= 0)
+    return (try group_bits(mesh, index)).get(element)
+
+## Primvars, winding, subsets, subdivision, bindings and paths, at the
+## start time.
+pub func mesh_features() -> !:
+    try import_meshes_at(math.nan, false, check_features)
+
+func check_features(mesh: const Mesh*, set: const GeometrySet*, names: const Names*) -> !:
+    # Left keeps two of its faces; Moving adds one.
+    assert(mesh.face_count() == 3 and mesh.point_count() == 8)
+    let corners = corner_span(mesh)
+    # The left-handed quad reversed after its first corner.
+    assert(corners[0] == 0 and corners[1] == 3 and corners[2] == 2 and corners[3] == 1)
+    assert(corners[7] == 5 and corners[8] == 6 and corners[9] == 7)
+    # faceVarying st follows the reversal.
+    let uv: f64[8] = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0]
+    for corner in 0..<(usize)4:
+        assert(near(try number(mesh, "uv", 1, (i64)corner, 0), uv[corner * 2]) and near(try number(mesh, "uv", 1, (i64)corner, 1), uv[corner * 2 + 1]))
+    # Indexed vertex colors; Moving's points hold zeros.
+    assert(near(try number(mesh, "Cd", 0, 1, 1), 1.0) and near(try number(mesh, "Cd", 0, 4, 0), 1.0) and near(try number(mesh, "Cd", 0, 6, 0), 0.0))
+    assert(near(try number(mesh, "tag", 2, 0, 0), 7.0) and near(try number(mesh, "tag", 2, 1, 0), 8.0) and near(try number(mesh, "tag", 2, 2, 0), 5.0))
+    assert((try text_at(mesh, "path", 2, 0)) == "/Root/Left" and (try text_at(mesh, "path", 2, 2)) == "/Root/Moving")
+    assert((try text_at(mesh, "material", 2, 0)) == "/Root/Looks/Red" and (try text_at(mesh, "material", 2, 1)) == "/Root/Looks/Blue" and (try text_at(mesh, "material", 2, 2)) == "")
+    assert(try in_group(mesh, "top", 2, 1) and not try in_group(mesh, "top", 2, 0))
+    assert(try in_group(mesh, "hole", 2, 1))
+    let rim = try mesh.find_edge(0, 1)
+    assert(rim >= 0 and try in_group(mesh, "rim", 4, (usize)rim))
+    assert(near(try number(mesh, "crease", 4, try mesh.find_edge(1, 2), 0), 2.0) and near(try number(mesh, "crease", 4, try mesh.find_edge(2, 3), 0), 0.0))
+    assert(near(try number(mesh, "corner_sharpness", 0, 3, 0), 10.0))
+    assert(near(try number(mesh, "subd.scheme", 3, 0, 0), 1.0))
+    # Moving at time 1.
+    let moving = try mesh.point(6)
+    assert(near(moving.x, 1.0) and near(moving.z, 0.0))
+    assert(near(try set.detail_value("usd.metersPerUnit"), 0.01) and near(try set.detail_value("usd.time"), 1.0))
+
+## Samples interpolate between times.
+pub func mesh_at_time() -> !:
+    try import_meshes_at(2.0, false, check_time)
+
+func check_time(mesh: const Mesh*, set: const GeometrySet*, names: const Names*) -> !:
+    let moving = try mesh.point(6)
+    assert(near(moving.x, 2.0) and near(moving.y, 0.0) and near(moving.z, 2.0))
+
+## Z-up centimeters converted to Y-up meters.
+pub func mesh_units() -> !:
+    try import_meshes_at(math.nan, true, check_units)
+
+func check_units(mesh: const Mesh*, set: const GeometrySet*, names: const Names*) -> !:
+    let corner = try mesh.point(3)
+    assert(near(corner.x, 0.0) and near(corner.y, 0.0) and near(corner.z, -0.01))
+    assert(near(try set.detail_value("usd.metersPerUnit"), 1.0))
+
+## Intrinsic shapes tessellated, sized and turned onto their axes.
+pub func shapes() -> !:
+    var buffer: u8[256]
+    let text = try read_file(try format(buffer, f"tests/fixtures/geom/shapes.usda"), most_bytes)
+    defer free(text) in memory.heap
+    var names = try Names()
+    defer names.close()
+    var layer = try LayerData(&names)
+    defer layer.close()
+    try read_usda(text, &layer)
+    var warnings = Warnings()
+    defer warnings.close()
+    let options = ImportOptions(time = math.nan, realize = false, purposes = 0, convert_units = false, subdivide_unauthored = false)
+    let set = try import_layer(&layer, &options, &warnings)
+    defer dispose_set(set)
+    let mesh = set_mesh(set) else trap("no mesh")
+    if warnings.text.count > 0: print((str)warnings.text.view())
+    assert(warnings.text.count == 0)
+    # The cube's 8 corners at ±2; its faces face out.
+    let corner = try mesh.point(7)
+    assert(near(corner.x, 2.0) and near(corner.y, 2.0) and near(corner.z, 2.0))
+    let normal = try mesh.face_normal(1)
+    assert(near(normal.z, 1.0))
+    # Every face of every shape faces away from its shape's center.
+    let bounds = try set.bounds()
+    assert(near(bounds.maximum.x, 12.0) and near(bounds.minimum.x, -5.0))
+    assert((try text_at(mesh, "path", 2, 0)) == "/Box")
+    let color = mesh.find_attribute("Cd", 2)
+    assert(color >= 0 and near(try mesh.attribute_value(color, 0, 2), 1.0) and near(try mesh.attribute_value(color, 6, 2), 0.0))

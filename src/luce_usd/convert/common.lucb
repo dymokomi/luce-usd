@@ -1,0 +1,107 @@
+## Stage to GeometrySet conversion, after the mapping in docs/MAPPING.md
+## (design §2): gprims flatten into one component per family, baked to
+## world space, with each element's prim path in the text attribute `path`.
+## This fragment holds the options, warnings and the parallel chunking the
+## others share; meshes.lucb builds the polygon topology, primvars.lucb the
+## attributes, mesh_extras.lucb subsets, subdivision and bindings, and
+## load.lucb the whole import.
+import math
+import memory
+import sync
+import geocore_parallel as pool
+import luce_usd.errors as errors
+from luce_usd.sdf.names import Names, absolute_root, empty_path
+from luce_usd.sdf.layer_data import LayerData, Spec, SpecType
+from luce_usd.sdf.values import Value
+import luce_usd.sdf.value_types as usd_types
+from luce_usd.sdf.value_types import ValueKind, scalar_of, components, element_bytes, find_type
+from luce_usd.stage import Stage, earliest, scalar_number
+from luce_usd.usd_geom import Matrix4d, Gprim, GprimKind, Gathered, gather, component_at
+from geocore import Vector3, Mesh
+from geocore_kernel import Float3, Attribute, AttributeStore, Domain, DataType, Role, TableBuilder, GeometrySet, assembled, put_attribute, mesh_dispose, set_put, set_put_detail, empty_set, dispose_set, mesh_component, BitsBuilder, edge_bits_from_pairs
+from geocore_growing import Growing
+from geocore_shared import Column
+
+## What an import does.
+pub struct ImportOptions:
+    ## The time code values resolve at; NaN for the layer's startTimeCode,
+    ## else each attribute's first sample.
+    pub var time: f64
+    ## Bake instances into the other components ("Flatten everything").
+    pub var realize: bool
+    ## Purposes kept besides default (usd_geom's purpose bits).
+    pub var purposes: u8
+    ## Rotate a Z-up stage to Y-up and scale to meters.
+    pub var convert_units: bool
+    ## Subdivide meshes that author no subdivisionScheme (USD's default is
+    ## Catmull-Clark).
+    pub var subdivide_unauthored: bool
+
+## Messages about what an import left out or changed, one line each,
+## each message once.
+pub struct Warnings:
+    pub var text: Growing[u8]
+
+    pub func init():
+        self.text = Growing[u8]()
+
+    pub mutating func close():
+        self.text.close()
+
+    ## Add `message` unless it is there already.
+    pub mutating func add(message: str) -> !:
+        let held = (str)self.text.view()
+        var start: usize = 0
+        while start < held.length:
+            var end = start
+            while end < held.length and held.bytes[end] != 10: end += 1
+            if (str)held.bytes[start..<end] == message: return
+            start = end + 1
+        for byte in message.bytes: try self.text.push(byte)
+        try self.text.push(10)
+
+    ## Add `message` followed by a path's text.
+    pub mutating func add_path(message: str, names: const Names*, path: u32) -> !:
+        var line = Growing[u8]()
+        defer line.close()
+        for byte in message.bytes: try line.push(byte)
+        try names.write_path(path, &line)
+        try self.add((str)line.view())
+
+## Elements per parallel chunk.
+let grain: usize = 65536
+
+## A piece of one prim's elements for a parallel pass.
+struct Chunk:
+    var source: usize
+    var first: usize
+    var end: usize
+
+## Split `counts[i]` elements of each source into chunks of `grain`.
+func chunks_of(counts: const usize[], out: Growing[Chunk]*) -> !:
+    for source in 0..<counts.length:
+        var first: usize = 0
+        while first < counts[source]:
+            let end = first + grain if counts[source] - first > grain else counts[source]
+            try out.push(Chunk(source = source, first = first, end = end))
+            first = end
+
+## Typed views of a value's packed elements.
+func ints_of(value: const Value*) -> const i32[]:
+    let bytes = value.bytes()
+    return i32[]((i32*)bytes.data, bytes.length // 4)
+
+## Failures a parallel pass records: running out of memory wins over bad
+## data when both happen.
+struct Failures:
+    var exhausted: @bool
+    var invalid: @bool
+
+    mutating func note(code: ErrorCode):
+        if code == memory.exhausted: self.exhausted.store(true)
+        else: self.invalid.store(true)
+
+    ## Fail as recorded, with `message` for bad data.
+    func check(message: str) -> !:
+        if self.exhausted.load(): error(memory.exhausted, "out of memory")
+        if self.invalid.load(): error(errors.invalid, message)

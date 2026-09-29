@@ -1,0 +1,180 @@
+## What a merged mesh carries besides primvars: each face's prim path and
+## bound material (text attributes `path` and `material`), GeomSubsets as
+## groups (usdGeom/subset.cpp; face, point and edge subsets, unioned by
+## name across prims), and subdivision (UsdGeomMesh's scheme, boundary
+## rule, creases, corners and holes; design §2.2).
+
+## Each face's prim path, and its material when any prim binds one.
+func put_paths(stage: Stage*, gathered: const Gathered*, build: const MeshBuild*, subsets: const SubsetMaterials*, mesh: Mesh*) -> !:
+    var values = try Column[i32].allocate(build.faces)
+    defer values.release()
+    let out = values.span()
+    var paths = TableBuilder()
+    defer paths.close()
+    var text = Growing[u8]()
+    defer text.close()
+    var any_material = subsets.faces.count > 0
+    for index in 0..<build.sources.count:
+        let source = &build.sources.items[index]
+        text.clear()
+        try stage.names.write_path(source.path, &text)
+        let at = try paths.intern((str)text.view())
+        for face in source.face_base..<face_end(build, index): out[face] = at
+        any_material = any_material or gathered.gprims.items[source.gprim].material != empty_path
+    try put_text(mesh, "path", build.faces, &paths, out)
+    if not any_material: return
+    var materials = TableBuilder()
+    defer materials.close()
+    discard(try materials.intern(""))
+    for index in 0..<build.sources.count:
+        let source = &build.sources.items[index]
+        let material = gathered.gprims.items[source.gprim].material
+        var at: i32 = 0
+        if material != empty_path:
+            text.clear()
+            try stage.names.write_path(material, &text)
+            at = try materials.intern((str)text.view())
+        for face in source.face_base..<face_end(build, index): out[face] = at
+    for at in 0..<subsets.faces.count:
+        text.clear()
+        try stage.names.write_path(subsets.materials.items[at], &text)
+        out[(usize)subsets.faces.items[at]] = try materials.intern((str)text.view())
+    try put_text(mesh, "material", build.faces, &materials, out)
+
+func put_text(mesh: Mesh*, name: str, faces: usize, table: const TableBuilder*, values: const i32[]) -> !:
+    var column = try table.finish()
+    defer column.release()
+    try put_attribute(mesh, try Attribute.text(name, Domain.face, faces, column, values))
+
+func face_end(build: const MeshBuild*, index: usize) -> usize:
+    return build.sources.items[index + 1].face_base if index + 1 < build.sources.count else build.faces
+
+## Faces subsets bind materials to (output face, material path).
+struct SubsetMaterials:
+    var faces: Growing[i32]
+    var materials: Growing[u32]
+
+    func init():
+        self.faces = Growing[i32]()
+        self.materials = Growing[u32]()
+
+    mutating func close():
+        self.faces.close()
+        self.materials.close()
+
+## A group being built from subsets of that name.
+struct PendingGroup:
+    var name: u32
+    var domain: Domain
+    var bits: Column[u64]
+    ## Edge subsets: global point pairs, resolved once the mesh has edges.
+    var pairs: Growing[i32]
+    var family: u32
+
+## Every mesh prim's GeomSubsets as groups on `mesh`; subsets' material
+## bindings into `materials`.
+func put_subsets(stage: Stage*, build: const MeshBuild*, mesh: Mesh*, materials: SubsetMaterials*, warnings: Warnings*) -> !:
+    var groups = Growing[PendingGroup]()
+    defer close_groups(&groups)
+    let t = stage.tokens
+    for index in 0..<build.sources.count:
+        let source = &build.sources.items[index]
+        let spec = stage.spec(source.path) else continue
+        var output_faces = Growing[i32]()
+        defer output_faces.close()
+        for name in stage.child_names(spec):
+            let path = try stage.names.child(source.path, name)
+            let subset = stage.spec(path) else continue
+            if not stage.is_shown(subset) or stage.type_of(subset) != t.geom_subset: continue
+            let element = try stage.token_value(path, t.element_type, t.face)
+            var indices = try stage.value(path, t.indices)
+            defer indices.release()
+            if indices.kind != ValueKind.int or not indices.array: continue
+            let domain = Domain.face if element == t.face else (Domain.point if element == t.point else Domain.edge)
+            if element != t.face and element != t.point and element != t.edge:
+                try warnings.add_path("Skipped a GeomSubset of an element type geocore has no groups for: ", stage.names, path)
+                continue
+            if domain == Domain.face and output_faces.count == 0: try output_face_map(build, index, &output_faces)
+            let group = try find_group(&groups, name, domain, build)
+            let family = try stage.token_value(path, t.family_name, 0)
+            if family != 0: group.family = family
+            var bound = Growing[u32]()
+            defer bound.close()
+            if domain == Domain.face: try stage.targets(path, t.material_binding, &bound)
+            let words = group.bits.span()
+            let values = ints_of(&indices)
+            match domain:
+                .face:
+                    for at in values:
+                        if at < 0 or (usize)at >= output_faces.count: continue
+                        let face = output_faces.items[(usize)at]
+                        if face < 0: continue
+                        words[(usize)face // 64] = words[(usize)face // 64] | ((u64)1 << (u64)((usize)face % 64))
+                        if bound.count > 0:
+                            try materials.faces.push(face)
+                            try materials.materials.push(bound.items[0])
+                .point:
+                    for at in values:
+                        if at < 0 or (usize)at >= source.point_count: continue
+                        let point = source.point_base + (usize)at
+                        words[point // 64] = words[point // 64] | ((u64)1 << (u64)(point % 64))
+                _:
+                    var at: usize = 0
+                    while at + 1 < values.length:
+                        if values[at] >= 0 and values[at + 1] >= 0 and (usize)values[at] < source.point_count and (usize)values[at + 1] < source.point_count:
+                            try group.pairs.push(values[at] + (i32)source.point_base)
+                            try group.pairs.push(values[at + 1] + (i32)source.point_base)
+                        at += 2
+    for at in 0..<groups.count:
+        try put_group(stage, &groups.items[at], build, mesh)
+
+func close_groups(groups: Growing[PendingGroup]*):
+    for at in 0..<groups.count:
+        groups.items[at].bits.release()
+        groups.items[at].pairs.close()
+    groups.close()
+
+## Each source face's output face (-1 for dropped faces) for prim `index`.
+func output_face_map(build: const MeshBuild*, index: usize, out: Growing[i32]*) -> !:
+    let source = &build.sources.items[index]
+    try out.fill(source.face_count, -1)
+    let face_source = build.face_source.view()
+    for face in source.face_base..<face_end(build, index): out.items[(usize)face_source[face]] = (i32)face
+    if out.count == 0: try out.push(-1)
+
+func find_group(groups: Growing[PendingGroup]*, name: u32, domain: Domain, build: const MeshBuild*) -> PendingGroup*!:
+    for at in 0..<groups.count:
+        if groups.items[at].name == name and groups.items[at].domain == domain: return &groups.items[at]
+    let elements = build.faces if domain == Domain.face else build.points
+    var bits = try Column[u64].allocate((elements + 63) // 64 if domain != Domain.edge else 0)
+    let words = bits.span()
+    if words.length > 0: memory.set(u8[]((u8*)words.data, words.length * 8), 0)
+    groups.push(PendingGroup(name = name, domain = domain, bits = bits, pairs = Growing[i32](), family = 0)) catch failure:
+        bits.release()
+        error(failure.code, failure.message)
+    return &groups.items[groups.count - 1]
+
+func put_group(stage: const Stage*, group: PendingGroup*, build: const MeshBuild*, mesh: Mesh*) -> !:
+    let name = stage.names.text_of(group.name)
+    if group.family != 0:
+        # The subset family, for writing the subsets back.
+        var label = Growing[u8]()
+        defer label.close()
+        for byte in "usd.subset_family.".bytes: try label.push(byte)
+        for byte in name.bytes: try label.push(byte)
+        if label.count <= 64:
+            var family = TableBuilder()
+            defer family.close()
+            let values: i32[1] = [try family.intern(stage.names.text_of(group.family))]
+            var column = try family.finish()
+            defer column.release()
+            try put_attribute(mesh, try Attribute.text((str)label.view(), Domain.detail, 1, column, values[..<1]))
+    if group.domain == Domain.edge:
+        let edges = (usize)(try mesh.edge_count())
+        var bits = try BitsBuilder.zeros(edges)
+        defer bits.close()
+        discard(try edge_bits_from_pairs(mesh, group.pairs.view(), &bits))
+        try put_attribute(mesh, try Attribute.group_of(name, Domain.edge, edges, bits.words()))
+    else:
+        let elements = build.faces if group.domain == Domain.face else build.points
+        try put_attribute(mesh, try Attribute.group_of(name, group.domain, elements, group.bits.view()))

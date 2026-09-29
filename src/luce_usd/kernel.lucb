@@ -81,3 +81,23 @@ pub let read_usdz = usdz.read_usdz
 pub let write_usdz = usdz.write_usdz
 pub let package_entry = usdz.package_entry
 pub type PackageFile = usdz.PackageFile
+import luce_usd.stage as stage
+import luce_usd.usd_geom as usd_geom
+
+pub type Stage = stage.Stage
+pub let earliest = stage.earliest
+pub type Matrix4d = usd_geom.Matrix4d
+pub type LocalTransform = usd_geom.LocalTransform
+pub let local_transform = usd_geom.local_transform
+pub type Gprim = usd_geom.Gprim
+pub type GprimKind = usd_geom.GprimKind
+pub type Gathered = usd_geom.Gathered
+pub let gather = usd_geom.gather
+pub let purpose_render = usd_geom.purpose_render
+pub let purpose_proxy = usd_geom.purpose_proxy
+pub let purpose_guide = usd_geom.purpose_guide
+import luce_usd.convert as convert
+
+pub type ImportOptions = convert.ImportOptions
+pub type Warnings = convert.Warnings
+pub let import_layer = convert.import_layer

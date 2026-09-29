@@ -1,0 +1,113 @@
+## Value resolution at a time, after UsdAttribute::Get and UsdStage's
+## linear interpolation (pxr/usd/usd/stage.cpp, interpolators.h): an
+## attribute with time samples takes the sample at the time, held before the
+## first and after the last, and between two samples interpolates linearly
+## when both are floating point values of one shape (quaternions are
+## normalized after); other values hold the earlier sample. Without samples
+## the default applies. Value blocks resolve to no value.
+
+extend Stage:
+    ## The value of attribute spec `attribute` at the stage's time (empty
+    ## when it has none). The caller releases it.
+    pub func resolve(attribute: const Spec*) -> Value!:
+        if let field = attribute.get(self.keys.time_samples):
+            if let samples = field.time_samples():
+                if samples.count() > 0: return try sample_at(samples, self.time)
+        let found = attribute.get(self.keys.default) else return Value.marker(ValueKind.empty)
+        if found.kind == ValueKind.value_block or found.kind == ValueKind.animation_block: return Value.marker(ValueKind.empty)
+        return found.share()
+
+## The value of `samples` at `time`.
+func sample_at(samples: const TimeSamples*, time: f64) -> Value!:
+    let times = samples.times.view()
+    let values = samples.values.view()
+    var at: usize = 0
+    if time >= times[times.length - 1]: at = times.length - 1
+    elif time > times[0]:
+        var low: usize = 0
+        var high = times.length - 1
+        # times[low] <= time < times[high]
+        while high - low > 1:
+            let middle = (low + high) // 2
+            if times[middle] <= time: low = middle
+            else: high = middle
+        at = low
+        if times[at] != time:
+            let fraction = (time - times[at]) / (times[at + 1] - times[at])
+            if let mixed = try interpolated(&values[at], &values[at + 1], fraction): return mixed
+    return held(&values[at])
+
+func held(value: const Value*) -> Value:
+    if value.kind == ValueKind.value_block or value.kind == ValueKind.animation_block: return Value.marker(ValueKind.empty)
+    return value.share()
+
+## `a` and `b` mixed by `fraction`, when they interpolate.
+func interpolated(a: const Value*, b: const Value*, fraction: f64) -> Value?!:
+    if a.kind != b.kind or a.array != b.array or a.count != b.count: return none
+    let scalar = scalar_of(a.kind)
+    if scalar != ValueKind.half and scalar != ValueKind.float and scalar != ValueKind.double: return none
+    let quaternion = a.kind == ValueKind.quatd or a.kind == ValueKind.quatf or a.kind == ValueKind.quath
+    if scalar == a.kind and not a.array:
+        let mixed = a.as_double() + (b.as_double() - a.as_double()) * fraction
+        match scalar:
+            .double: return Value.scalar(scalar, mixed.bits())
+            .float: return Value.scalar(scalar, (u64)((f32)mixed).bits())
+            _: return Value.scalar(scalar, (u64)((f16)mixed).bits())
+    let left = a.bytes()
+    let right = b.bytes()
+    if left.length != right.length: return none
+    var column = try Column[u8].allocate(left.length)
+    errdefer column.release()
+    let out = column.span()
+    match scalar:
+        .double: mix_doubles(left, right, out, fraction, quaternion)
+        .float: mix_floats(left, right, out, fraction, quaternion)
+        _: mix_halves(left, right, out, fraction, quaternion)
+    if a.array: return Value.of_array(a.kind, a.count, column)
+    return Value(kind = a.kind, array = false, count = a.count, bits = 0, data = column, object = none)
+
+func mix_doubles(left: const u8[], right: const u8[], out: u8[], fraction: f64, quaternion: bool):
+    let count = left.length // 8
+    let a = f64[]((f64*)left.data, count)
+    let b = f64[]((f64*)right.data, count)
+    let c = f64[]((f64*)out.data, count)
+    for at in 0..<count: c[at] = a[at] + (b[at] - a[at]) * fraction
+    if not quaternion: return
+    var at: usize = 0
+    while at + 4 <= count:
+        let length = math.sqrt(c[at] * c[at] + c[at + 1] * c[at + 1] + c[at + 2] * c[at + 2] + c[at + 3] * c[at + 3])
+        if length > 0.0:
+            for k in 0..<(usize)4: c[at + k] = c[at + k] / length
+        at += 4
+
+func mix_floats(left: const u8[], right: const u8[], out: u8[], fraction: f64, quaternion: bool):
+    let count = left.length // 4
+    let a = f32[]((f32*)left.data, count)
+    let b = f32[]((f32*)right.data, count)
+    let c = f32[]((f32*)out.data, count)
+    for at in 0..<count: c[at] = (f32)((f64)a[at] + ((f64)b[at] - (f64)a[at]) * fraction)
+    if not quaternion: return
+    var at: usize = 0
+    while at + 4 <= count:
+        let length = math.sqrt((f64)c[at] * (f64)c[at] + (f64)c[at + 1] * (f64)c[at + 1] + (f64)c[at + 2] * (f64)c[at + 2] + (f64)c[at + 3] * (f64)c[at + 3])
+        if length > 0.0:
+            for k in 0..<(usize)4: c[at + k] = (f32)((f64)c[at + k] / length)
+        at += 4
+
+func mix_halves(left: const u8[], right: const u8[], out: u8[], fraction: f64, quaternion: bool):
+    let count = left.length // 2
+    let a = u16[]((u16*)left.data, count)
+    let b = u16[]((u16*)right.data, count)
+    let c = u16[]((u16*)out.data, count)
+    var mixed: f64[4] = [0.0, 0.0, 0.0, 0.0]
+    var at: usize = 0
+    while at < count:
+        let width: usize = 4 if quaternion and at + 4 <= count else 1
+        var length: f64 = 0.0
+        for k in 0..<width:
+            let x = (f64)f16.bits(a[at + k])
+            mixed[k] = x + ((f64)f16.bits(b[at + k]) - x) * fraction
+            length += mixed[k] * mixed[k]
+        length = math.sqrt(length) if quaternion and length > 0.0 else 1.0
+        for k in 0..<width: c[at + k] = ((f16)(mixed[k] / length)).bits()
+        at += width

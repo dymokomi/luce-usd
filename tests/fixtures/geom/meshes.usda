@@ -1,0 +1,80 @@
+#usda 1.0
+(
+    endTimeCode = 3
+    metersPerUnit = 0.01
+    startTimeCode = 1
+    upAxis = "Z"
+)
+
+def Xform "Root"
+{
+    def Mesh "Left"
+    {
+        uniform token orientation = "leftHanded"
+        int[] faceVertexCounts = [4, 3, 2]
+        int[] faceVertexIndices = [0, 1, 2, 3, 0, 2, 4, 0, 1]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0), (0.5, 2, 0)]
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1), (0, 0), (1, 1), (0.5, 1), (9, 9), (9, 9)] (
+            interpolation = "faceVarying"
+        )
+        color3f[] primvars:displayColor = [(1, 0, 0), (0, 1, 0)] (
+            interpolation = "vertex"
+        )
+        int[] primvars:displayColor:indices = [0, 1, 0, 1, 0]
+        int[] primvars:tag = [7, 8, 9] (
+            interpolation = "uniform"
+        )
+        uniform token subdivisionScheme = "catmullClark"
+        int[] creaseIndices = [0, 1, 2]
+        int[] creaseLengths = [3]
+        float[] creaseSharpnesses = [2]
+        int[] cornerIndices = [3]
+        float[] cornerSharpnesses = [10]
+        int[] holeIndices = [1]
+        rel material:binding = </Root/Looks/Red>
+
+        def GeomSubset "top"
+        {
+            uniform token elementType = "face"
+            uniform token familyName = "materialBind"
+            int[] indices = [1]
+            rel material:binding = </Root/Looks/Blue>
+        }
+
+        def GeomSubset "rim"
+        {
+            uniform token elementType = "edge"
+            int[] indices = [0, 1, 1, 2]
+        }
+    }
+
+    def Mesh "Moving"
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points.timeSamples = {
+            1: [(0, 0, 0), (1, 0, 0), (0, 1, 0)],
+            3: [(2, 0, 0), (3, 0, 0), (2, 1, 0)],
+        }
+        int[] primvars:tag = [5] (
+            interpolation = "uniform"
+        )
+        uniform token subdivisionScheme = "none"
+        float3 xformOp:translate.timeSamples = {
+            1: (0, 0, 0),
+            3: (0, 0, 4),
+        }
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Scope "Looks"
+    {
+        def Material "Red"
+        {
+        }
+
+        def Material "Blue"
+        {
+        }
+    }
+}

@@ -1,0 +1,289 @@
+## Primvars as attributes, after UsdGeomPrimvar (pxr/usd/usdGeom/primvar.cpp)
+## and the mapping in design §2.1: vertex and varying primvars go to
+## points, faceVarying to corners, uniform to faces and constant to the
+## detail; indexed primvars are expanded; displayColor, displayOpacity, st
+## (or the first texCoord2f primvar) and normals become Cd, Alpha, uv and N.
+## Across merged prims one attribute takes the name: prims without it hold
+## zeros, a constant that differs between prims becomes a face attribute,
+## and prims that disagree on the domain meet on the corners.
+
+## One prim's primvar.
+struct PrimvarSource:
+    var source: usize
+    var name: u32
+    var value: Value
+    var indices: Value
+    var domain: Domain
+    var kind: DataType
+    var width: usize
+    var element_size: usize
+    var role: usd_types.Role
+
+    mutating func release():
+        self.value.release()
+        self.indices.release()
+
+## Put every primvar of the merged mesh's prims on `mesh`.
+func put_primvars(stage: Stage*, gathered: const Gathered*, build: const MeshBuild*, mesh: Mesh*, warnings: Warnings*) -> !:
+    var found = Growing[PrimvarSource]()
+    defer release_all(&found)
+    for index in 0..<build.sources.count:
+        try collect_primvars(stage, gathered, build, index, &found, warnings)
+    # One attribute per output name, in first-seen order.
+    var done = Growing[u32]()
+    defer done.close()
+    for at in 0..<found.count:
+        let name = found.items[at].name
+        var seen = false
+        for held in done.view(): seen = seen or held == name
+        if seen: continue
+        try done.push(name)
+        try put_one(stage, build, found.items[at..<found.count], name, mesh, warnings)
+
+func release_all(found: Growing[PrimvarSource]*):
+    for at in 0..<found.count: found.items[at].release()
+    found.close()
+
+## The primvars of mesh source `index`: its own, then the constant ones it
+## inherits and does not author itself.
+func collect_primvars(stage: Stage*, gathered: const Gathered*, build: const MeshBuild*, index: usize, out: Growing[PrimvarSource]*, warnings: Warnings*) -> !:
+    let source = &build.sources.items[index]
+    let spec = stage.spec(source.path) else return
+    let start = out.count
+    var has_uv = false
+    var has_normals = false
+    if let properties = spec.get(stage.keys.properties):
+        for name in properties.ids():
+            let text = stage.names.text_of(name)
+            if text == "normals" or (starts_with(text, "primvars:") and not ends_with(text, ":indices")):
+                let attribute_path = try stage.names.property(source.path, name)
+                if let found = try read_primvar(stage, build, index, attribute_path, text == "normals", warnings):
+                    out.push(found) catch failure:
+                        var dropped = found
+                        dropped.release()
+                        error(failure.code, failure.message)
+    # Name the outputs: st, else the first texCoord2f, is uv; primvars:normals
+    # wins over normals.
+    for at in start..<out.count:
+        let text = stage.names.text_of(out.items[at].name)
+        if text == "primvars:st": has_uv = true
+        if text == "primvars:normals": has_normals = true
+    var at = start
+    while at < out.count:
+        let text = stage.names.text_of(out.items[at].name)
+        var rename = ""
+        if text == "normals":
+            if has_normals:
+                var dropped = out.items[at]
+                dropped.release()
+                out.items[at] = out.items[out.count - 1]
+                out.count -= 1
+                continue
+            rename = "N"
+        elif text == "primvars:normals": rename = "N"
+        elif text == "primvars:displayColor": rename = "Cd"
+        elif text == "primvars:displayOpacity": rename = "Alpha"
+        elif text == "primvars:st": rename = "uv"
+        elif not has_uv and out.items[at].role == usd_types.Role.texture_coordinate and out.items[at].width == 2:
+            rename = "uv"
+            has_uv = true
+        out.items[at].name = try stage.names.token(rename if rename.length > 0 else (str)text.bytes[9..])
+        at += 1
+    # Inherited constants the prim does not author.
+    let gprim = gathered.gprims.items[source.gprim]
+    for inherited in gathered.inherited.items[gprim.first..<gprim.end]:
+        let text = stage.names.name_text(inherited)
+        let own = try stage.names.property(source.path, stage.names.name(inherited))
+        if stage.spec(own) != none: continue
+        if let found = try read_primvar(stage, build, index, inherited, false, warnings):
+            var named = found
+            named.name = try stage.names.token(output_name(text))
+            out.push(named) catch failure:
+                named.release()
+                error(failure.code, failure.message)
+
+func output_name(text: str) -> str:
+    if text == "primvars:displayColor": return "Cd"
+    if text == "primvars:displayOpacity": return "Alpha"
+    if text == "primvars:st": return "uv"
+    if text == "primvars:normals": return "N"
+    return (str)text.bytes[9..]
+
+## A primvar attribute read at the stage's time, checked against the prim's
+## element counts; none (with a warning) when it cannot be used.
+func read_primvar(stage: Stage*, build: const MeshBuild*, index: usize, attribute_path: u32, plain_normals: bool, warnings: Warnings*) -> PrimvarSource?!:
+    let source = &build.sources.items[index]
+    let attribute = stage.spec(attribute_path) else return none
+    if attribute.kind != SpecType.attribute: return none
+    var value = try stage.resolve(attribute)
+    errdefer value.release()
+    if value.kind == ValueKind.empty:
+        return none
+    let typed = data_type(value.kind)
+    if typed == none:
+        value.release()
+        return none
+    let kind = typed else return none
+    var interpolation = stage.tokens.vertex if plain_normals else stage.tokens.constant
+    if let field = attribute.get(stage.tokens.interpolation): interpolation = field.as_token()
+    var element_size: usize = 1
+    if let field = attribute.get(stage.tokens.element_size):
+        if field.as_int() > 1: element_size = (usize)field.as_int()
+    let width = components(value.kind) * element_size if scalar_of(value.kind) != value.kind else element_size
+    let domain = domain_of(stage, interpolation)
+    if width < 1 or width > 4 or (kind == DataType.text and width != 1):
+        try warnings.add_path("Skipped a primvar of more than 4 components per element: ", stage.names, attribute_path)
+        value.release()
+        return none
+    var indices = Value.marker(ValueKind.empty)
+    errdefer indices.release()
+    if not plain_normals:
+        let indices_name = try indices_token(stage, attribute_path)
+        indices = try stage.value(source.path, indices_name)
+    let expected = expected_count(source, domain)
+    let stored = (value.count if value.array else 1)
+    let elements = stored // element_size
+    var usable = stored % element_size == 0
+    if indices.kind == ValueKind.int and indices.array:
+        usable = usable and indices.count == expected
+        for at in ints_of(&indices):
+            usable = usable and at >= 0 and (usize)at < elements
+    else:
+        indices.release()
+        usable = usable and elements == expected
+    if not usable:
+        try warnings.add_path("Skipped a primvar whose size does not fit its interpolation: ", stage.names, attribute_path)
+        value.release()
+        indices.release()
+        return none
+    return PrimvarSource(source = index, name = stage.names.name(attribute_path), value = value, indices = indices, domain = domain, kind = kind, width = width, element_size = element_size, role = find_role(stage, attribute))
+
+func indices_token(stage: Stage*, attribute_path: u32) -> u32!:
+    var text = Growing[u8]()
+    defer text.close()
+    for byte in stage.names.name_text(attribute_path).bytes: try text.push(byte)
+    for byte in ":indices".bytes: try text.push(byte)
+    return try stage.names.token((str)text.view())
+
+## The value type's role (its typeName field's).
+func find_role(stage: const Stage*, attribute: const Spec*) -> usd_types.Role:
+    let field = attribute.get(stage.keys.type_name) else return usd_types.Role.generic
+    let found = find_type(stage.names.text_of(field.as_token())) else return usd_types.Role.generic
+    return found.0.role
+
+func domain_of(stage: const Stage*, interpolation: u32) -> Domain:
+    let t = stage.tokens
+    if interpolation == t.vertex or interpolation == t.varying: return Domain.point
+    if interpolation == t.face_varying: return Domain.corner
+    if interpolation == t.uniform: return Domain.face
+    return Domain.detail
+
+## Elements a primvar of `domain` has on a prim (source counts).
+func expected_count(source: const MeshSource*, domain: Domain) -> usize:
+    match domain:
+        .point: return source.point_count
+        .corner: return source.corner_count
+        .face: return source.face_count
+        _: return 1
+
+## The attribute type a USD value type becomes: floating point to f32
+## (double to f64), integers to i32 or i64, bool to i8, strings and tokens
+## to text; none for the rest.
+func data_type(kind: ValueKind) -> DataType?:
+    match scalar_of(kind):
+        .half, .float: return DataType.float32
+        .double: return DataType.float64
+        .int, .uchar: return DataType.int32
+        .uint, .int64, .uint64: return DataType.int64
+        .boolean: return DataType.int8
+        .string, .token: return DataType.text
+        _: return none
+
+## The attribute `name` from the sources holding it.
+func put_one(stage: Stage*, build: const MeshBuild*, candidates: PrimvarSource[], name: u32, mesh: Mesh*, warnings: Warnings*) -> !:
+    var first: PrimvarSource* = &candidates[0]
+    var kind = first.kind
+    var domain = first.domain
+    var holders: usize = 0
+    var all_constant = true
+    for at in 0..<candidates.length:
+        let candidate = &candidates[at]
+        if candidate.name != name: continue
+        if candidate.width != first.width or (candidate.kind == DataType.text) != (kind == DataType.text):
+            try warnings.add_path("Skipped a primvar whose type differs between merged prims: ", stage.names, build.sources.items[candidate.source].path)
+            candidate.name = 0
+            continue
+        holders += 1
+        kind = wider(kind, candidate.kind)
+        if candidate.domain != domain:
+            domain = Domain.face if (candidate.domain == Domain.face or candidate.domain == Domain.detail) and (domain == Domain.face or domain == Domain.detail) else Domain.corner
+        all_constant = all_constant and candidate.domain == Domain.detail
+    # A constant stays on the detail when one prim holds it, or all hold the
+    # same value; otherwise each face takes its prim's.
+    if all_constant:
+        domain = Domain.detail if holders == build.sources.count and same_constants(candidates, name) else Domain.face
+        if build.sources.count == 1: domain = Domain.detail
+    let text = stage.names.text_of(name)
+    if text.length == 0 or text.length > 64 or text == "P":
+        try warnings.add("Skipped a primvar whose name geocore cannot hold")
+        return
+    try put_attribute(mesh, try made_attribute(stage, build, candidates, name, text, domain, kind, first.width, first.role))
+
+## The attribute `name` filled from its candidates.
+func made_attribute(stage: Stage*, build: const MeshBuild*, candidates: PrimvarSource[], name: u32, text: str, domain: Domain, kind: DataType, width: usize, role: usd_types.Role) -> Attribute!:
+    let elements = element_count(build, domain)
+    var attribute = try Attribute.create(text, domain, kind, width, elements)
+    errdefer attribute.release()
+    let bytes = attribute.data.span()
+    if bytes.length > 0: memory.set(bytes, 0)
+    if let geometry_role = attribute_role(role): attribute.role = geometry_role
+    var table = TableBuilder()
+    defer table.close()
+    if kind == DataType.text: discard(try table.intern(""))
+    for at in 0..<candidates.length:
+        let candidate = &candidates[at]
+        if candidate.name != name: continue
+        try fill_primvar(stage, build, candidate, &attribute, domain, &table)
+    if kind == DataType.text:
+        attribute.table.release()
+        attribute.table = try table.finish()
+    return attribute
+
+func wider(a: DataType, b: DataType) -> DataType:
+    return a if (u8)a >= (u8)b else b
+
+func attribute_role(role: usd_types.Role) -> Role?:
+    match role:
+        .point: return Role.position
+        .normal: return Role.normal
+        .vector: return Role.vector
+        .color: return Role.color
+        .texture_coordinate: return Role.uv
+        _: return none
+
+## Whether every holder of constant `name` stores the same bytes.
+func same_constants(candidates: const PrimvarSource[], name: u32) -> bool:
+    var first = candidates.length
+    for at in 0..<candidates.length:
+        let candidate = &candidates[at]
+        if candidate.name != name: continue
+        if first == candidates.length:
+            first = at
+            continue
+        let held = &candidates[first]
+        if held.value.kind != candidate.value.kind or held.value.bits != candidate.value.bits or (str)held.value.bytes() != (str)candidate.value.bytes(): return false
+        if held.indices.kind != candidate.indices.kind or (str)held.indices.bytes() != (str)candidate.indices.bytes(): return false
+    return true
+
+func element_count(build: const MeshBuild*, domain: Domain) -> usize:
+    match domain:
+        .point: return build.points
+        .corner: return build.corner_total
+        .face: return build.faces
+        _: return 1
+
+func starts_with(text: str, prefix: str) -> bool:
+    return text.length >= prefix.length and (str)text.bytes[..<prefix.length] == prefix
+
+func ends_with(text: str, suffix: str) -> bool:
+    return text.length >= suffix.length and (str)text.bytes[text.length - suffix.length..] == suffix

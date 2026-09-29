@@ -1,0 +1,121 @@
+## A stage over one layer, after OpenUSD's UsdStage and UsdPrim
+## (pxr/usd/usd/stage.cpp, prim.h) without composition: prims are the
+## layer's prim specs, traversed in `primChildren` order, and a property's
+## value is its spec's default or time samples resolved at the stage's time.
+## Composition (M8, M9) will put a prim index behind the same questions.
+import math
+import memory
+import luce_usd.errors as errors
+from luce_usd.sdf.names import Names, absolute_root, empty_path
+from luce_usd.sdf.layer_data import LayerData, Spec, SpecType, FieldKeys
+from luce_usd.sdf.values import Value, ListPart, TimeSamples, specifier_def
+from luce_usd.sdf.value_types import ValueKind, scalar_of
+from luce_usd.geom_tokens import GeomTokens
+from geocore_growing import Growing
+from geocore_shared import Column
+
+## The earliest time: every attribute's first time sample (UsdTimeCode's
+## EarliestTime).
+pub let earliest: f64 = -1.7976931348623157e308
+
+pub struct Stage:
+    pub var layer: const LayerData*
+    pub var names: Names*
+    pub var keys: FieldKeys
+    pub var tokens: GeomTokens
+    ## The time values resolve at: a time code, or `earliest`.
+    pub var time: f64
+
+    ## A stage over `layer` resolving values at `time` (`earliest` for each
+    ## attribute's first sample).
+    pub func init(layer: const LayerData*, time: f64) -> !:
+        self.layer = layer
+        self.names = layer.names
+        self.keys = layer.keys
+        self.tokens = try GeomTokens.of(layer.names)
+        self.time = time
+
+    ## The spec at `path`, when the layer has one.
+    pub func spec(path: u32) -> const Spec*?:
+        let index = self.layer.find(path) else return none
+        return self.layer.spec(index)
+
+    ## The layer metadata field `key` (on the pseudo-root).
+    pub func layer_field(key: u32) -> const Value*?:
+        return self.layer.spec(0).get(key)
+
+    ## The prim children of a prim (or of the root), as name tokens in order.
+    pub func child_names(prim: const Spec*) -> const u32[]:
+        var none_found: u32[]
+        let found = prim.get(self.keys.prim_children) else return none_found
+        return found.ids()
+
+    ## A prim spec's type name token (0 when typeless).
+    pub func type_of(prim: const Spec*) -> u32:
+        let found = prim.get(self.keys.type_name) else return 0
+        return found.as_token()
+
+    ## Whether the prim is defined, concrete and active: what the default
+    ## traversal predicate keeps (UsdPrimDefaultPredicate, less loading).
+    pub func is_shown(prim: const Spec*) -> bool:
+        if prim.kind != SpecType.prim: return false
+        let specifier = prim.get(self.keys.specifier) else return false
+        if specifier.bits != specifier_def: return false
+        if let active = prim.get(self.keys.active):
+            if not active.as_bool(): return false
+        return true
+
+    ## The spec of property `name` of prim `path`.
+    pub func property(path: u32, name: u32) -> const Spec*?!:
+        let property_path = try self.names.property(path, name)
+        let spec = self.spec(property_path) else return none
+        if spec.kind != SpecType.attribute and spec.kind != SpecType.relationship: return none
+        return spec
+
+    ## The resolved value of attribute `name` of prim `path` (empty when it
+    ## has none). The caller releases it.
+    pub func value(path: u32, name: u32) -> Value!:
+        let spec = (try self.property(path, name)) else return Value.marker(ValueKind.empty)
+        return try self.resolve(spec)
+
+    ## A token-valued attribute's token (`fallback` when unauthored).
+    pub func token_value(path: u32, name: u32, fallback: u32) -> u32!:
+        var found = try self.value(path, name)
+        defer found.release()
+        if found.kind != ValueKind.token or found.array: return fallback
+        return found.as_token()
+
+    ## A scalar number attribute as f64 (`fallback` when unauthored).
+    pub func number_value(path: u32, name: u32, fallback: f64) -> f64!:
+        var found = try self.value(path, name)
+        defer found.release()
+        if found.array or found.kind == ValueKind.empty: return fallback
+        return scalar_number(&found) else fallback
+
+    ## An attribute metadata field (interpolation, elementSize): the spec's
+    ## own field.
+    pub func attribute_field(attribute: const Spec*, key: u32) -> const Value*?:
+        return attribute.get(key)
+
+    ## The targets of relationship `name` of prim `path`, absolute, into
+    ## `out` (the explicit items, else prepended then appended).
+    pub func targets(path: u32, name: u32, out: Growing[u32]*) -> !:
+        let spec = (try self.property(path, name)) else return
+        if spec.kind != SpecType.relationship: return
+        let field = spec.get(self.keys.target_paths) else return
+        let list = field.list_op() else return
+        if list.explicit:
+            for item in list.items(ListPart.explicit): try out.push(try self.names.make_absolute((u32)item.a, path))
+            return
+        for item in list.items(ListPart.prepended): try out.push(try self.names.make_absolute((u32)item.a, path))
+        for item in list.items(ListPart.appended): try out.push(try self.names.make_absolute((u32)item.a, path))
+        for item in list.items(ListPart.added): try out.push(try self.names.make_absolute((u32)item.a, path))
+
+## A numeric scalar value as f64.
+pub func scalar_number(value: const Value*) -> f64?:
+    match value.kind:
+        .boolean: return 1.0 if value.bits != 0 else 0.0
+        .uchar, .uint, .uint64: return (f64)value.bits
+        .int, .int64: return (f64)value.as_int()
+        .half, .float, .double, .time_code: return value.as_double()
+        _: return none

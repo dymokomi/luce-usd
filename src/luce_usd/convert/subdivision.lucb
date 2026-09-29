@@ -1,0 +1,143 @@
+## Subdivision surfaces (UsdGeomMesh's subdivisionScheme,
+## interpolateBoundary, creases, corners and holes) as geocore's display
+## attributes: detail subd.scheme (1 Catmull-Clark, 2 Loop, 3 bilinear),
+## subd.level 1 and subd.boundary; edge `crease` and point
+## `corner_sharpness` in USD's own sharpness units; the face group `hole`.
+## A detail holds one scheme for the merged mesh: the one most faces ask for.
+
+func put_subdivision(stage: Stage*, build: const MeshBuild*, mesh: Mesh*, options: const ImportOptions*, warnings: Warnings*) -> !:
+    let t = stage.tokens
+    var faces: usize[4] = [0, 0, 0, 0]
+    var boundary: f64 = 1.0
+    var chosen_boundary = false
+    for index in 0..<build.sources.count:
+        let source = &build.sources.items[index]
+        let scheme_token = try stage.token_value(source.path, t.subdivision_scheme, 0)
+        var scheme: usize = 1 if options.subdivide_unauthored else 0
+        if scheme_token == t.catmull_clark: scheme = 1
+        elif scheme_token == t.loop_scheme: scheme = 2
+        elif scheme_token == t.bilinear: scheme = 3
+        elif scheme_token == t.none_value: scheme = 0
+        faces[scheme] += face_end(build, index) - source.face_base
+        if scheme != 0 and not chosen_boundary:
+            chosen_boundary = true
+            let rule = try stage.token_value(source.path, t.interpolate_boundary, t.edge_and_corner)
+            boundary = 1.0 if rule == t.edge_and_corner else 0.0
+    var scheme: usize = 0
+    for at in 1..<(usize)4:
+        if faces[at] > faces[scheme]: scheme = at
+    var kinds: usize = 0
+    for count in faces:
+        if count > 0: kinds += 1
+    if kinds > 1: try warnings.add("Merged meshes ask for different subdivision schemes; the one most faces use applies")
+    if scheme == 0: return
+    try put_detail_number(mesh, "subd.scheme", (f64)scheme)
+    try put_detail_number(mesh, "subd.level", 1.0)
+    try put_detail_number(mesh, "subd.boundary", boundary)
+    try put_creases(stage, build, mesh, warnings)
+    try put_corners(stage, build, mesh)
+    try put_holes(stage, build, mesh)
+
+func put_detail_number(mesh: Mesh*, name: str, value: f64) -> !:
+    let values: f64[1] = [value]
+    try put_attribute(mesh, try Attribute.from_numbers(name, Domain.detail, 1, values[..<1], true))
+
+## Crease chains as sharpness on the edges between consecutive chain
+## points: one sharpness per chain, or one per edge when there are as many
+## as edges.
+func put_creases(stage: Stage*, build: const MeshBuild*, mesh: Mesh*, warnings: Warnings*) -> !:
+    let t = stage.tokens
+    var pairs = Growing[i32]()
+    defer pairs.close()
+    var sharpness = Growing[f32]()
+    defer sharpness.close()
+    for index in 0..<build.sources.count:
+        let source = &build.sources.items[index]
+        var indices = try stage.value(source.path, t.crease_indices)
+        defer indices.release()
+        var lengths = try stage.value(source.path, t.crease_lengths)
+        defer lengths.release()
+        var values = try stage.value(source.path, t.crease_sharpnesses)
+        defer values.release()
+        if indices.kind != ValueKind.int or lengths.kind != ValueKind.int or not values.array: continue
+        let chain_points = ints_of(&indices)
+        let chains = ints_of(&lengths)
+        var edges: usize = 0
+        for length in chains:
+            if length > 1: edges += (usize)length - 1
+        let per_edge = values.count == edges and values.count != chains.length
+        var at: usize = 0
+        var edge: usize = 0
+        for chain in 0..<chains.length:
+            let length = (usize)math.max(0.0, (f64)chains[chain])
+            if at + length > chain_points.length: break
+            for k in 1..<length:
+                let a = chain_points[at + k - 1]
+                let b = chain_points[at + k]
+                let which = edge if per_edge else chain
+                edge += 1
+                if a < 0 or b < 0 or (usize)a >= source.point_count or (usize)b >= source.point_count or which >= values.count: continue
+                try pairs.push(a + (i32)source.point_base)
+                try pairs.push(b + (i32)source.point_base)
+                try sharpness.push((f32)read_number(values.bytes(), scalar_of(values.kind), which))
+            at += length
+    if sharpness.count == 0: return
+    let edges = (usize)(try mesh.edge_count())
+    var found = Growing[i64]()
+    defer found.close()
+    var missing: usize = 0
+    for at in 0..<sharpness.count:
+        let edge = try mesh.find_edge((i64)pairs.items[at * 2], (i64)pairs.items[at * 2 + 1])
+        if edge < 0: missing += 1
+        try found.push(edge)
+    if missing > 0: try warnings.add("Some creases name edges the mesh does not have; they were dropped")
+    # put_attribute takes the attribute, releasing it when it fails.
+    var attribute = try Attribute.create("crease", Domain.edge, DataType.float32, 1, edges)
+    let out = f32[]((f32*)attribute.data.span().data, edges)
+    for at in 0..<edges: out[at] = 0.0
+    for at in 0..<found.count:
+        let edge = found.items[at]
+        if edge >= 0: out[(usize)edge] = (f32)math.max((f64)out[(usize)edge], (f64)sharpness.items[at])
+    try put_attribute(mesh, attribute)
+
+## Corner sharpness on points.
+func put_corners(stage: Stage*, build: const MeshBuild*, mesh: Mesh*) -> !:
+    let t = stage.tokens
+    var sharpness = Growing[f32]()
+    defer sharpness.close()
+    for index in 0..<build.sources.count:
+        let source = &build.sources.items[index]
+        var indices = try stage.value(source.path, t.corner_indices)
+        defer indices.release()
+        var values = try stage.value(source.path, t.corner_sharpnesses)
+        defer values.release()
+        if indices.kind != ValueKind.int or not values.array or values.count != indices.count or values.count == 0: continue
+        if sharpness.count == 0: try sharpness.fill(build.points, 0.0)
+        let points = ints_of(&indices)
+        for at in 0..<points.length:
+            if points[at] < 0 or (usize)points[at] >= source.point_count: continue
+            sharpness.items[source.point_base + (usize)points[at]] = (f32)read_number(values.bytes(), scalar_of(values.kind), at)
+    if sharpness.count == 0: return
+    # put_attribute takes the attribute, releasing it when it fails.
+    var attribute = try Attribute.create("corner_sharpness", Domain.point, DataType.float32, 1, build.points)
+    memory.copy(f32[]((f32*)attribute.data.span().data, build.points), sharpness.view(), build.points)
+    try put_attribute(mesh, attribute)
+
+## Hole faces as the face group `hole`.
+func put_holes(stage: Stage*, build: const MeshBuild*, mesh: Mesh*) -> !:
+    let t = stage.tokens
+    var bits = try BitsBuilder.zeros(build.faces)
+    defer bits.close()
+    var any = false
+    for index in 0..<build.sources.count:
+        var holes = try stage.value(build.sources.items[index].path, t.hole_indices)
+        defer holes.release()
+        if holes.kind != ValueKind.int or not holes.array or holes.count == 0: continue
+        var faces = Growing[i32]()
+        defer faces.close()
+        try output_face_map(build, index, &faces)
+        for at in ints_of(&holes):
+            if at < 0 or (usize)at >= faces.count or faces.items[(usize)at] < 0: continue
+            bits.set((usize)faces.items[(usize)at])
+            any = true
+    if any: try put_attribute(mesh, try Attribute.group_of("hole", Domain.face, build.faces, bits.words()))

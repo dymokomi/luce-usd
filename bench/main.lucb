@@ -6,15 +6,16 @@
 ## ratios against it: the 837x837 quad grid (702,244 points, 700,569 faces)
 ## with a corner uv, as geocore's bench saves it.
 import time
+import math
 import c
 import files
 import interop
 import memory
 import geocore
 from geocore import Vector3, Mesh, GeometrySet
-from geocore_kernel import save_geometry, load_geometry, adopt_set
+from geocore_kernel import save_geometry, load_geometry, adopt_set, set_mesh, dispose_set
 from geocore_growing import Growing
-from usd_kernel import read_file, most_bytes, Names, LayerData, read_usda, read_usdc, write_usda, write_usdc, read_usdz, write_usdz, PackageFile
+from usd_kernel import ImportOptions, Warnings, import_layer, read_file, most_bytes, Names, LayerData, read_usda, read_usdc, write_usda, write_usdc, read_usdz, write_usdz, PackageFile
 from io import path
 
 ## Where the grid crate goes (a module buffer: error messages and paths
@@ -110,6 +111,14 @@ func usdc_rows(file_path: str) -> !:
     var started = time.now()
     try read_usdc(data, &layer)
     row("usdc: read the grid layer (bytes)", started, data.length)
+    var warnings = Warnings()
+    defer warnings.close()
+    let options = ImportOptions(time = math.nan, realize = false, purposes = 0, convert_units = false, subdivide_unauthored = false)
+    started = time.now()
+    let set = try import_layer(&layer, &options, &warnings)
+    let faces = (set_mesh(set) else trap("no mesh")).face_count()
+    row("import: the grid layer as a GeometrySet (faces)", started, (usize)faces)
+    dispose_set(set)
     var out = Growing[u8]()
     defer out.close()
     started = time.now()

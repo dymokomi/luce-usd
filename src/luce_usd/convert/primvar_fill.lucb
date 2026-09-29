@@ -1,0 +1,130 @@
+## Writing one prim's primvar into the merged attribute: each output element
+## of the prim's range takes the source element its point, face or corner
+## maps to (through the primvar's indices when it has them), converted to
+## the attribute's scalar type.
+
+## Fill `attribute` (on `domain`) from `candidate` over its prim's elements,
+## in parallel chunks.
+func fill_primvar(stage: const Stage*, build: const MeshBuild*, candidate: const PrimvarSource*, attribute: Attribute*, domain: Domain, table: TableBuilder*) -> !:
+    let index = candidate.source
+    let source = &build.sources.items[index]
+    var reader = try ElementReader.of(stage, candidate, table)
+    defer reader.close()
+    var work = FillWork(reader = &reader, writer = ElementWriter(kind = attribute.kind, width = attribute.width, out = attribute.data.span()), build = build, source = source, from_domain = candidate.domain, domain = domain)
+    match domain:
+        .detail: reader.copy(&work.writer, 0, 0)
+        .point: pool.parallel_for(source.point_count, grain, fill_points, (void*)&work)
+        _: pool.parallel_for(face_end(build, index) - source.face_base, grain // 4, fill_faces, (void*)&work)
+
+struct FillWork:
+    var reader: const ElementReader*
+    var writer: ElementWriter
+    var build: const MeshBuild*
+    var source: const MeshSource*
+    var from_domain: Domain
+    var domain: Domain
+
+func fill_points(context: void*?, first: usize, end: usize):
+    let work = (FillWork*)(context else return)
+    let base = work.source.point_base
+    for point in first..<end: work.reader.copy(&work.writer, base + point, point)
+
+## Faces `first..<end` of the prim (output order): the face values, or the
+## corner values of their corners.
+func fill_faces(context: void*?, first: usize, end: usize):
+    let work = (FillWork*)(context else return)
+    let face_source = work.build.face_source.view()
+    let base = work.source.face_base
+    if work.domain == Domain.face:
+        for face in base + first..<base + end:
+            work.reader.copy(&work.writer, face, (usize)face_source[face] if work.from_domain == Domain.face else 0)
+        return
+    let offsets = work.build.offsets.view()
+    let corner_source = work.build.corner_source.view()
+    let prim_indices = ints_of(&work.source.indices)
+    for face in base + first..<base + end:
+        for corner in (usize)offsets[face]..<(usize)offsets[face + 1]:
+            var element: usize = 0
+            match work.from_domain:
+                .corner: element = (usize)corner_source[corner]
+                .point: element = (usize)prim_indices[(usize)corner_source[corner]]
+                .face: element = (usize)face_source[face]
+                _: element = 0
+            work.reader.copy(&work.writer, corner, element)
+
+## Where converted elements go.
+struct ElementWriter:
+    var kind: DataType
+    var width: usize
+    var out: u8[]
+
+## Reads a primvar's elements (through its indices) as numbers or string
+## table indices.
+struct ElementReader:
+    var bytes: const u8[]
+    ## A scalar held in the value's bits, laid out as an array element.
+    var inline: u64
+    var scalar: ValueKind
+    var indices: const i32[]
+    var width: usize
+    ## Table indices of a text primvar's elements.
+    var texts: Growing[i32]
+
+    static func of(stage: const Stage*, candidate: const PrimvarSource*, table: TableBuilder*) -> ElementReader!:
+        var reader = ElementReader(bytes = candidate.value.bytes(), inline = candidate.value.bits, scalar = scalar_of(candidate.value.kind), indices = ints_of(&candidate.indices), width = candidate.width, texts = Growing[i32]())
+        errdefer reader.texts.close()
+        if reader.scalar == ValueKind.string or reader.scalar == ValueKind.token:
+            if candidate.value.array:
+                let bytes = candidate.value.bytes()
+                for token in u32[]((u32*)bytes.data, candidate.value.count): try reader.texts.push(try table.intern(stage.names.text_of(token)))
+            else:
+                try reader.texts.push(try table.intern(stage.names.text_of(candidate.value.as_token())))
+        return reader
+
+    mutating func close():
+        self.texts.close()
+
+    ## Write source element `element` (before its indices) as output
+    ## element `at`.
+    func copy(writer: ElementWriter*, at: usize, element: usize):
+        let taken = (usize)self.indices[element] if self.indices.length > 0 else element
+        if writer.kind == DataType.text:
+            memory.write[i32]((void*)&writer.out[at * 4], self.texts.items[taken])
+            return
+        let bytes = self.bytes if self.bytes.length > 0 else u8[]((u8*)&self.inline, 8)
+        # Same scalar type: the element's bytes as they are.
+        let size = same_size(writer.kind, self.scalar)
+        if size > 0:
+            let length = self.width * size
+            memory.copy(writer.out[at * length..<at * length + length], bytes[taken * length..<taken * length + length], length)
+            return
+        for k in 0..<self.width:
+            let number = read_number(bytes, self.scalar, taken * self.width + k)
+            let slot = at * self.width + k
+            match writer.kind:
+                .float32: memory.write[f32]((void*)&writer.out[slot * 4], (f32)number)
+                .float64: memory.write[f64]((void*)&writer.out[slot * 8], number)
+                .int32: memory.write[i32]((void*)&writer.out[slot * 4], (i32)number)
+                .int64: memory.write[i64]((void*)&writer.out[slot * 8], (i64)number)
+                _: writer.out[slot] = (u8)(i8)number
+
+## The scalar size when `kind` stores `scalar` values unchanged, else 0.
+func same_size(kind: DataType, scalar: ValueKind) -> usize:
+    if kind == DataType.float32 and scalar == ValueKind.float: return 4
+    if kind == DataType.float64 and scalar == ValueKind.double: return 8
+    if kind == DataType.int32 and scalar == ValueKind.int: return 4
+    if kind == DataType.int64 and (scalar == ValueKind.int64 or scalar == ValueKind.uint64): return 8
+    return 0
+
+## Component `at` of packed elements of scalar kind `scalar`, as f64.
+func read_number(bytes: const u8[], scalar: ValueKind, at: usize) -> f64:
+    match scalar:
+        .float: return (f64)memory.read[f32]((void*)&bytes[at * 4])
+        .double: return memory.read[f64]((void*)&bytes[at * 8])
+        .half: return (f64)f16.bits(memory.read[u16]((void*)&bytes[at * 2]))
+        .int: return (f64)memory.read[i32]((void*)&bytes[at * 4])
+        .uint: return (f64)memory.read[u32]((void*)&bytes[at * 4])
+        .int64: return (f64)memory.read[i64]((void*)&bytes[at * 8])
+        .uint64: return (f64)memory.read[u64]((void*)&bytes[at * 8])
+        .uchar, .boolean: return (f64)bytes[at]
+        _: return 0.0

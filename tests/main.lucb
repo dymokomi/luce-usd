@@ -12,6 +12,7 @@ import number_checks
 import usda_checks
 import usdc_checks
 import usdz_checks
+import geom_checks
 
 ## Counts live blocks and fails the allocation after `remaining` more.
 struct Tracker: memory.Allocator:
@@ -110,4 +111,17 @@ pub func main(arguments: str[]) -> i32!:
     try usdz_checks.exercise()
     settle(&tracker, "usdz")
     inject(&tracker, every, usdz_checks.exercise)
+    try geom_checks.transforms()
+    settle(&tracker, "transforms")
+    inject(&tracker, every, geom_checks.transforms)
+    try geom_checks.imported()
+    settle(&tracker, "import")
+    inject(&tracker, every, geom_checks.imported)
+    try geom_checks.mesh_features()
+    try geom_checks.mesh_at_time()
+    try geom_checks.mesh_units()
+    settle(&tracker, "mesh import")
+    inject(&tracker, every, geom_checks.mesh_features)
+    try geom_checks.shapes()
+    settle(&tracker, "shapes")
     return 0

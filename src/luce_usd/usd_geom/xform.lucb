@@ -1,0 +1,134 @@
+## Xform op stacks, after UsdGeomXformable::GetLocalTransformation and
+## UsdGeomXformOp::GetOpTransform (pxr/usd/usdGeom/xformable.cpp,
+## xformOp.cpp): `xformOpOrder` names the ops outermost first, each an
+## attribute `xformOp:<type>[:<suffix>]`, `!invert!` inverts one, and a
+## leading `!resetXformStack!` makes the prim ignore its parents' transform.
+
+## What an op's type part says.
+enum OpType as u8:
+    translate = 0
+    translate_x = 1
+    translate_y = 2
+    translate_z = 3
+    scale = 4
+    scale_x = 5
+    scale_y = 6
+    scale_z = 7
+    rotate_x = 8
+    rotate_y = 9
+    rotate_z = 10
+    rotate_xyz = 11
+    rotate_xzy = 12
+    rotate_yxz = 13
+    rotate_yzx = 14
+    rotate_zxy = 15
+    rotate_zyx = 16
+    orient = 17
+    transform = 18
+
+let op_names: str[19] = ["translate", "translateX", "translateY", "translateZ", "scale", "scaleX", "scaleY", "scaleZ", "rotateX", "rotateY", "rotateZ", "rotateXYZ", "rotateXZY", "rotateYXZ", "rotateYZX", "rotateZXY", "rotateZYX", "orient", "transform"]
+
+## Rotation orders of the three-angle ops: the axes in the order they apply.
+let rotation_orders: usize[18] = [0, 1, 2, 0, 2, 1, 1, 0, 2, 1, 2, 0, 2, 0, 1, 2, 1, 0]
+
+## A prim's local transform and whether it resets the parents' transform.
+pub struct LocalTransform:
+    pub var matrix: Matrix4d
+    pub var resets: bool
+
+## The local transform of prim `path` at the stage's time. Ops whose
+## attribute is missing or holds an unusable value are skipped, as
+## UsdGeomXformable does after reporting them.
+pub func local_transform(stage: Stage*, path: u32) -> LocalTransform!:
+    var order = try stage.value(path, stage.tokens.xform_op_order)
+    defer order.release()
+    var result = LocalTransform(matrix = Matrix4d.identity(), resets = false)
+    if order.kind != ValueKind.token or not order.array or order.count == 0: return result
+    let bytes = order.bytes()
+    let ops = u32[]((u32*)bytes.data, order.count)
+    # Row vectors: the last op applies first, so the product runs from it.
+    var at = ops.length
+    while at > 0:
+        at -= 1
+        let op = ops[at]
+        if op == stage.tokens.reset_xform_stack:
+            if at == 0: result.resets = true
+            continue
+        let matrix = (try op_matrix(stage, path, op)) else continue
+        result.matrix = result.matrix.times(&matrix)
+    return result
+
+## The matrix of one op named by the `xformOpOrder` token `op`.
+func op_matrix(stage: Stage*, path: u32, op: u32) -> Matrix4d?!:
+    var text = stage.names.text_of(op)
+    var invert = false
+    if starts_with(text, "!invert!"):
+        invert = true
+        text = (str)text.bytes[8..]
+    if not starts_with(text, "xformOp:"): return none
+    let rest = text.bytes[8..]
+    var end: usize = 0
+    while end < rest.length and rest[end] != 58: end += 1
+    let kind = op_type((str)rest[..<end]) else return none
+    var value = try stage.value(path, try stage.names.token(text))
+    defer value.release()
+    let matrix = op_value_matrix(kind, &value) else return none
+    if not invert: return matrix
+    return matrix.inverse()
+
+func op_type(text: str) -> OpType?:
+    for at in 0..<op_names.length:
+        if op_names[at] == text: return OpType((u8)at)
+    return none
+
+## The matrix an op's value gives.
+func op_value_matrix(kind: OpType, value: const Value*) -> Matrix4d?:
+    var v: f64[16] = ---
+    let count = value_components(value, v[..<16])
+    match kind:
+        .translate:
+            if count != 3: return none
+            return Matrix4d.translation(v[0], v[1], v[2])
+        .translate_x:
+            if count != 1: return none
+            return Matrix4d.translation(v[0], 0.0, 0.0)
+        .translate_y:
+            if count != 1: return none
+            return Matrix4d.translation(0.0, v[0], 0.0)
+        .translate_z:
+            if count != 1: return none
+            return Matrix4d.translation(0.0, 0.0, v[0])
+        .scale:
+            if count != 3: return none
+            return Matrix4d.scaling(v[0], v[1], v[2])
+        .scale_x:
+            if count != 1: return none
+            return Matrix4d.scaling(v[0], 1.0, 1.0)
+        .scale_y:
+            if count != 1: return none
+            return Matrix4d.scaling(1.0, v[0], 1.0)
+        .scale_z:
+            if count != 1: return none
+            return Matrix4d.scaling(1.0, 1.0, v[0])
+        .rotate_x, .rotate_y, .rotate_z:
+            if count != 1: return none
+            return Matrix4d.rotation((usize)(u8)kind - (usize)(u8)OpType.rotate_x, v[0])
+        .orient:
+            # Stored imaginary first, then real.
+            if count != 4: return none
+            return Matrix4d.quaternion(v[3], v[0], v[1], v[2])
+        .transform:
+            if count != 16: return none
+            return Matrix4d(v)
+        _:
+            if count != 3: return none
+            let first = ((usize)(u8)kind - (usize)(u8)OpType.rotate_xyz) * 3
+            # rotateABC turns about A first: RA * RB * RC for row vectors.
+            var matrix = Matrix4d.rotation(rotation_orders[first], v[rotation_orders[first]])
+            let second = Matrix4d.rotation(rotation_orders[first + 1], v[rotation_orders[first + 1]])
+            let third = Matrix4d.rotation(rotation_orders[first + 2], v[rotation_orders[first + 2]])
+            matrix = matrix.times(&second)
+            return matrix.times(&third)
+
+func starts_with(text: str, prefix: str) -> bool:
+    return text.length >= prefix.length and (str)text.bytes[..<prefix.length] == prefix

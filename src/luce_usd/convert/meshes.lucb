@@ -1,0 +1,262 @@
+## Mesh prims merged into one polygon topology (UsdGeomMesh: points,
+## faceVertexCounts, faceVertexIndices, orientation). Each prim's points are
+## placed by its world transform into one f32 column over an f64 origin;
+## faces keep their prim's order, wound counterclockwise (a left-handed prim
+## or a mirroring transform reverses them, first corner kept). Faces
+## geocore cannot hold are dropped with a warning: fewer than 3 corners, or
+## no area. A prim whose indices do not fit its points is skipped, as USD
+## renderers skip invalid meshes. Every pass over elements runs in parallel
+## chunks.
+
+## One mesh prim's part of the merged mesh.
+struct MeshSource:
+    var gprim: usize
+    var path: u32
+    var world: Matrix4d
+    var flip: bool
+    var points: Value
+    var counts: Value
+    var indices: Value
+    var point_count: usize
+    var face_count: usize
+    var corner_count: usize
+    ## Where its points, source faces, output faces and corners start.
+    var point_base: usize
+    var source_face_base: usize
+    var face_base: usize
+    var corner_base: usize
+    var bad: u8
+
+    mutating func release():
+        self.points.release()
+        self.counts.release()
+        self.indices.release()
+
+## The merged topology and what maps it back to the prims.
+pub struct MeshBuild:
+    var sources: Growing[MeshSource]
+    var origin: Vector3
+    var positions: Column[Float3]
+    var offsets: Column[i32]
+    var corners: Column[i32]
+    var triangles: Column[i32]
+    var normals: Column[Float3]
+    ## Each output face's and corner's index in its prim's own arrays.
+    var face_source: Column[i32]
+    var corner_source: Column[i32]
+    var points: usize
+    var faces: usize
+    var corner_total: usize
+
+    func init():
+        self.sources = Growing[MeshSource]()
+        self.origin = Vector3()
+        self.positions = Column[Float3]()
+        self.offsets = Column[i32]()
+        self.corners = Column[i32]()
+        self.triangles = Column[i32]()
+        self.normals = Column[Float3]()
+        self.face_source = Column[i32]()
+        self.corner_source = Column[i32]()
+        self.points = 0
+        self.faces = 0
+        self.corner_total = 0
+
+    mutating func close():
+        for index in 0..<self.sources.count: self.sources.items[index].release()
+        self.sources.close()
+        self.positions.release()
+        self.offsets.release()
+        self.corners.release()
+        self.triangles.release()
+        self.normals.release()
+        self.face_source.release()
+        self.corner_source.release()
+
+    ## The source whose output faces hold `face`.
+    func source_of_face(face: usize) -> usize:
+        var low: usize = 0
+        var high = self.sources.count
+        while high - low > 1:
+            let middle = (low + high) // 2
+            if self.sources.items[middle].face_base <= face: low = middle
+            else: high = middle
+        return low
+
+## Collect the mesh gprims' topology; `build.sources` is empty when there
+## is nothing to draw.
+func collect_meshes(stage: Stage*, gathered: const Gathered*, warnings: Warnings*, build: MeshBuild*) -> !:
+    let t = stage.tokens
+    for index in 0..<gathered.gprims.count:
+        let gprim = gathered.gprims.items[index]
+        # Meshes, and the intrinsic shapes (cube and after).
+        if gprim.kind != GprimKind.mesh and (u8)gprim.kind < (u8)GprimKind.cube: continue
+        var arrays = try mesh_arrays(stage, &gprim)
+        var points = arrays.0
+        errdefer points.release()
+        var counts = arrays.1
+        errdefer counts.release()
+        var indices = arrays.2
+        errdefer indices.release()
+        let usable = points.array and components(points.kind) == 3 and scalar_of(points.kind) != ValueKind.int and counts.array and counts.kind == ValueKind.int and indices.array and indices.kind == ValueKind.int
+        if not usable or counts.count == 0:
+            if points.array and points.count > 0 and not usable: try warnings.add_path("Skipped a mesh whose points, faceVertexCounts or faceVertexIndices have the wrong type: ", stage.names, gprim.path)
+            points.release()
+            counts.release()
+            indices.release()
+            continue
+        let left = (try stage.token_value(gprim.path, t.orientation, t.right_handed)) == t.left_handed
+        let flip = left != (gprim.world.determinant3() < 0.0)
+        let source = MeshSource(gprim = index, path = gprim.path, world = gprim.world, flip = flip, points = points, counts = counts, indices = indices, point_count = points.count, face_count = counts.count, corner_count = indices.count, point_base = 0, source_face_base = 0, face_base = 0, corner_base = 0, bad = 0)
+        try build.sources.push(source)
+    if build.sources.count == 0: return
+    # Check each prim's counts and indices, in parallel over prims.
+    var check = CheckWork(sources = build.sources.items[..<build.sources.count])
+    pool.run(build.sources.count, check_source, (void*)&check)
+    var kept: usize = 0
+    for index in 0..<build.sources.count:
+        var source = build.sources.items[index]
+        if source.bad != 0:
+            let message = "Skipped a mesh with faces of more than 256 corners: " if source.bad == 2 else "Skipped a mesh whose faceVertexIndices do not match its points and faceVertexCounts: "
+            try warnings.add_path(message, stage.names, source.path)
+            source.release()
+            continue
+        build.sources.items[kept] = source
+        kept += 1
+    build.sources.count = kept
+
+## A mesh prim's points, faceVertexCounts and faceVertexIndices, or an
+## intrinsic gprim's tessellation.
+func mesh_arrays(stage: Stage*, gprim: const Gprim*) -> (Value, Value, Value)!:
+    if gprim.kind != GprimKind.mesh: return try intrinsic_values(stage, gprim)
+    let t = stage.tokens
+    var points = try stage.value(gprim.path, t.points)
+    errdefer points.release()
+    var counts = try stage.value(gprim.path, t.face_vertex_counts)
+    errdefer counts.release()
+    return (points, counts, try stage.value(gprim.path, t.face_vertex_indices))
+
+struct CheckWork:
+    var sources: MeshSource[]
+
+## Counts in 0..=256 summing to the indices, and indices naming points:
+## bad 2 for a face of more than 256 corners, 1 for anything else.
+func check_source(context: void*?, index: usize):
+    let work = (CheckWork*)(context else return)
+    let source = &work.sources[index]
+    var total: usize = 0
+    for count in ints_of(&source.counts):
+        if count < 0:
+            source.bad = 1
+            return
+        if count > 256:
+            source.bad = 2
+            return
+        total += (usize)count
+    if total != source.corner_count:
+        source.bad = 1
+        return
+    let points = (i32)source.point_count
+    for point in ints_of(&source.indices):
+        if point < 0 or point >= points:
+            source.bad = 1
+            return
+
+## Place every prim's points: bounds first for the origin, then the f32
+## positions measured from it.
+func place_points(build: MeshBuild*, origin_hint: Vector3?) -> !:
+    var total: usize = 0
+    var counts = Growing[usize]()
+    defer counts.close()
+    for index in 0..<build.sources.count:
+        build.sources.items[index].point_base = total
+        total += build.sources.items[index].point_count
+        try counts.push(build.sources.items[index].point_count)
+    build.points = total
+    var chunks = Growing[Chunk]()
+    defer chunks.close()
+    try chunks_of(counts.view(), &chunks)
+    var boxes = try Column[Bounds3].allocate(chunks.count)
+    defer boxes.release()
+    var bounds = BoundsWork(sources = build.sources.items[..<build.sources.count], chunks = chunks.view(), boxes = boxes.span())
+    pool.run(chunks.count, bound_chunk, (void*)&bounds)
+    var low = Vector3(math.infinity, math.infinity, math.infinity)
+    var high = Vector3(-math.infinity, -math.infinity, -math.infinity)
+    for box in boxes.view():
+        low = Vector3(math.min(low.x, box.low.x), math.min(low.y, box.low.y), math.min(low.z, box.low.z))
+        high = Vector3(math.max(high.x, box.high.x), math.max(high.y, box.high.y), math.max(high.z, box.high.z))
+    build.origin = origin_hint else origin_for(low, high)
+    build.positions = try Column[Float3].allocate(total)
+    var work = PlaceWork(sources = build.sources.items[..<build.sources.count], chunks = chunks.view(), out = build.positions.span(), origin = build.origin)
+    pool.run(chunks.count, place_chunk, (void*)&work)
+
+struct Bounds3:
+    var low: Vector3
+    var high: Vector3
+
+struct BoundsWork:
+    var sources: const MeshSource[]
+    var chunks: const Chunk[]
+    var boxes: Bounds3[]
+
+## A chunk's placed bounds.
+func bound_chunk(context: void*?, index: usize):
+    let work = (BoundsWork*)(context else return)
+    let chunk = work.chunks[index]
+    let source = &work.sources[chunk.source]
+    let bytes = source.points.bytes()
+    let scalar = scalar_of(source.points.kind)
+    let m = source.world.m
+    var low: f64[3] = [math.infinity, math.infinity, math.infinity]
+    var high: f64[3] = [-math.infinity, -math.infinity, -math.infinity]
+    for point in chunk.first..<chunk.end:
+        let x = component_at(bytes, scalar, point * 3) if scalar != ValueKind.float else (f64)memory.read[f32]((void*)&bytes[point * 12])
+        let y = component_at(bytes, scalar, point * 3 + 1) if scalar != ValueKind.float else (f64)memory.read[f32]((void*)&bytes[point * 12 + 4])
+        let z = component_at(bytes, scalar, point * 3 + 2) if scalar != ValueKind.float else (f64)memory.read[f32]((void*)&bytes[point * 12 + 8])
+        for axis in 0..<(usize)3:
+            let value = x * m[axis] + y * m[4 + axis] + z * m[8 + axis] + m[12 + axis]
+            low[axis] = math.min(low[axis], value)
+            high[axis] = math.max(high[axis], value)
+    work.boxes[index] = Bounds3(low = Vector3(low[0], low[1], low[2]), high = Vector3(high[0], high[1], high[2]))
+
+## geocore's origin rule: the bounds center when coordinates reach past
+## 4096 or past 8 times the model's size, else zero.
+func origin_for(low: Vector3, high: Vector3) -> Vector3:
+    if not (low.x <= high.x): return Vector3()
+    let reach = math.max(math.max(math.max(math.abs(low.x), math.abs(high.x)), math.max(math.abs(low.y), math.abs(high.y))), math.max(math.abs(low.z), math.abs(high.z)))
+    let span = math.max(math.max(high.x - low.x, high.y - low.y), high.z - low.z)
+    if reach > 4096.0 or reach > span * 8.0: return Vector3((low.x + high.x) * 0.5, (low.y + high.y) * 0.5, (low.z + high.z) * 0.5)
+    return Vector3()
+
+struct PlaceWork:
+    var sources: const MeshSource[]
+    var chunks: const Chunk[]
+    var out: Float3[]
+    var origin: Vector3
+
+func place_chunk(context: void*?, index: usize):
+    let work = (PlaceWork*)(context else return)
+    let chunk = work.chunks[index]
+    let source = &work.sources[chunk.source]
+    let bytes = source.points.bytes()
+    let scalar = scalar_of(source.points.kind)
+    let m = source.world.m
+    let o = work.origin
+    # Translation less the origin, in f64, so far-off models keep precision.
+    let tx = m[12] - o.x
+    let ty = m[13] - o.y
+    let tz = m[14] - o.z
+    let out = work.out[source.point_base..]
+    if scalar == ValueKind.float:
+        let values = f32[]((f32*)bytes.data, source.point_count * 3)
+        for point in chunk.first..<chunk.end:
+            let x = (f64)values[point * 3]
+            let y = (f64)values[point * 3 + 1]
+            let z = (f64)values[point * 3 + 2]
+            out[point] = Float3((f32)(x * m[0] + y * m[4] + z * m[8] + tx), (f32)(x * m[1] + y * m[5] + z * m[9] + ty), (f32)(x * m[2] + y * m[6] + z * m[10] + tz))
+        return
+    for point in chunk.first..<chunk.end:
+        let x = component_at(bytes, scalar, point * 3)
+        let y = component_at(bytes, scalar, point * 3 + 1)
+        let z = component_at(bytes, scalar, point * 3 + 2)
+        out[point] = Float3((f32)(x * m[0] + y * m[4] + z * m[8] + tx), (f32)(x * m[1] + y * m[5] + z * m[9] + ty), (f32)(x * m[2] + y * m[6] + z * m[10] + tz))

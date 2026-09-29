@@ -1,0 +1,160 @@
+## The gprims a stage draws, after UsdGeomImageable and UsdImaging's
+## population (pxr/usd/usdGeom/imageable.cpp, xformCache.cpp,
+## primvarsAPI.cpp, usdShade/materialBindingAPI.cpp): a depth-first walk
+## of the defined, active prims, composing world transforms, inheriting
+## purpose, visibility, constant primvars and direct material bindings, and
+## leaving out invisible subtrees, unwanted purposes and the prototypes
+## point instancers place.
+
+## Gprim families this port converts.
+pub enum GprimKind as u8:
+    mesh = 0
+    basis_curves = 1
+    nurbs_curves = 2
+    points = 3
+    instancer = 4
+    cube = 5
+    sphere = 6
+    cylinder = 7
+    cone = 8
+    capsule = 9
+    plane = 10
+
+## Purposes a walk keeps (UsdGeomImageable's purpose tokens), as bits.
+pub let purpose_default: u8 = 1
+pub let purpose_render: u8 = 2
+pub let purpose_proxy: u8 = 4
+pub let purpose_guide: u8 = 8
+
+pub struct Gprim:
+    pub var path: u32
+    pub var kind: GprimKind
+    pub var world: Matrix4d
+    ## The directly bound material's path (empty_path without one).
+    pub var material: u32
+    ## Inherited constant primvars: property paths `inherited[first..<end]`
+    ## of the walk, nearest ancestor last.
+    pub var first: usize
+    pub var end: usize
+
+## What a walk found.
+pub struct Gathered:
+    pub var gprims: Growing[Gprim]
+    pub var inherited: Growing[u32]
+    ## Prims skipped for a type this port does not convert, by type name.
+    pub var skipped_types: Growing[u32]
+
+    pub func init():
+        self.gprims = Growing[Gprim]()
+        self.inherited = Growing[u32]()
+        self.skipped_types = Growing[u32]()
+
+    pub mutating func close():
+        self.gprims.close()
+        self.inherited.close()
+        self.skipped_types.close()
+
+## The walk's state at one prim.
+struct Level:
+    var world: Matrix4d
+    var purpose: u32
+    var material: u32
+
+## Walk the stage from `root` (a prim path, or absolute_root), keeping the
+## purposes in `purposes`, each world transform premultiplied by `base`.
+pub func gather(stage: Stage*, root: u32, purposes: u8, base: const Matrix4d*, out: Gathered*) -> !:
+    var excluded = Growing[u32]()
+    defer excluded.close()
+    try collect_prototypes(stage, absolute_root, &excluded)
+    var inherited = Growing[u32]()
+    defer inherited.close()
+    let top = Level(world = *base, purpose = stage.tokens.default_purpose, material = empty_path)
+    if root == absolute_root:
+        let spec = stage.spec(absolute_root) else return
+        for name in stage.child_names(spec):
+            try walk(stage, try stage.names.child(absolute_root, name), &top, purposes, excluded.view(), &inherited, out)
+    else:
+        try walk(stage, root, &top, purposes, excluded.view(), &inherited, out)
+
+func walk(stage: Stage*, path: u32, parent: const Level*, purposes: u8, excluded: const u32[], inherited: Growing[u32]*, out: Gathered*) -> !:
+    let spec = stage.spec(path) else return
+    if not stage.is_shown(spec): return
+    for skip in excluded:
+        if skip == path: return
+    if (try stage.token_value(path, stage.tokens.visibility, stage.tokens.inherited)) == stage.tokens.invisible: return
+    var level = Level(world = parent.world, purpose = parent.purpose, material = parent.material)
+    # Purpose inherits: a prim with the default purpose takes its parent's.
+    let purpose = try stage.token_value(path, stage.tokens.purpose, stage.tokens.default_purpose)
+    if purpose != stage.tokens.default_purpose: level.purpose = purpose
+    if not wanted(stage, level.purpose, purposes): return
+    let own = try local_transform(stage, path)
+    level.world = own.matrix if own.resets else own.matrix.times(&parent.world)
+    var bound = Growing[u32]()
+    defer bound.close()
+    try stage.targets(path, stage.tokens.material_binding, &bound)
+    if bound.count > 0: level.material = bound.items[0]
+    let type_name = stage.type_of(spec)
+    let mark = inherited.count
+    defer inherited.count = mark
+    if let kind = gprim_kind(stage, type_name):
+        try out.gprims.push(Gprim(path = path, kind = kind, world = level.world, material = level.material, first = out.inherited.count, end = out.inherited.count + inherited.count))
+        for held in inherited.view(): try out.inherited.push(held)
+        # Point instancers draw their prototypes; gprims have no gprim children.
+        return
+    if type_name != 0 and type_name != stage.tokens.xform and type_name != stage.tokens.scope and type_name != stage.tokens.geom_subset and type_name != stage.tokens.material:
+        try note_type(out, type_name)
+    try push_constant_primvars(stage, path, spec, inherited)
+    for name in stage.child_names(spec):
+        try walk(stage, try stage.names.child(path, name), &level, purposes, excluded, inherited, out)
+
+func wanted(stage: const Stage*, purpose: u32, purposes: u8) -> bool:
+    if purpose == stage.tokens.render: return purposes & purpose_render != 0
+    if purpose == stage.tokens.proxy: return purposes & purpose_proxy != 0
+    if purpose == stage.tokens.guide: return purposes & purpose_guide != 0
+    return true
+
+func gprim_kind(stage: const Stage*, type_name: u32) -> GprimKind?:
+    let t = stage.tokens
+    if type_name == t.mesh: return GprimKind.mesh
+    if type_name == t.basis_curves: return GprimKind.basis_curves
+    if type_name == t.nurbs_curves: return GprimKind.nurbs_curves
+    if type_name == t.points_type: return GprimKind.points
+    if type_name == t.point_instancer: return GprimKind.instancer
+    if type_name == t.cube: return GprimKind.cube
+    if type_name == t.sphere: return GprimKind.sphere
+    if type_name == t.cylinder: return GprimKind.cylinder
+    if type_name == t.cone: return GprimKind.cone
+    if type_name == t.capsule: return GprimKind.capsule
+    if type_name == t.plane: return GprimKind.plane
+    return none
+
+func note_type(out: Gathered*, type_name: u32) -> !:
+    for known in out.skipped_types.view():
+        if known == type_name: return
+    try out.skipped_types.push(type_name)
+
+## Constant primvars authored on a non-gprim prim, which its descendant
+## gprims inherit (UsdGeomPrimvarsAPI::FindInheritablePrimvars).
+func push_constant_primvars(stage: Stage*, path: u32, spec: const Spec*, inherited: Growing[u32]*) -> !:
+    let found = spec.get(stage.keys.properties) else return
+    for name in found.ids():
+        let text = stage.names.text_of(name)
+        if not starts_with(text, "primvars:") or ends_with(text, ":indices"): continue
+        let attribute_path = try stage.names.property(path, name)
+        let attribute = stage.spec(attribute_path) else continue
+        if attribute.kind != SpecType.attribute: continue
+        if let interpolation = attribute.get(stage.tokens.interpolation):
+            if interpolation.as_token() != stage.tokens.constant: continue
+        try inherited.push(attribute_path)
+
+## Every prototype a point instancer under `path` names (they are drawn
+## through their instancers only).
+func collect_prototypes(stage: Stage*, path: u32, out: Growing[u32]*) -> !:
+    let spec = stage.spec(path) else return
+    if path != absolute_root and stage.type_of(spec) == stage.tokens.point_instancer:
+        try stage.targets(path, stage.tokens.prototypes, out)
+    for name in stage.child_names(spec):
+        try collect_prototypes(stage, try stage.names.child(path, name), out)
+
+func ends_with(text: str, suffix: str) -> bool:
+    return text.length >= suffix.length and (str)text.bytes[text.length - suffix.length..] == suffix

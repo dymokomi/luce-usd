@@ -1,0 +1,78 @@
+## A layer's stage as one GeometrySet (design §2): the gprims gathered at
+## the chosen time, meshes merged into the mesh component, and the stage's
+## up axis, units and time kept as the set's detail attributes
+## `usd.upAxis`, `usd.metersPerUnit` and `usd.time`.
+
+## The set of `layer`'s stage; what was left out goes to `warnings`.
+pub func import_layer(layer: const LayerData*, options: const ImportOptions*, warnings: Warnings*) -> GeometrySet*!:
+    var stage = try Stage(layer, earliest)
+    let t = stage.tokens
+    var at_time = options.time
+    if math.is_nan(at_time):
+        at_time = earliest
+        if let start = stage.layer_field(stage.keys.start_time_code): at_time = start.as_double()
+    stage.time = at_time
+    let up = up_axis(&stage)
+    var meters: f64 = 0.01
+    if let authored = stage.layer_field(t.meters_per_unit):
+        let found = scalar_number(authored) else 0.01
+        if found > 0.0: meters = found
+    var base = Matrix4d.identity()
+    if options.convert_units:
+        if up == t.z_axis: base = Matrix4d.rotation(0, -90.0)
+        let scale = Matrix4d.scaling(meters, meters, meters)
+        base = base.times(&scale)
+    var gathered = Gathered()
+    defer gathered.close()
+    try gather(&stage, absolute_root, options.purposes, &base, &gathered)
+    for type_name in gathered.skipped_types.view():
+        var line = Growing[u8]()
+        defer line.close()
+        for byte in "Skipped prims of a type this import does not convert: ".bytes: try line.push(byte)
+        for byte in stage.names.text_of(type_name).bytes: try line.push(byte)
+        try warnings.add((str)line.view())
+    let set = try empty_set()
+    errdefer dispose_set(set)
+    # set_put takes the component, closing it when it fails.
+    if let mesh = try import_meshes(&stage, &gathered, options, warnings): try set_put(set, mesh_component(), (void*)mesh)
+    try put_stage_details(set, &stage, up, meters, at_time, options)
+    return set
+
+## The stage's up axis token (Y when unauthored, as UsdGeom's fallback).
+func up_axis(stage: const Stage*) -> u32:
+    let found = stage.layer_field(stage.tokens.up_axis) else return stage.tokens.y_axis
+    let axis = found.as_token()
+    return axis if axis == stage.tokens.z_axis else stage.tokens.y_axis
+
+func put_stage_details(set: GeometrySet*, stage: const Stage*, up: u32, meters: f64, at_time: f64, options: const ImportOptions*) -> !:
+    var axes = TableBuilder()
+    defer axes.close()
+    let axis: i32[1] = [try axes.intern("Y" if options.convert_units else stage.names.text_of(up))]
+    var column = try axes.finish()
+    defer column.release()
+    try set_put_detail(set, try Attribute.text("usd.upAxis", Domain.detail, 1, column, axis[..<1]))
+    let scale: f64[1] = [1.0 if options.convert_units else meters]
+    try set_put_detail(set, try Attribute.from_numbers("usd.metersPerUnit", Domain.detail, 1, scale[..<1], false))
+    if at_time != earliest:
+        let at: f64[1] = [at_time]
+        try set_put_detail(set, try Attribute.from_numbers("usd.time", Domain.detail, 1, at[..<1], false))
+
+## The mesh prims merged into one mesh, or none when there are none.
+func import_meshes(stage: Stage*, gathered: const Gathered*, options: const ImportOptions*, warnings: Warnings*) -> Mesh*?!:
+    var build = MeshBuild()
+    defer build.close()
+    try collect_meshes(stage, gathered, warnings, &build)
+    if build.sources.count == 0: return none
+    try place_points(&build, none)
+    try build_faces(&build, stage, warnings)
+    if build.faces == 0: return none
+    var empty_precise: Column[Vector3]
+    let mesh = try assembled(build.positions.take(), build.origin, build.offsets.share(), build.corners.take(), build.triangles.take(), build.normals.take(), empty_precise)
+    errdefer mesh_dispose(mesh)
+    try put_primvars(stage, gathered, &build, mesh, warnings)
+    var materials = SubsetMaterials()
+    defer materials.close()
+    try put_subsets(stage, &build, mesh, &materials, warnings)
+    try put_paths(stage, gathered, &build, &materials, mesh)
+    try put_subdivision(stage, &build, mesh, options, warnings)
+    return mesh
