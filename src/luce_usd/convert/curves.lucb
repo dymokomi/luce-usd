@@ -56,6 +56,8 @@ func import_curves(stage: Stage*, gathered: const Gathered*, warnings: Warnings*
         let first_point = handles.count // 2
         if gprim.kind == GprimKind.basis_curves:
             try basis_rows(stage, &source, ints_of(&vertex_counts), &rows, &counts, &handles, warnings)
+            # Basis curves have no knots of their own.
+            for _ in 0..<vertex_counts.count: try knot_counts.push(0)
         else:
             try nurbs_rows(stage, &source, ints_of(&vertex_counts), &rows, &counts, &handles, &knots, &knot_counts, &weights, first_point, warnings)
             any_knots = true
