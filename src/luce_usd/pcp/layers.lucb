@@ -1,0 +1,89 @@
+## The layers a composition opens, each once (SdfLayer::FindOrOpen's
+## registry): by identifier, read into LayerData sharing one Names, so
+## paths and tokens compare across layers. A layer that cannot be read is
+## remembered as failed.
+
+## One opened (or failed) layer.
+struct LayerEntry:
+    var identifier: Growing[u8]
+    var layer: LayerData*?
+
+## Every layer a composition has opened.
+pub struct Layers:
+    var names: Names*
+    var entries: Growing[LayerEntry]
+
+    pub func init(names: Names*):
+        self.names = names
+        self.entries = Growing[LayerEntry]()
+
+    pub mutating func close():
+        for at in 0..<self.entries.count:
+            self.entries.items[at].identifier.close()
+            release_layer(self.entries.items[at].layer)
+        self.entries.close()
+
+    pub func count() -> usize:
+        return self.entries.count
+
+    pub func identifier(index: usize) -> str:
+        return (str)self.entries.items[index].identifier.view()
+
+    pub func layer(index: usize) -> const LayerData*:
+        return self.entries.items[index].layer else trap("a failed layer")
+
+    ## The layer `identifier` names, opened now if new; none when it cannot
+    ## be read (running out of memory fails).
+    pub mutating func find_or_open(identifier: str) -> usize?!:
+        for at in 0..<self.entries.count:
+            if (str)self.entries.items[at].identifier.view() == identifier:
+                return at if self.entries.items[at].layer != none else none
+        let storage = try alloc LayerData[1] in memory.heap
+        storage[0] = LayerData(self.names) catch failure:
+            free(storage) in memory.heap
+            error(failure.code, failure.message)
+        let read = readable(identifier, storage.data) catch failure:
+            storage[0].close()
+            free(storage) in memory.heap
+            error(failure.code, failure.message)
+        if not read:
+            storage[0].close()
+            free(storage) in memory.heap
+        var name = Growing[u8]()
+        let opened: LayerData*? = storage.data if read else none
+        name.assign(identifier.bytes) catch failure:
+            name.close()
+            release_layer(opened)
+            error(failure.code, failure.message)
+        self.entries.push(LayerEntry(identifier = name, layer = opened)) catch failure:
+            name.close()
+            release_layer(opened)
+            error(failure.code, failure.message)
+        return self.entries.count - 1 if read else none
+
+    ## The layer's metadata field `key` (on its pseudo-root).
+    pub func field(index: usize, key: u32) -> const Value*?:
+        return self.layer(index).get(0, key)
+
+    ## The layer's time codes per second (framesPerSecond, else 24, when
+    ## unauthored), as SdfLayer::GetTimeCodesPerSecond.
+    pub func time_codes_per_second(index: usize) -> f64:
+        let keys = &self.layer(index).keys
+        if let found = self.field(index, keys.time_codes_per_second): return found.as_double()
+        if let found = self.field(index, keys.frames_per_second): return found.as_double()
+        return 24.0
+
+## Whether the layer file reads; failures other than running out of
+## memory make it unreadable.
+func readable(identifier: str, layer: LayerData*) -> bool!:
+    if not ar.exists(identifier): return false
+    let found = layer_file.read_layer_file(identifier, layer) catch failure:
+        if failure.code == memory.exhausted: error(failure.code, failure.message)
+        return false
+    discard(found)
+    return true
+
+func release_layer(layer: LayerData*?):
+    if let opened = layer:
+        opened.close()
+        free(LayerData[](opened, 1)) in memory.heap

@@ -1,0 +1,162 @@
+## What a prim index composes, after PcpPrimIndex::ComputePrimChildNames,
+## ComputePrimPropertyNames, PcpComputePrimStackForPrimIndex,
+## Pcp_BuildPrimPropertyIndex and PcpComputeRelationshipTargetPaths
+## (pxr/usd/pcp/primIndex.cpp, propertyIndex.cpp, targetIndex.cpp). Names
+## compose weakest node first (a node after its children, weaker children
+## first), and within a node weakest layer first, each name once, primOrder
+## reordering after each layer. Stacks list specs strongest first.
+
+## One spec of a stack: the layer and the path in it.
+pub struct Site:
+    pub var layer: usize
+    pub var path: u32
+
+extend Composer:
+    ## The prim's specs, strongest first.
+    pub mutating func prim_stack(index: const PrimIndex*, out: Growing[Site]*) -> !:
+        out.clear()
+        var order = Growing[u32]()
+        defer order.close()
+        try index.order(&order, true)
+        for node in order.view():
+            let entry = index.node(node)
+            if not entry.contributes(): continue
+            for layer in self.stacks.stack(entry.stack).layers.view():
+                if self.layers.layer(layer).find(entry.path) != none: try out.push(Site(layer = layer, path = entry.path))
+
+    ## The prim's child names (tokens) in order.
+    pub mutating func child_names(index: const PrimIndex*, out: Growing[u32]*) -> !:
+        out.clear()
+        if index.nodes.count > 0: try self.names_at(index, 0, true, out)
+
+    ## The prim's property names in order.
+    pub mutating func property_names(index: const PrimIndex*, out: Growing[u32]*) -> !:
+        out.clear()
+        if index.nodes.count > 0: try self.names_at(index, 0, false, out)
+
+    mutating func names_at(index: const PrimIndex*, node: u32, prims: bool, out: Growing[u32]*) -> !:
+        let entry = index.node(node)
+        if entry.culled: return
+        var at = entry.children.count
+        while at > 0:
+            at -= 1
+            try self.names_at(index, entry.children.items[at], prims, out)
+        if not entry.contributes(): return
+        let layers = self.stacks.stack(entry.stack).layers.view()
+        var position = layers.length
+        while position > 0:
+            position -= 1
+            let data = self.layers.layer(layers[position])
+            let spec = data.find(entry.path) else continue
+            if let found = data.get(spec, data.keys.prim_children if prims else data.keys.properties):
+                for name in found.ids():
+                    var seen = false
+                    for known in out.view(): seen = seen or known == name
+                    if not seen: try out.push(name)
+            if prims:
+                if let order = data.get(spec, data.keys.prim_order): try apply_ordering(out, order.ids())
+
+    ## The specs of property `name` of the prim, strongest first.
+    pub mutating func property_stack(index: const PrimIndex*, name: u32, out: Growing[Site]*) -> !:
+        out.clear()
+        var order = Growing[u32]()
+        defer order.close()
+        try index.order(&order, true)
+        # Specs of another kind than the strongest (attribute or relationship)
+        # are left out (Pcp_PropertyIndexer::_GetPrimProperty).
+        var kind = SpecType.unknown
+        for node in order.view():
+            let entry = index.node(node)
+            if not entry.contributes(): continue
+            let path = try self.names.property(entry.path, name)
+            for layer in self.stacks.stack(entry.stack).layers.view():
+                let data = self.layers.layer(layer)
+                let spec = data.find(path) else continue
+                let found = data.spec(spec).kind
+                if kind == SpecType.unknown: kind = found
+                elif found != kind: continue
+                try out.push(Site(layer = layer, path = path))
+
+    ## A relationship's targets (`connections`: an attribute's connections)
+    ## in the root namespace: each node's opinions applied weakest first,
+    ## relative paths anchored at the property, then mapped to the root.
+    ## `deleted` gets the paths deletes named since the last explicit list.
+    pub mutating func target_paths(index: const PrimIndex*, name: u32, connections: bool, out: Growing[u32]*, deleted: Growing[u32]*) -> !:
+        out.clear()
+        deleted.clear()
+        var order = Growing[u32]()
+        defer order.close()
+        try index.order(&order, true)
+        var items = Growing[ListItem]()
+        defer items.close()
+        var at = order.count
+        while at > 0:
+            at -= 1
+            let node = order.items[at]
+            let entry = index.node(node)
+            if not entry.contributes(): continue
+            var map = try index.map_to_root(self.names, node)
+            defer map.close()
+            let property = try self.names.property(entry.path, name)
+            let layers = self.stacks.stack(entry.stack).layers.view()
+            var position = layers.length
+            while position > 0:
+                position -= 1
+                let data = self.layers.layer(layers[position])
+                let spec = data.find(property) else continue
+                let field = data.get(spec, data.keys.connection_paths if connections else data.keys.target_paths) else continue
+                let list = field.list_op() else continue
+                # Translate this layer's opinion into the root namespace, then apply it.
+                var translated = try ListOp.create()
+                var owner = Value.of_object(ValueKind.path_list_op, (void*)translated)
+                defer owner.release()
+                translated.explicit = list.explicit
+                if list.explicit: deleted.clear()
+                for part in 0..<(usize)6:
+                    for item in list.parts[part].view():
+                        let absolute = try self.names.make_absolute((u32)item.a, property)
+                        let mapped = try map.map(self.names, absolute, false)
+                        if mapped == empty_path: continue
+                        if part == (usize)(u8)ListPart.deleted: try deleted.push(mapped)
+                        try translated.push(ListPart((u8)part), ListItem(a = (u64)mapped, b = 0, offset = 0.0, scale = 1.0, custom = none))
+                try apply_list_op(translated, &items)
+        for item in items.view(): try out.push((u32)item.a)
+
+## SdfApplyListOrdering (SdfListOp's _ReorderKeysHelper): each name of
+## `order` that is present starts a run taking the names after it up to the
+## next ordered one; the runs follow `order`, and names before any ordered
+## one stay first.
+func apply_ordering(names: Growing[u32]*, order: const u32[]) -> !:
+    if order.length == 0 or names.count == 0: return
+    var unique = Growing[u32]()
+    defer unique.close()
+    for name in order:
+        if not contains(unique.view(), name): try unique.push(name)
+    var scratch = Growing[u32]()
+    defer scratch.close()
+    try scratch.assign(names.view())
+    var taken = Growing[bool]()
+    defer taken.close()
+    try taken.fill(scratch.count, false)
+    var tail = Growing[u32]()
+    defer tail.close()
+    for name in unique.view():
+        var start = scratch.count
+        for at in 0..<scratch.count:
+            if scratch.items[at] == name and not taken.items[at]: start = at
+        if start == scratch.count: continue
+        var end = start
+        while true:
+            try tail.push(scratch.items[end])
+            taken.items[end] = true
+            end += 1
+            if end >= scratch.count or contains(unique.view(), scratch.items[end]): break
+    names.clear()
+    for at in 0..<scratch.count:
+        if not taken.items[at]: try names.push(scratch.items[at])
+    for name in tail.view(): try names.push(name)
+
+func contains(names: const u32[], name: u32) -> bool:
+    for known in names:
+        if known == name: return true
+    return false

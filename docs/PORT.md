@@ -43,4 +43,5 @@ Measured with the local driver (docs/PARITY.md) against OpenUSD v26.08.
 | usdc-write (each testenv `.usda` written as `.usdc` by luce-usd, read by usdcat) | 2,020 / 2,056 (layers OpenUSD cannot write as crates either count as agreeing) | splines; path expression anchoring |
 | usdz (testenv `.usdz` usdcat opens) | 51 / 51 byte-identical | |
 | usdz-write (each testenv `.usda` written as `.usdz` by luce-usd) | 2,020 / 2,056 read back identically; 0 fail usdchecker's RootPackageValidator/UsdzPackageValidator | the usdc-write gaps |
+| museum (testPcpMuseum composition results, 151 cases) | 31 / 151 identical to the baselines | variants, inherits, specializes, relocates and instancing (M9); expression variables in asset paths |
 | sdf-parsing (testSdfParsing) | 69 printed as expected, 113 bad files rejected, 8 differ | the same spline and array-edit files; two baselines made with a test plugin's metadata registered |

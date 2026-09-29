@@ -1,0 +1,59 @@
+## Composition (Pcp) against OpenUSD's own museum cases in
+## tests/fixtures/openusd/museum: each case's composition report must be
+## the one OpenUSD prints (after the first line, which names the layer as
+## given on the command line).
+import memory
+from usd_kernel import Names, composition_report, read_file, most_bytes
+from geocore_growing import Growing
+
+## One museum case: its directory, the session layer (or ""), and the
+## prefix of prims whose payloads stay unloaded (or "").
+struct Case:
+    var name: str
+    var session: str
+    var unloaded: str
+
+let cases: Case[7] = [
+    Case(name = "BasicAncestralReference", session = "", unloaded = ""),
+    Case(name = "BasicReferenceDiamond", session = "", unloaded = ""),
+    Case(name = "BasicTimeOffset", session = "", unloaded = ""),
+    Case(name = "TrickyListEditedTargetPaths", session = "", unloaded = ""),
+    Case(name = "SubrootReferenceNonCycle", session = "", unloaded = ""),
+    Case(name = "BasicOwner", session = "session.usda", unloaded = ""),
+    Case(name = "BasicPayloadDiamond", session = "", unloaded = "/RootUnloaded"),
+]
+
+pub func museum() -> !:
+    for case in cases: try check_case(case)
+
+func check_case(case: Case) -> !:
+    var root: u8[256]
+    let root_path = try format(root, f"tests/fixtures/openusd/museum/{case.name}/root.usda")
+    var session: u8[256]
+    let session_path = try format(session, f"tests/fixtures/openusd/museum/{case.name}/{case.session}") if case.session.length > 0 else ""
+    var expected_buffer: u8[256]
+    let expected = try read_file(try format(expected_buffer, f"tests/fixtures/openusd/museum/{case.name}/expected.txt"), most_bytes)
+    defer free(expected) in memory.heap
+    var names = try Names()
+    defer names.close()
+    var report = Growing[u8]()
+    defer report.close()
+    try composition_report(&names, root_path, session_path, case.unloaded, &report)
+    let ours = after_loading((str)report.view())
+    let theirs = after_loading((str)expected)
+    if ours != theirs:
+        print(f"museum case {case.name} composes differently:")
+        print(ours)
+    assert(ours == theirs)
+
+## The report after its "Loading @root@" line.
+func after_loading(text: str) -> str:
+    let marker = "Loading @"
+    var at: usize = 0
+    while at + marker.length <= text.length:
+        if (str)text.bytes[at..<at + marker.length] == marker:
+            var end = at
+            while end < text.length and text.bytes[end] != 10: end += 1
+            return (str)text.bytes[end..]
+        at += 1
+    return text

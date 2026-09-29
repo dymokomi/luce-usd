@@ -103,3 +103,7 @@ pub type Warnings = convert.Warnings
 pub let import_layer = convert.import_layer
 pub type ExportOptions = convert.ExportOptions
 pub let export_set = convert.export_set
+import luce_usd.pcp as pcp
+
+pub type Composer = pcp.Composer
+pub let composition_report = pcp.composition_report

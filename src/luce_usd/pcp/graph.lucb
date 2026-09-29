@@ -1,0 +1,125 @@
+## A prim index's node graph, after PcpPrimIndex_Graph and PcpNodeRef
+## (pxr/usd/pcp/primIndex_Graph.cpp, node.cpp, strengthOrdering.cpp). Each
+## node is a site (a layer stack and a path in it) reached from its parent
+## by an arc. A parent's children are kept strongest first, so the graph's
+## strength order is its depth-first pre-order: siblings compare by arc type,
+## then the namespace depth the arc was introduced at (deeper is stronger),
+## then their origins' strength, then their order among the arcs authored.
+
+pub struct Node:
+    pub var stack: usize
+    pub var path: u32
+    pub var arc: ArcType
+    ## -1 for the root.
+    pub var parent: i32
+    ## The node whose opinion introduced this arc (the parent, for direct arcs).
+    pub var origin: i32
+    pub var children: Growing[u32]
+    ## The arc's position among its origin's arcs of its type.
+    pub var sibling: i32
+    ## Non-variant path elements of the path the arc was introduced at.
+    pub var depth: i32
+    pub var map_to_parent: MapFunction
+    pub var inert: bool
+    pub var culled: bool
+    pub var has_specs: bool
+
+    pub mutating func close():
+        self.children.close()
+        self.map_to_parent.close()
+
+    ## PcpNodeRef::CanContributeSpecs (Usd mode: no permissions).
+    pub func contributes() -> bool:
+        return not self.inert and not self.culled
+
+## The composed index of one prim.
+pub struct PrimIndex:
+    pub var nodes: Growing[Node]
+
+    pub func init():
+        self.nodes = Growing[Node]()
+
+    pub mutating func close():
+        for at in 0..<self.nodes.count: self.nodes.items[at].close()
+        self.nodes.close()
+
+    pub func node(index: u32) -> const Node*:
+        return &self.nodes.items[(usize)index]
+
+    ## The root node alone at `path` of layer stack `stack`.
+    pub static func rooted(stack: usize, path: u32) -> PrimIndex!:
+        var index = PrimIndex()
+        errdefer index.close()
+        try index.nodes.push(Node(stack = stack, path = path, arc = ArcType.root, parent = -1, origin = -1, children = Growing[u32](), sibling = 0, depth = 0, map_to_parent = MapFunction.identity(), inert = false, culled = false, has_specs = false))
+        return index
+
+    ## Nodes strongest first (pre-order), culled subtrees included unless
+    ## `skip_culled`.
+    pub func order(out: Growing[u32]*, skip_culled: bool) -> !:
+        out.clear()
+        if self.nodes.count > 0: try self.visit(0, out, skip_culled)
+
+    func visit(node: u32, out: Growing[u32]*, skip_culled: bool) -> !:
+        if skip_culled and self.nodes.items[(usize)node].culled: return
+        try out.push(node)
+        for child in self.nodes.items[(usize)node].children.view(): try self.visit(child, out, skip_culled)
+
+    ## A node's map to the root's namespace (PcpNodeRef::GetMapToRoot).
+    pub func map_to_root(names: Names*, node: u32) -> MapFunction!:
+        var made = try self.nodes.items[(usize)node].map_to_parent.copy()
+        var at = self.nodes.items[(usize)node].parent
+        while at >= 0:
+            let parent = &self.nodes.items[(usize)at]
+            let composed = parent.map_to_parent.compose(names, &made) catch failure:
+                made.close()
+                error(failure.code, failure.message)
+            made.close()
+            made = composed
+            at = parent.parent
+        return made
+
+    ## Add `node` (taken) as a child of `parent`, among its siblings by
+    ## strength; its index.
+    pub mutating func insert_child(parent: u32, node: Node) -> u32!:
+        var owned = node
+        errdefer owned.close()
+        owned.parent = (i32)parent
+        let index = (u32)self.nodes.count
+        try self.nodes.push(owned)
+        errdefer self.nodes.count -= 1
+        try self.link_child(parent, index)
+        return index
+
+    ## List node `index` among `parent`'s children by strength.
+    pub mutating func link_child(parent: u32, index: u32) -> !:
+        let children = &self.nodes.items[(usize)parent].children
+        var at = children.count
+        while at > 0 and self.compare_siblings(index, children.items[at - 1]) < 0: at -= 1
+        try children.push(index)
+        var move = children.count - 1
+        while move > at:
+            children.items[move] = children.items[move - 1]
+            move -= 1
+        children.items[at] = index
+
+    ## PcpCompareSiblingNodeStrength without specializes: negative when
+    ## `a` is stronger.
+    pub func compare_siblings(a: u32, b: u32) -> i32:
+        let x = &self.nodes.items[(usize)a]
+        let y = &self.nodes.items[(usize)b]
+        if (u8)x.arc != (u8)y.arc: return -1 if (u8)x.arc < (u8)y.arc else 1
+        if x.depth != y.depth: return -1 if x.depth > y.depth else 1
+        if x.origin != y.origin and x.origin >= 0 and y.origin >= 0:
+            let result = self.origin_stronger(0, (u32)x.origin, (u32)y.origin)
+            if result != 0: return result
+        if x.sibling != y.sibling: return -1 if x.sibling < y.sibling else 1
+        return 0
+
+    ## Which of `a` and `b` a pre-order walk from `node` meets first.
+    func origin_stronger(node: u32, a: u32, b: u32) -> i32:
+        if node == a: return -1
+        if node == b: return 1
+        for child in self.nodes.items[(usize)node].children.view():
+            let result = self.origin_stronger(child, a, b)
+            if result != 0: return result
+        return 0

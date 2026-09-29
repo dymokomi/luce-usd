@@ -1,0 +1,46 @@
+## Layers read from files by identifier: a usda, usdc or usdz file (its
+## root layer), or a layer inside a package ("/a/b.usdz[c.usdc]"), each read
+## by its signature whatever its extension says.
+import memory
+import luce_usd.errors as errors
+import luce_usd.source as source
+import luce_usd.sniff as sniff
+import luce_usd.ar as ar
+import luce_usd.usda.reader as usda_reader
+import luce_usd.usdc.reader as usdc_reader
+import luce_usd.usdz.package as usdz
+from luce_usd.sdf.layer_data import LayerData
+
+## Read the layer `identifier` names into `layer`; its serialization.
+pub func read_layer_file(identifier: str, layer: LayerData*) -> sniff.Format!:
+    if let split = ar.package_split(identifier):
+        # The outer file may itself be packaged: read the chain outermost first.
+        var outer = split.0
+        while let deeper = ar.package_split(outer): outer = deeper.0
+        let data = try source.read(outer)
+        defer free(data) in memory.heap
+        let bytes = try entry_of(data, (str)identifier.bytes[outer.length..])
+        return try read_layer_bytes(bytes, layer)
+    let data = try source.read(identifier)
+    defer free(data) in memory.heap
+    return try read_layer_bytes(data, layer)
+
+## The bytes of "[inner]" or "[a.usdz[b]]" within the package `data`.
+func entry_of(data: const u8[], rest: str) -> const u8[]!:
+    if rest.length < 3 or rest.bytes[0] != '[' or rest.bytes[rest.length - 1] != ']': error(errors.invalid, "not a package path")
+    let inner = (str)rest.bytes[1..<rest.length - 1]
+    var bracket = inner.length
+    for at in 0..<inner.length:
+        if inner.bytes[at] == '[' and bracket == inner.length: bracket = at
+    if bracket == inner.length: return try usdz.package_entry(data, inner)
+    let nested = try usdz.package_entry(data, (str)inner.bytes[..<bracket])
+    return try entry_of(nested, (str)inner.bytes[bracket..])
+
+## Read a layer from its bytes by their signature; the serialization.
+pub func read_layer_bytes(data: const u8[], layer: LayerData*) -> sniff.Format!:
+    let found = try sniff.detect(data[..<(data.length if data.length < 8 else 8)])
+    match found:
+        .usdc: try usdc_reader.read_usdc(data, layer)
+        .usdz: try usdz.read_usdz(data, layer)
+        _: try usda_reader.read_usda(data, layer)
+    return found

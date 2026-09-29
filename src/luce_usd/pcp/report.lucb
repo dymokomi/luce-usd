@@ -1,0 +1,292 @@
+## Composition results printed as OpenUSD's testPcpCompositionResults.py
+## prints them (pxr/usd/pcp/testenv), the museum cases' baselines: the
+## layer stack, then every prim depth first with its prim stack, time
+## offsets, child and property names, property stacks, relationship
+## targets and attribute connections. Layers are labelled relative to the
+## root layer's directory.
+
+## Print the composition of the layer at `root` (as given on a command
+## line; `session` too, or "") into `out`, leaving unloaded the payloads of
+## prims whose path starts with `unloaded` (unless it is "").
+pub func composition_report(names: Names*, root: str, session: str, unloaded: str, out: Growing[u8]*) -> !:
+    var root_id = Growing[u8]()
+    defer root_id.close()
+    try ar.absolute(root, &root_id)
+    var session_id = Growing[u8]()
+    defer session_id.close()
+    if session.length > 0:
+        try ar.absolute(session, &session_id)
+        try put(out, "Loading session @")
+        try put(out, session)
+        try put(out, "@\n\n")
+    try put(out, "Loading @")
+    try put(out, root)
+    try put(out, "@\n\n")
+    var composer = try Composer(names, (str)root_id.view(), (str)session_id.view())
+    defer composer.close()
+    if unloaded.length > 0: try composer.exclude_payloads(unloaded)
+    let base = ar.directory_of((str)root_id.view())
+    try rule(out)
+    try put(out, "Layer Stack:\n")
+    for layer in composer.stacks.stack(composer.root_stack).layers.view():
+        try put(out, "     ")
+        try label(out, composer.layers.identifier(layer), base)
+        try put(out, "\n")
+    try put(out, "\n")
+    var pending = Growing[u32]()
+    defer pending.close()
+    var children = Growing[u32]()
+    defer children.close()
+    try composer.child_names(try composer.index(absolute_root), &children)
+    var at = children.count
+    while at > 0:
+        at -= 1
+        try pending.push(try names.child(absolute_root, children.items[at]))
+    while pending.count > 0:
+        let path = pending.items[pending.count - 1]
+        pending.count -= 1
+        try report_prim(&composer, path, base, out, &pending)
+
+func report_prim(composer: Composer*, path: u32, base: str, out: Growing[u8]*, pending: Growing[u32]*) -> !:
+    let names = composer.names
+    let index = try composer.index(path)
+    try rule(out)
+    try put(out, "Results for composing <")
+    try names.write_path(path, out)
+    try put(out, ">\n")
+    var sites = Growing[Site]()
+    defer sites.close()
+    try composer.prim_stack(index, &sites)
+    try put(out, "\nPrim Stack:\n")
+    for site in sites.view(): try site_line(composer, out, site, base)
+    try time_offsets(composer, index, base, out)
+    var children = Growing[u32]()
+    defer children.close()
+    try composer.child_names(index, &children)
+    var at = children.count
+    while at > 0:
+        at -= 1
+        try pending.push(try names.child(path, children.items[at]))
+    if children.count > 0:
+        try put(out, "\nChild names:\n     ")
+        try name_list(names, children.view(), out)
+    var properties = Growing[u32]()
+    defer properties.close()
+    try composer.property_names(index, &properties)
+    if properties.count > 0:
+        try put(out, "\nProperty names:\n     ")
+        try name_list(names, properties.view(), out)
+    # Property stacks, targets and connections, by property path.
+    var sorted = Growing[u32]()
+    defer sorted.close()
+    try sorted.assign(properties.view())
+    sort_names(names, &sorted)
+    var stack = Growing[Site]()
+    defer stack.close()
+    var first = true
+    var relationships = Growing[u32]()
+    defer relationships.close()
+    var attributes = Growing[u32]()
+    defer attributes.close()
+    for name in sorted.view():
+        try composer.property_stack(index, name, &stack)
+        if stack.count == 0: continue
+        if first:
+            try put(out, "\nProperty stacks:\n")
+            first = false
+        try names.write_path(try names.property(path, name), out)
+        try put(out, ":\n")
+        for site in stack.view(): try site_line(composer, out, site, base)
+        let strongest = composer.layers.layer(stack.items[0].layer)
+        let spec = strongest.find(stack.items[0].path) else continue
+        if strongest.spec(spec).kind == SpecType.relationship: try relationships.push(name)
+        else: try attributes.push(name)
+    try target_section(composer, index, path, relationships.view(), false, "\nRelationship targets:\n", out)
+    try target_section(composer, index, path, attributes.view(), true, "\nAttribute connections:\n", out)
+    # Deleted paths of both, by property path.
+    var all = Growing[u32]()
+    defer all.close()
+    try all.assign(relationships.view())
+    for name in attributes.view(): try all.push(name)
+    sort_names(names, &all)
+    try deleted_section(composer, index, path, all.view(), relationships.view(), out)
+    try put(out, "\n")
+
+## Each property's targets (or connections), when any has some.
+func target_section(composer: Composer*, index: const PrimIndex*, path: u32, properties: const u32[], connections: bool, heading: str, out: Growing[u8]*) -> !:
+    var targets = Growing[u32]()
+    defer targets.close()
+    var deleted = Growing[u32]()
+    defer deleted.close()
+    var first = true
+    for name in properties:
+        try composer.target_paths(index, name, connections, &targets, &deleted)
+        if targets.count == 0: continue
+        if first:
+            try put(out, heading)
+            first = false
+        try composer.names.write_path(try composer.names.property(path, name), out)
+        try put(out, ":\n")
+        for target in targets.view():
+            try put(out, "    ")
+            try composer.names.write_path(target, out)
+            try put(out, "\n")
+
+## The "Time Offsets" section, when a node or layer has an offset.
+func time_offsets(composer: Composer*, index: const PrimIndex*, base: str, out: Growing[u8]*) -> !:
+    var order = Growing[u32]()
+    defer order.close()
+    try index.order(&order, true)
+    var any = false
+    for node in order.view():
+        let entry = index.node(node)
+        any = any or not entry.map_to_parent.offset.is_identity() or composer.stacks.stack(entry.stack).has_offsets()
+    if not any: return
+    try put(out, "\nTime Offsets:\n")
+    for node in order.view():
+        let entry = index.node(node)
+        let stack = composer.stacks.stack(entry.stack)
+        var map = try index.map_to_root(composer.names, node)
+        defer map.close()
+        try put(out, "    ")
+        var text = Growing[u8]()
+        defer text.close()
+        try label(&text, composer.layers.identifier(stack.layers.items[0]), base)
+        try padded(out, (str)text.view(), 20)
+        try put(out, " ")
+        text.clear()
+        try composer.names.write_path(entry.path, &text)
+        try padded(out, (str)text.view(), 15)
+        try put(out, " ")
+        try padded(out, arc_name(entry.arc), 10)
+        try offset_text(out, map.offset)
+        for at in 0..<stack.layers.count:
+            if stack.offsets.items[at].is_identity(): continue
+            try put(out, "        ")
+            text.clear()
+            try label(&text, composer.layers.identifier(stack.layers.items[at]), base)
+            try padded(out, (str)text.view(), 32)
+            try put(out, " ")
+            try padded(out, "sublayer", 10)
+            try offset_text(out, stack.offsets.items[at])
+
+func offset_text(out: Growing[u8]*, offset: Offset) -> !:
+    try put(out, " (offset=")
+    try fixed2(out, offset.offset)
+    try put(out, ", scale=")
+    try fixed2(out, offset.scale)
+    try put(out, ")\n")
+
+## `value` with two decimals, as "%.2f".
+func fixed2(out: Growing[u8]*, value: f64) -> !:
+    var hundredths = math.round(math.abs(value) * 100.0)
+    if value < 0.0 and hundredths != 0.0: try out.push('-')
+    let whole = (u64)(hundredths / 100.0)
+    let fraction = (u64)hundredths - whole * 100
+    try put_number(out, whole)
+    try out.push('.')
+    try out.push((u8)(48 + fraction // 10))
+    try out.push((u8)(48 + fraction % 10))
+
+func put_number(out: Growing[u8]*, value: u64) -> !:
+    var digits: u8[24]
+    var at: usize = 24
+    var rest = value
+    while true:
+        at -= 1
+        digits[at] = (u8)(48 + rest % 10)
+        rest = rest // 10
+        if rest == 0: break
+    for byte in digits[at..]: try out.push(byte)
+
+## '    %-20s %s' of a spec's layer and path.
+func site_line(composer: Composer*, out: Growing[u8]*, site: Site, base: str) -> !:
+    var text = Growing[u8]()
+    defer text.close()
+    try label(&text, composer.layers.identifier(site.layer), base)
+    try put(out, "    ")
+    try padded(out, (str)text.view(), 20)
+    try put(out, " ")
+    try composer.names.write_path(site.path, out)
+    try put(out, "\n")
+
+## A Python list of names: ['a', 'b'].
+func name_list(names: const Names*, list: const u32[], out: Growing[u8]*) -> !:
+    try out.push('[')
+    for at in 0..<list.length:
+        if at > 0: try put(out, ", ")
+        try out.push(39)
+        try put(out, names.text_of(list[at]))
+        try out.push(39)
+    try put(out, "]\n")
+
+## Sort name tokens by their text.
+func sort_names(names: const Names*, list: Growing[u32]*):
+    for at in 1..<list.count:
+        var move = at
+        while move > 0 and text_less(names.text_of(list.items[move]), names.text_of(list.items[move - 1])):
+            let swap = list.items[move]
+            list.items[move] = list.items[move - 1]
+            list.items[move - 1] = swap
+            move -= 1
+
+## A layer's identifier relative to `base` (os.path.relpath).
+func label(out: Growing[u8]*, identifier: str, base: str) -> !:
+    # Common leading directories, then ".." for each of base's that remain.
+    var common: usize = 0
+    var at: usize = 0
+    while at < identifier.length and at < base.length and identifier.bytes[at] == base.bytes[at]:
+        at += 1
+        if at == base.length or identifier.bytes[at - 1] == '/': common = at
+    if at == base.length and at < identifier.length and identifier.bytes[at] == '/':
+        try put(out, (str)identifier.bytes[at + 1..])
+        return
+    var ups: usize = 0
+    for byte in base.bytes[common..]:
+        if byte == '/': ups += 1
+    if common < base.length: ups += 1
+    for _ in 0..<ups: try put(out, "../")
+    try put(out, (str)identifier.bytes[common..])
+
+func padded(out: Growing[u8]*, text: str, width: usize) -> !:
+    try put(out, text)
+    var count = text.length
+    while count < width:
+        try out.push(' ')
+        count += 1
+
+func rule(out: Growing[u8]*) -> !:
+    for _ in 0..<(usize)72: try out.push('-')
+    try out.push(10)
+
+func put(out: Growing[u8]*, text: str) -> !:
+    for byte in text.bytes: try out.push(byte)
+
+## Byte order of two texts (TfToken's <).
+func text_less(a: str, b: str) -> bool:
+    let count = a.length if a.length < b.length else b.length
+    for at in 0..<count:
+        if a.bytes[at] != b.bytes[at]: return a.bytes[at] < b.bytes[at]
+    return a.length < b.length
+
+## "Deleted target paths" of relationships and attributes, when any.
+func deleted_section(composer: Composer*, index: const PrimIndex*, path: u32, properties: const u32[], relationships: const u32[], out: Growing[u8]*) -> !:
+    var targets = Growing[u32]()
+    defer targets.close()
+    var deleted = Growing[u32]()
+    defer deleted.close()
+    var first = true
+    for name in properties:
+        var relationship = false
+        for known in relationships: relationship = relationship or known == name
+        try composer.target_paths(index, name, not relationship, &targets, &deleted)
+        if deleted.count == 0: continue
+        if first:
+            try put(out, "\nDeleted target paths:\n")
+            first = false
+        try composer.names.write_path(try composer.names.property(path, name), out)
+        try put(out, ":\n")
+        for target in deleted.view():
+            try put(out, "    ")
+            try composer.names.write_path(target, out)
+            try put(out, "\n")

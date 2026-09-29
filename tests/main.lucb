@@ -13,6 +13,7 @@ import usda_checks
 import usdc_checks
 import usdz_checks
 import geom_checks
+import pcp_checks
 
 ## Counts live blocks and fails the allocation after `remaining` more.
 struct Tracker: memory.Allocator:
@@ -135,4 +136,7 @@ pub func main(arguments: str[]) -> i32!:
     settle(&tracker, "round trips")
     inject(&tracker, every, geom_checks.mesh_round_trip)
     inject(&tracker, every, geom_checks.elements_round_trip)
+    try pcp_checks.museum()
+    settle(&tracker, "museum")
+    inject(&tracker, every, pcp_checks.museum)
     return 0

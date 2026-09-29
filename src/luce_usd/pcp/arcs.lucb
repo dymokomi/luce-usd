@@ -1,0 +1,235 @@
+## References and payloads, after _EvalRefOrPayloadArcs and _AddArc
+## (pxr/usd/pcp/primIndex.cpp) and PcpComposeSiteReferences/Payloads
+## (composeSite.cpp). A node's arcs are its layer stack's list ops at its
+## path applied weakest layer first, each item's asset path anchored at the
+## layer that authored it, and each remembering that layer for its time
+## offset. An arc targets a prim of the referenced layer's own layer stack
+## (the node's own, for internal references), or its defaultPrim.
+
+## One composed arc: the item (asset anchored: its identifier's token) and
+## the position in the layer stack of the layer that authored it.
+struct ArcItem:
+    var item: ListItem
+    var layer: usize
+
+extend Composer:
+    ## Add the references (or payloads) of `node`.
+    mutating func eval_arcs(index: PrimIndex*, node: u32, payloads: bool, frame: const Frame*?, tasks: Growing[u8]*) -> !:
+        if not index.nodes.items[(usize)node].contributes(): return
+        if payloads and not try self.loads_payloads(): return
+        let stack = index.nodes.items[(usize)node].stack
+        let path = index.nodes.items[(usize)node].path
+        var arcs = Growing[ArcItem]()
+        defer arcs.close()
+        try self.compose_arcs(stack, path, payloads, &arcs)
+        for number in 0..<arcs.count:
+            try self.add_ref_arc(index, node, arcs.items[number], (i32)number, payloads, frame, tasks)
+
+    ## The site's reference (payload) list ops applied weakest layer first.
+    mutating func compose_arcs(stack: usize, path: u32, payloads: bool, out: Growing[ArcItem]*) -> !:
+        let layers = self.stacks.stack(stack).layers.view()
+        var position = layers.length
+        while position > 0:
+            position -= 1
+            let layer = layers[position]
+            let data = self.layers.layer(layer)
+            let spec = data.find(path) else continue
+            let key = data.keys.payload if payloads else data.keys.references
+            let field = data.get(spec, key) else continue
+            if field.kind == ValueKind.payload:
+                # A single payload (crate 0.7 and older): an explicit list of one.
+                let bytes = field.bytes()
+                if bytes.length < 24: continue
+                let record = memory.read[PayloadRecord]((void*)bytes.data)
+                out.clear()
+                if record.asset != 0 or record.prim != empty_path:
+                    try out.push(ArcItem(item = ListItem(a = (u64)(try self.anchor(record.asset, layer)), b = (u64)record.prim, offset = record.offset, scale = record.scale, custom = none), layer = position))
+                continue
+            let list = field.list_op() else continue
+            try self.apply_arcs(list, layer, position, out)
+
+    ## Apply one layer's list op (SdfListOp::ApplyOperations), anchoring
+    ## asset paths first and tagging new items with the layer.
+    mutating func apply_arcs(list: const ListOp*, layer: usize, position: usize, out: Growing[ArcItem]*) -> !:
+        if list.explicit:
+            out.clear()
+            for item in list.items(ListPart.explicit):
+                let anchored = try self.anchored_item(item, layer)
+                if find_arc(out.view(), anchored) == none: try out.push(ArcItem(item = anchored, layer = position))
+            return
+        for item in list.items(ListPart.deleted):
+            if let at = find_arc(out.view(), try self.anchored_item(item, layer)): remove_arc(out, at)
+        for item in list.items(ListPart.added):
+            let anchored = try self.anchored_item(item, layer)
+            if find_arc(out.view(), anchored) == none: try out.push(ArcItem(item = anchored, layer = position))
+        let prepended = list.items(ListPart.prepended)
+        var at = prepended.length
+        while at > 0:
+            at -= 1
+            let anchored = try self.anchored_item(prepended[at], layer)
+            if let found = find_arc(out.view(), anchored): remove_arc(out, found)
+            try out.push(ArcItem(item = anchored, layer = position))
+            var move = out.count - 1
+            while move > 0:
+                out.items[move] = out.items[move - 1]
+                move -= 1
+            out.items[0] = ArcItem(item = anchored, layer = position)
+        for item in list.items(ListPart.appended):
+            let anchored = try self.anchored_item(item, layer)
+            if let found = find_arc(out.view(), anchored): remove_arc(out, found)
+            try out.push(ArcItem(item = anchored, layer = position))
+
+    ## `item` with its asset path anchored at `layer`.
+    mutating func anchored_item(item: ListItem, layer: usize) -> ListItem!:
+        var made = item
+        made.a = (u64)(try self.anchor((u32)item.a, layer))
+        return made
+
+    ## The token of asset `asset` (a string token) anchored at `layer`; 0
+    ## for an empty asset path.
+    mutating func anchor(asset: u32, layer: usize) -> u32!:
+        let text = self.names.text_of(asset)
+        if text.length == 0: return 0
+        var anchored = Growing[u8]()
+        defer anchored.close()
+        try ar.anchored(text, self.layers.identifier(layer), &anchored)
+        return try self.names.token((str)anchored.view())
+
+    ## One reference or payload arc from `node`.
+    mutating func add_ref_arc(index: PrimIndex*, node: u32, arc: ArcItem, number: i32, payload: bool, frame: const Frame*?, tasks: Growing[u8]*) -> !:
+        let names = self.names
+        let stack = index.nodes.items[(usize)node].stack
+        let node_path = index.nodes.items[(usize)node].path
+        var prim = (u32)arc.item.b
+        if prim != empty_path and not (names.is_absolute(prim) and names.is_prim(prim) and not names.has_variant_selection(prim)):
+            try self.problems.add("Invalid reference or payload prim path")
+            return
+        let internal = arc.item.a == 0
+        var offset = Offset(offset = arc.item.offset, scale = arc.item.scale)
+        if not offset.is_valid(): offset = Offset.identity()
+        elif not internal: offset = self.stacks.stack(stack).offsets.items[arc.layer].times(offset)
+        var target_stack = stack
+        var target_layer = self.stacks.stack(stack).root
+        if not internal:
+            let identifier = names.text_of((u32)arc.item.a)
+            let opened = try self.layers.find_or_open(identifier)
+            if opened == none:
+                try self.problems.add_with("Could not open asset @", identifier)
+                return
+            target_layer = opened else return
+            target_stack = try self.stacks.find_or_build(&self.layers, target_layer, none, &self.problems)
+            let source_rate = self.layers.time_codes_per_second(self.stacks.stack(stack).layers.items[arc.layer])
+            let target_rate = self.stacks.stack(target_stack).time_codes_per_second
+            if source_rate != target_rate: offset.scale = offset.scale * source_rate / target_rate
+        var contribute = true
+        if prim == empty_path:
+            let found = self.layers.field(target_layer, self.layers.layer(target_layer).keys.default_prim)
+            if found == none:
+                try self.problems.add("Unresolved defaultPrim")
+                prim = absolute_root
+                contribute = false
+            else:
+                let named = found else return
+                prim = try default_prim_path(names, named.as_token())
+        var map = try MapFunction.of_pair(prim, try names.strip_variants(node_path), offset)
+        if internal: map.root_identity = true
+        let ancestral = not (names.node(prim).depth == 1 and names.is_prim(prim))
+        let kind = ArcType.payload if payload else ArcType.reference
+        try self.add_arc(index, node, (i32)node, kind, target_stack, prim, map, number, namespace_depth(names, node_path), contribute, ancestral, frame, tasks)
+
+    ## Add an arc (_AddArc): unless it closes a cycle, a new child node, or
+    ## (bringing ancestral opinions) its target's own index as a subtree.
+    ## `map` is taken.
+    mutating func add_arc(index: PrimIndex*, parent: u32, origin: i32, kind: ArcType, stack: usize, path: u32, map: MapFunction, sibling: i32, depth: i32, contribute: bool, ancestral: bool, frame: const Frame*?, tasks: Growing[u8]*) -> !:
+        var owned = map
+        if try self.closes_cycle(index, parent, stack, path, frame):
+            owned.close()
+            try self.problems.add("Cycle detected")
+            return
+        var added: u32 = 0
+        if not ancestral:
+            let node = Node(stack = stack, path = path, arc = kind, parent = (i32)parent, origin = origin, children = Growing[u32](), sibling = sibling, depth = depth, map_to_parent = owned, inert = not contribute, culled = false, has_specs = self.site_has_specs(stack, path))
+            added = try index.insert_child(parent, node)
+            try tasks.push(task_references | task_payloads)
+        else:
+            let below = Frame(index = index, parent = parent, stack = stack, path = path, previous = frame)
+            var sub = self.build(stack, path, &below, contribute) catch failure:
+                owned.close()
+                error(failure.code, failure.message)
+            defer sub.close()
+            added = try append_subtree(index, parent, &sub, kind, origin, sibling, depth, owned)
+            # The subtree evaluated its own arcs.
+            while tasks.count < index.nodes.count: try tasks.push(0)
+        if path == absolute_root: inert_subtree(index, added)
+
+    ## Whether an arc from `parent` to (`stack`, `path`) returns to a site
+    ## at, above or below one on the way to the root, through every stack
+    ## frame (_CheckForCycle).
+    mutating func closes_cycle(index: const PrimIndex*, parent: u32, stack: usize, path: u32, frame: const Frame*?) -> bool!:
+        var graph = index
+        var node = (i32)parent
+        var site = path
+        var level = frame
+        while true:
+            while node >= 0:
+                let entry = &graph.nodes.items[(usize)node]
+                if entry.stack == stack and (self.names.has_prefix(entry.path, site) or self.names.has_prefix(site, entry.path)): return true
+                node = entry.parent
+            let up = level else return false
+            let root_path = graph.nodes.items[0].path
+            # The requested site with this graph's root replaced by the arc's
+            # target: where the arc would lead in the enclosing graph.
+            site = up.path if root_path == site else try self.names.replace_prefix(up.path, root_path, site)
+            graph = up.index
+            node = (i32)up.parent
+            level = up.previous
+
+func find_arc(items: const ArcItem[], item: ListItem) -> usize?:
+    for at in 0..<items.length:
+        if same_item(items[at].item, item): return at
+    return none
+
+func remove_arc(items: Growing[ArcItem]*, at: usize):
+    var index = at
+    while index + 1 < items.count:
+        items.items[index] = items.items[index + 1]
+        index += 1
+    items.count -= 1
+
+## Append `sub`'s nodes under `parent`, its root reached by the given arc
+## (`map` taken); the new root's index.
+func append_subtree(index: PrimIndex*, parent: u32, sub: const PrimIndex*, kind: ArcType, origin: i32, sibling: i32, depth: i32, map: MapFunction) -> u32!:
+    var owned = map
+    errdefer owned.close()
+    let base = (u32)index.nodes.count
+    for at in 0..<sub.nodes.count:
+        let node = &sub.nodes.items[at]
+        var children = Growing[u32]()
+        errdefer children.close()
+        for child in node.children.view(): try children.push(child + base)
+        let root = at == 0
+        var node_map = MapFunction.identity()
+        if root:
+            node_map = owned
+            owned = MapFunction.identity()
+        else:
+            node_map = try node.map_to_parent.copy()
+        index.nodes.push(Node(stack = node.stack, path = node.path, arc = kind if root else node.arc, parent = (i32)parent if root else node.parent + (i32)base, origin = origin if root else (node.origin + (i32)base if node.origin >= 0 else -1), children = children, sibling = sibling if root else node.sibling, depth = depth if root else node.depth, map_to_parent = node_map, inert = node.inert, culled = node.culled, has_specs = node.has_specs)) catch failure:
+            node_map.close()
+            error(failure.code, failure.message)
+    try index.link_child(parent, base)
+    return base
+
+## Make a node and everything under it inert (_InertSubtree).
+func inert_subtree(index: PrimIndex*, node: u32):
+    index.nodes.items[(usize)node].inert = true
+    for child in index.nodes.items[(usize)node].children.view(): inert_subtree(index, child)
+
+## A layer's defaultPrim as a path: a root prim's name, or a prim path
+## (SdfLayer::GetDefaultPrimAsPath).
+func default_prim_path(names: Names*, token: u32) -> u32!:
+    let text = names.text_of(token)
+    if text.length > 0 and text.bytes[0] == '/': return try names.parse_path(text)
+    for byte in text.bytes:
+        if byte == '/': return try names.make_absolute(try names.parse_path(text), absolute_root)
+    return try names.child(absolute_root, token)

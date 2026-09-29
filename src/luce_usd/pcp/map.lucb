@@ -1,0 +1,109 @@
+## Maps between namespaces, after PcpMapFunction (pxr/usd/pcp/mapFunction.cpp):
+## source → target path pairs, optionally the root identity (paths no pair
+## covers map to themselves), and a time offset. A path maps through the
+## pair whose source is its longest prefix; a result that a pair with a
+## longer target would also claim is ambiguous and does not map. Composing
+## f after g maps g's targets through f, then adds f's pairs whose sources
+## g's inverse reaches and g's pairs do not already cover.
+
+pub struct MapFunction:
+    pub var sources: Growing[u32]
+    pub var targets: Growing[u32]
+    pub var root_identity: bool
+    pub var offset: Offset
+
+    ## The identity map (PcpMapFunction::Identity).
+    pub static func identity() -> MapFunction:
+        return MapFunction(sources = Growing[u32](), targets = Growing[u32](), root_identity = true, offset = Offset.identity())
+
+    ## The map of one pair; "/" to "/" becomes the root identity.
+    pub static func of_pair(source: u32, target: u32, offset: Offset) -> MapFunction!:
+        var made = MapFunction(sources = Growing[u32](), targets = Growing[u32](), root_identity = false, offset = offset)
+        errdefer made.close()
+        if source == absolute_root and target == absolute_root: made.root_identity = true
+        else:
+            try made.sources.push(source)
+            try made.targets.push(target)
+        return made
+
+    pub mutating func close():
+        self.sources.close()
+        self.targets.close()
+
+    pub func copy() -> MapFunction!:
+        var made = MapFunction(sources = Growing[u32](), targets = Growing[u32](), root_identity = self.root_identity, offset = self.offset)
+        errdefer made.close()
+        try made.sources.assign(self.sources.view())
+        try made.targets.assign(self.targets.view())
+        return made
+
+    pub func is_identity() -> bool:
+        return self.root_identity and self.sources.count == 0 and self.offset.is_identity()
+
+    ## `path` mapped from the source namespace to the target one (from
+    ## target to source when `invert`); empty_path when it does not map.
+    pub func map(names: Names*, path: u32, invert: bool) -> u32!:
+        let from_side = self.targets.view() if invert else self.sources.view()
+        let to_side = self.sources.view() if invert else self.targets.view()
+        let best = best_match(names, path, from_side, 0)
+        var result = empty_path
+        if best == from_side.length:
+            if self.root_identity: result = path
+        else:
+            result = try names.replace_prefix(path, from_side[best], to_side[best])
+        if result == empty_path: return result
+        # A pair with a longer target claiming the result makes it ambiguous.
+        let floor = names.node(to_side[best]).depth if best < to_side.length else 0
+        let better = best_match(names, result, to_side, floor)
+        if better < to_side.length and better != best: return empty_path
+        return result
+
+    ## `self` after `inner`: inner's source namespace to self's target one.
+    pub func compose(names: Names*, inner: const MapFunction*) -> MapFunction!:
+        var made = MapFunction(sources = Growing[u32](), targets = Growing[u32](), root_identity = self.root_identity and inner.root_identity, offset = self.offset.times(inner.offset))
+        errdefer made.close()
+        for at in 0..<inner.sources.count:
+            try made.sources.push(inner.sources.items[at])
+            try made.targets.push(try self.map(names, inner.targets.items[at], false))
+        let covered = made.sources.count
+        for at in 0..<self.sources.count:
+            let source = try inner.map(names, self.sources.items[at], true)
+            if source == empty_path: continue
+            var known = false
+            for earlier in made.sources.items[..<covered]: known = known or earlier == source
+            if known: continue
+            try made.sources.push(source)
+            try made.targets.push(self.targets.items[at])
+        return made
+
+    ## The map the other way (the offset inverted too).
+    pub func inverse() -> MapFunction!:
+        var made = MapFunction(sources = Growing[u32](), targets = Growing[u32](), root_identity = self.root_identity, offset = Offset(offset = -self.offset.offset / self.offset.scale, scale = 1.0 / self.offset.scale))
+        errdefer made.close()
+        try made.sources.assign(self.targets.view())
+        try made.targets.assign(self.sources.view())
+        return made
+
+## The index in `side` of the longest path that is a prefix of `path` with
+## at least `floor` depth, or side.length.
+func best_match(names: Names*, path: u32, side: const u32[], floor: u32) -> usize:
+    var best = side.length
+    var best_depth: u32 = 0
+    for at in 0..<side.length:
+        let candidate = side[at]
+        if candidate == empty_path: continue
+        let depth = names.node(candidate).depth
+        if depth < floor: continue
+        if (best == side.length or depth > best_depth) and names.has_prefix(path, candidate):
+            best = at
+            best_depth = depth
+    return best
+
+## Path elements that are not variant selections (PcpNode_GetNonVariantPathElementCount).
+pub func namespace_depth(names: const Names*, path: u32) -> i32:
+    var count: i32 = 0
+    var at = path
+    while at > relative_root:
+        if names.kind(at) != PathKind.variant: count += 1
+        at = names.parent(at)
+    return count

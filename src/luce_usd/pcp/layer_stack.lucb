@@ -1,0 +1,142 @@
+## Layer stacks, after PcpLayerStack::_BuildLayerStack (pxr/usd/pcp/
+## layerStack.cpp): a session layer's tree (when there is one), then the
+## root layer's, each layer followed by its sublayers depth first, strongest
+## first. Every layer carries the offset mapping its times into the root's:
+## its sublayer offset composed with its parent's, and scaled when its
+## timeCodesPerSecond differs. A sublayer that is missing or already an
+## ancestor (a cycle) is skipped with an error; the same layer may appear
+## twice on different branches.
+
+## One layer stack.
+pub struct LayerStack:
+    pub var root: usize
+    pub var session: usize?
+    pub var layers: Growing[usize]
+    pub var offsets: Growing[Offset]
+    pub var time_codes_per_second: f64
+
+    pub mutating func close():
+        self.layers.close()
+        self.offsets.close()
+
+    ## Whether any layer's offset is not the identity.
+    pub func has_offsets() -> bool:
+        for offset in self.offsets.view():
+            if not offset.is_identity(): return true
+        return false
+
+## Every layer stack a composition has built, each once.
+pub struct Stacks:
+    var stacks: Growing[LayerStack]
+
+    pub func init():
+        self.stacks = Growing[LayerStack]()
+
+    pub mutating func close():
+        for at in 0..<self.stacks.count: self.stacks.items[at].close()
+        self.stacks.close()
+
+    pub func stack(index: usize) -> const LayerStack*:
+        return &self.stacks.items[index]
+
+    ## The layer stack of root layer `root` (and `session`), built now if new.
+    pub mutating func find_or_build(layers: Layers*, root: usize, session: usize?, problems: Problems*) -> usize!:
+        for at in 0..<self.stacks.count:
+            let stack = &self.stacks.items[at]
+            if stack.root == root and stack.session == session: return at
+        var stack = LayerStack(root = root, session = session, layers = Growing[usize](), offsets = Growing[Offset](), time_codes_per_second = layers.time_codes_per_second(root))
+        errdefer stack.close()
+        var seen = Growing[usize]()
+        defer seen.close()
+        var root_offset = Offset.identity()
+        if let owner = session:
+            let session_rate = layers.time_codes_per_second(owner)
+            var session_offset = Offset.identity()
+            if session_governs(layers, owner, root):
+                stack.time_codes_per_second = session_rate
+                root_offset.scale = session_rate / layers.time_codes_per_second(root)
+            else:
+                session_offset.scale = stack.time_codes_per_second / session_rate
+            try build(layers, owner, session_offset, session_rate, 0, &stack, &seen, problems)
+        # The session tree's first sessionOwner reorders owned sublayers.
+        var session_owner: u32 = 0
+        let owner_key = try layers.names.token("sessionOwner")
+        for layer in stack.layers.view():
+            if session_owner != 0: break
+            if let found = layers.field(layer, owner_key): session_owner = found.as_token()
+        try build(layers, root, root_offset, layers.time_codes_per_second(root), session_owner, &stack, &seen, problems)
+        try self.stacks.push(stack)
+        return self.stacks.count - 1
+
+## Whether a session layer's own rate governs the stack
+## (_ShouldUseSessionTcps): it authors timeCodesPerSecond, or the root does
+## not and the session authors framesPerSecond.
+func session_governs(layers: const Layers*, session: usize, root: usize) -> bool:
+    let keys = &layers.layer(session).keys
+    if layers.field(session, keys.time_codes_per_second) != none: return true
+    return layers.field(root, keys.time_codes_per_second) == none and layers.field(session, keys.frames_per_second) != none
+
+## One sublayer about to be built into the stack.
+struct Sublayer:
+    var layer: usize
+    var offset: Offset
+    var rate: f64
+
+func build(layers: Layers*, layer: usize, offset: Offset, rate: f64, session_owner: u32, stack: LayerStack*, seen: Growing[usize]*, problems: Problems*) -> !:
+    try seen.push(layer)
+    defer seen.count -= 1
+    try stack.layers.push(layer)
+    try stack.offsets.push(offset)
+    let keys = &layers.layer(layer).keys
+    let found = layers.field(layer, keys.sub_layers) else return
+    let paths = found.ids()
+    var no_offsets: f64[]
+    var offsets: const f64[] = no_offsets
+    if let recorded = layers.field(layer, keys.sub_layer_offsets): offsets = recorded.doubles()
+    var identifier = Growing[u8]()
+    defer identifier.close()
+    var sublayers = Growing[Sublayer]()
+    defer sublayers.close()
+    for at in 0..<paths.length:
+        let asset = layers.names.text_of(paths[at])
+        if asset.length == 0: continue
+        try ar.anchored(asset, layers.identifier(layer), &identifier)
+        let opened = try layers.find_or_open((str)identifier.view())
+        if opened == none:
+            try problems.add_with("Could not load sublayer @", (str)identifier.view())
+            continue
+        let sublayer = opened else continue
+        var cycle = false
+        for ancestor in seen.view(): cycle = cycle or ancestor == sublayer
+        if cycle:
+            try problems.add_with("Sublayer cycle through @", (str)identifier.view())
+            continue
+        var own = Offset.identity()
+        if at * 2 + 1 < offsets.length: own = Offset(offset = offsets[at * 2], scale = offsets[at * 2 + 1])
+        if not own.is_valid(): own = Offset.identity()
+        let sub_rate = layers.time_codes_per_second(sublayer)
+        if rate != sub_rate: own.scale = own.scale * rate / sub_rate
+        try sublayers.push(Sublayer(layer = sublayer, offset = offset.times(own), rate = sub_rate))
+    try own_first(layers, layer, session_owner, &sublayers)
+    for sublayer in sublayers.view():
+        try build(layers, sublayer.layer, sublayer.offset, sublayer.rate, session_owner, stack, seen, problems)
+
+## The session owner's sublayers first, when the layer has owned sublayers
+## (_ApplyOwnedSublayerOrder, a stable partition).
+func own_first(layers: Layers*, layer: usize, session_owner: u32, sublayers: Growing[Sublayer]*) -> !:
+    if session_owner == 0: return
+    let owned = layers.field(layer, try layers.names.token("hasOwnedSubLayers")) else return
+    if not owned.as_bool(): return
+    let owner_key = try layers.names.token("owner")
+    var first = Growing[Sublayer]()
+    defer first.close()
+    var rest = Growing[Sublayer]()
+    defer rest.close()
+    for sublayer in sublayers.view():
+        var mine = false
+        if let found = layers.field(sublayer.layer, owner_key): mine = found.as_token() == session_owner
+        if mine: try first.push(sublayer)
+        else: try rest.push(sublayer)
+    sublayers.clear()
+    for sublayer in first.view(): try sublayers.push(sublayer)
+    for sublayer in rest.view(): try sublayers.push(sublayer)

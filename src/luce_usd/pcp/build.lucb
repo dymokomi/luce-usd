@@ -1,0 +1,224 @@
+## Building prim indexes, after Pcp_BuildPrimIndex (pxr/usd/pcp/primIndex.cpp).
+## A prim's index starts as its parent's with every site extended by the
+## prim's name (ancestral opinions), then each node's arcs are added: all
+## references before any payload, new nodes' arcs in turn. An arc to a
+## prim that is not a root prim brings that prim's own ancestral opinions,
+## so its target's index is built first (one stack frame down) and added as
+## a subtree. Afterwards subtrees with no opinions are culled.
+
+## Arc kinds a node still has to evaluate.
+let task_references: u8 = 1
+let task_payloads: u8 = 2
+
+## One level of nested index building (PcpPrimIndex_StackFrame): the graph
+## and node the index being built will hang under, and the site requested.
+struct Frame:
+    var index: const PrimIndex*
+    var parent: u32
+    var stack: usize
+    var path: u32
+    var previous: const Frame*?
+
+## A composition: the layers and layer stacks it opened, its root layer
+## stack, and the indexes of the root stack's prims (each once).
+pub struct Composer:
+    pub var names: Names*
+    pub var layers: Layers
+    pub var stacks: Stacks
+    pub var problems: Problems
+    pub var root_stack: usize
+    ## Path texts whose prims' payloads are not loaded (a prefix each).
+    pub var unloaded: Growing[Growing[u8]]
+    ## The prim whose index is being built (payload loading asks about it).
+    var composing: u32
+    var cached_paths: Growing[u32]
+    var cached: Growing[PrimIndex]
+
+    ## A composition of the layer stack rooted at `root` (an identifier),
+    ## with `session` (an identifier, or "") before it.
+    pub func init(names: Names*, root: str, session: str) -> !:
+        var layers = Layers(names)
+        errdefer layers.close()
+        var stacks = Stacks()
+        errdefer stacks.close()
+        var problems = Problems()
+        errdefer problems.close()
+        let opened = try layers.find_or_open(root)
+        if opened == none: error(errors.invalid, "the root layer cannot be read")
+        let root_layer = opened else return
+        var session_layer: usize? = none
+        if session.length > 0:
+            session_layer = try layers.find_or_open(session)
+            if session_layer == none: error(errors.invalid, "the session layer cannot be read")
+        let root_stack = try stacks.find_or_build(&layers, root_layer, session_layer, &problems)
+        self.names = names
+        self.layers = layers
+        self.stacks = stacks
+        self.problems = problems
+        self.root_stack = root_stack
+        self.unloaded = Growing[Growing[u8]]()
+        self.composing = absolute_root
+        self.cached_paths = Growing[u32]()
+        self.cached = Growing[PrimIndex]()
+
+    pub mutating func close():
+        for at in 0..<self.unloaded.count: self.unloaded.items[at].close()
+        self.unloaded.close()
+        for at in 0..<self.cached.count: self.cached.items[at].close()
+        self.cached.close()
+        self.cached_paths.close()
+        self.problems.close()
+        self.stacks.close()
+        self.layers.close()
+
+    pub func keys() -> const FieldKeys*:
+        return &self.layers.layer(self.stacks.stack(self.root_stack).layers.items[0]).keys
+
+    ## The index of prim `path` of the root layer stack (built once).
+    pub mutating func index(path: u32) -> const PrimIndex*!:
+        for at in 0..<self.cached_paths.count:
+            if self.cached_paths.items[at] == path: return &self.cached.items[at]
+        let outer = self.composing
+        self.composing = path
+        defer self.composing = outer
+        var made = try self.build(self.root_stack, path, none, true)
+        errdefer made.close()
+        try self.cached_paths.push(path)
+        errdefer self.cached_paths.count -= 1
+        try self.cached.push(made)
+        return &self.cached.items[self.cached.count - 1]
+
+    ## The index of `path` in layer stack `stack`.
+    mutating func build(stack: usize, path: u32, frame: const Frame*?, contribute_root: bool) -> PrimIndex!:
+        if path == absolute_root:
+            var index = try PrimIndex.rooted(stack, path)
+            index.nodes.items[0].has_specs = self.site_has_specs(stack, path)
+            return index
+        var index = try self.ancestral(stack, path, frame)
+        errdefer index.close()
+        index.nodes.items[0].inert = not contribute_root
+        var tasks = Growing[u8]()
+        defer tasks.close()
+        try tasks.fill(index.nodes.count, task_references | task_payloads)
+        try self.run_tasks(&index, &tasks, frame)
+        cull(&index, self.names)
+        return index
+
+    ## The parent's index with every site extended by the prim's name, its
+    ## culled nodes left out.
+    mutating func ancestral(stack: usize, path: u32, frame: const Frame*?) -> PrimIndex!:
+        let parent_path = self.names.parent(path)
+        var parent = PrimIndex()
+        defer parent.close()
+        if frame == none and stack == self.root_stack:
+            let cached = try self.index(parent_path)
+            parent = try copy_index(cached)
+        else:
+            parent = try self.build(stack, parent_path, frame, true)
+        var index = try without_culled(&parent)
+        errdefer index.close()
+        let name = self.names.name(path)
+        for at in 0..<index.nodes.count:
+            let node = &index.nodes.items[at]
+            node.path = path if node.path == parent_path else try self.names.child(node.path, name)
+            if node.has_specs: node.has_specs = self.site_has_specs(node.stack, node.path)
+        return index
+
+    ## Leave the payloads of prims whose path text starts with `prefix` unloaded.
+    pub mutating func exclude_payloads(prefix: str) -> !:
+        var text = Growing[u8]()
+        errdefer text.close()
+        try text.assign(prefix.bytes)
+        try self.unloaded.push(text)
+
+    ## Whether the payloads of the prim being composed load.
+    mutating func loads_payloads() -> bool!:
+        if self.unloaded.count == 0: return true
+        var text = Growing[u8]()
+        defer text.close()
+        try self.names.write_path(self.composing, &text)
+        for prefix in self.unloaded.view():
+            if text.count >= prefix.count and (str)text.items[..<prefix.count] == (str)prefix.view(): return false
+        return true
+
+    ## Whether any layer of `stack` has a spec at `path` (PcpComposeSiteHasSpecs).
+    pub func site_has_specs(stack: usize, path: u32) -> bool:
+        for layer in self.stacks.stack(stack).layers.view():
+            if self.layers.layer(layer).find(path) != none: return true
+        return false
+
+    ## Evaluate arcs until none is left: every reference before any payload,
+    ## the newest node first. The arcs push the tasks of the nodes they add.
+    mutating func run_tasks(index: PrimIndex*, tasks: Growing[u8]*, frame: const Frame*?) -> !:
+        while true:
+            var chosen = pending_task(tasks, task_references)
+            var kind = task_references
+            if chosen == tasks.count:
+                chosen = pending_task(tasks, task_payloads)
+                kind = task_payloads
+            if chosen == tasks.count: return
+            tasks.items[chosen] = tasks.items[chosen] & ~kind
+            try self.eval_arcs(index, (u32)chosen, kind == task_payloads, frame, tasks)
+
+## The newest node with task `kind` pending, or tasks.count.
+func pending_task(tasks: const Growing[u8]*, kind: u8) -> usize:
+    var at = tasks.count
+    while at > 0:
+        at -= 1
+        if tasks.items[at] & kind != 0: return at
+    return tasks.count
+
+## A copy of `index`.
+func copy_index(index: const PrimIndex*) -> PrimIndex!:
+    var made = PrimIndex()
+    errdefer made.close()
+    for at in 0..<index.nodes.count:
+        let node = &index.nodes.items[at]
+        var children = Growing[u32]()
+        errdefer children.close()
+        try children.assign(node.children.view())
+        let map = try node.map_to_parent.copy()
+        try made.nodes.push(Node(stack = node.stack, path = node.path, arc = node.arc, parent = node.parent, origin = node.origin, children = children, sibling = node.sibling, depth = node.depth, map_to_parent = map, inert = node.inert, culled = node.culled, has_specs = node.has_specs))
+    return made
+
+## A copy of `index` without its culled nodes (PcpPrimIndex_Graph::Finalize).
+func without_culled(index: const PrimIndex*) -> PrimIndex!:
+    var mapping = Growing[i32]()
+    defer mapping.close()
+    var kept: i32 = 0
+    for at in 0..<index.nodes.count:
+        let keep = not index.nodes.items[at].culled
+        try mapping.push(kept if keep else -1)
+        if keep: kept += 1
+    var made = PrimIndex()
+    errdefer made.close()
+    for at in 0..<index.nodes.count:
+        let node = &index.nodes.items[at]
+        if mapping.items[at] < 0: continue
+        var children = Growing[u32]()
+        errdefer children.close()
+        for child in node.children.view():
+            if mapping.items[(usize)child] >= 0: try children.push((u32)mapping.items[(usize)child])
+        let map = try node.map_to_parent.copy()
+        let parent = mapping.items[(usize)node.parent] if node.parent >= 0 else -1
+        let origin = mapping.items[(usize)node.origin] if node.origin >= 0 else -1
+        try made.nodes.push(Node(stack = node.stack, path = node.path, arc = node.arc, parent = parent, origin = origin, children = children, sibling = node.sibling, depth = node.depth, map_to_parent = map, inert = node.inert, culled = false, has_specs = node.has_specs))
+    return made
+
+## Mark subtrees without opinions culled (_CullSubtreesWithNoOpinions): a
+## node is kept when it contributes specs, when a child is kept, when it is
+## the root, or when its arc was introduced at its own namespace depth.
+func cull(index: PrimIndex*, names: const Names*):
+    if index.nodes.count > 0: discard(cull_node(index, 0, names))
+
+func cull_node(index: PrimIndex*, node: u32, names: const Names*) -> bool:
+    var kept_child = false
+    for child in index.nodes.items[(usize)node].children.view():
+        if not cull_node(index, child, names): kept_child = true
+    let entry = &index.nodes.items[(usize)node]
+    if node == 0 or kept_child or (entry.has_specs and entry.contributes()): return false
+    # An arc introduced at this prim stays (its depth below introduction,
+    # the parent's namespace depth less the arc's, is 0).
+    if entry.parent >= 0 and entry.depth == namespace_depth(names, index.nodes.items[(usize)entry.parent].path): return false
+    entry.culled = true
+    return true
