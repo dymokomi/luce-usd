@@ -17,7 +17,7 @@ import luce_usd.sdf.value_types as usd_types
 from luce_usd.sdf.value_types import ValueKind, scalar_of, components, element_bytes, find_type
 from luce_usd.stage import Stage, earliest, scalar_number
 from luce_usd.geom_tokens import GeomTokens
-from luce_usd.usd_geom import Matrix4d, Gprim, GprimKind, Gathered, gather, component_at
+from luce_usd.usd_geom import Matrix4d, Gprim, GprimKind, Gathered, gather, component_at, is_shape
 from geocore import Vector3, Mesh
 from geocore_kernel import Float3, Attribute, AttributeStore, Domain, DataType, Role, TableBuilder, GeometrySet, assembled, put_attribute, mesh_dispose, set_put, set_put_detail, empty_set, dispose_set, mesh_component, BitsBuilder, edge_bits_from_pairs, PointCloud, cloud_assembled, points_component, Curves, curves_assembled, curves_type, Instances, new_instances, instances_component, Placement
 from geocore_kernel import set_component_count, set_component, set_detail, cloud_store, cloud_positions, cloud_origin, curves_origin, CurveSettings, KnotMode, Bits, edge_span, point_span, offset_span, corner_span, mesh_origin, attribute_entry

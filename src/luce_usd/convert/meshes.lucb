@@ -80,7 +80,7 @@ func collect_meshes(stage: Stage*, gathered: const Gathered*, warnings: Warnings
     for index in 0..<gathered.gprims.count:
         let gprim = gathered.gprims.items[index]
         # Meshes, and the intrinsic shapes (cube and after).
-        if gprim.kind != GprimKind.mesh and (u8)gprim.kind < (u8)GprimKind.cube: continue
+        if gprim.kind != GprimKind.mesh and not is_shape(gprim.kind): continue
         var arrays = try mesh_arrays(stage, &gprim)
         var points = arrays.0
         errdefer points.release()

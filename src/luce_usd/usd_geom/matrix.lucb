@@ -12,7 +12,7 @@ import memory
 import luce_usd.errors as errors
 from luce_usd.sdf.names import Names, absolute_root, empty_path
 from luce_usd.sdf.layer_data import Spec, SpecType
-from luce_usd.sdf.values import Value
+from luce_usd.sdf.values import Value, ListPart, specifier_over
 from luce_usd.sdf.value_types import ValueKind, scalar_of, components, element_bytes
 from luce_usd.stage import Stage, scalar_number
 from luce_usd.geom_tokens import GeomTokens

@@ -11,7 +11,9 @@ Houdini's USD Import does:
 - every mesh becomes part of one mesh;
 - every Points prim becomes part of one point cloud;
 - every curves prim becomes part of one curves component;
-- every PointInstancer becomes rows of one instances component.
+- every PointInstancer, and every scene-graph instance (a prim marked
+  `instanceable` in a composed stage), becomes rows of one instances
+  component.
 
 Each face, curve and point keeps its prim's path in the text attribute
 `path`, so Blast and the path filters see the hierarchy. Points are placed
@@ -92,6 +94,14 @@ between are interpolated linearly.
     scale, with a warning.
   - With `flatten = true`, instances are baked into the other components
     instead.
+- **Scene-graph instances.** A composed stage is flattened as UsdStage
+  flattens it: instances sharing composition share one prototype.
+  - Each prototype is loaded once; its paths are relative to the prototype.
+  - Each instance is a row placed by its world transform.
+  - Constant primvars inherited from an instance's ancestors do not reach
+    its prototype's prims (they would differ per instance).
+  - With `flatten = true`, each instance holds its own copy of its
+    prototype's prims, as instance proxies show them.
 
 ### Stage metadata
 

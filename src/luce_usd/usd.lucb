@@ -62,8 +62,9 @@ pub struct Usd:
         defer flattened.close()
         var layer: const LayerData* = composer.root_layer()
         if not composer.is_single_layer():
-            # Instances are imported expanded, each with its prototype's prims.
-            try flattening.flatten_stage(&composer, &flattened, false, false)
+            # Instances become the instances component, each prototype once;
+            # flattening everything expands them among the other gprims.
+            try flattening.flatten_stage(&composer, &flattened, false, not flatten)
             layer = &flattened
         var warnings = convert.Warnings()
         defer warnings.close()

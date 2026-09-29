@@ -1,7 +1,9 @@
 ## Point instancers (UsdGeomPointInstancer, pxr/usd/usdGeom/pointInstancer.cpp)
-## as the instances component: each prototype converted once as its own set,
-## each instance a row placing it by scale, orientation and position, then
-## the instancer's world transform (design §2.4). geocore rows are
+## and scene-graph instances as the instances component: each prototype
+## converted once as its own set, each instance a row placing it (a point
+## instancer's rows by scale, orientation and position, then the
+## instancer's world transform (design §2.4); a scene instance by its world
+## transform). geocore rows are
 ## translation, XYZ rotation and scale; a sheared placement takes the
 ## nearest one, with a warning. "Flatten everything" instead places the
 ## prototypes' gprims once per instance among the other gprims.
@@ -87,12 +89,35 @@ func hidden(ids: const Value*, invisible: const Value*, at: usize) -> bool:
 ## The instances component of `gathered`'s instancers, or none.
 func import_instances(stage: Stage*, gathered: const Gathered*, options: const ImportOptions*, warnings: Warnings*, depth: usize) -> Instances*?!:
     var any = false
-    for gprim in gathered.gprims.view(): any = any or gprim.kind == GprimKind.instancer
+    for gprim in gathered.gprims.view(): any = any or gprim.kind == GprimKind.instancer or gprim.kind == GprimKind.instance
     if not any: return none
     let instances = try new_instances()
     errdefer close_instances(instances)
+    # Scene prototypes imported so far and their prototype slots.
+    var roots = Growing[u32]()
+    defer roots.close()
+    var slots = Growing[usize]()
+    defer slots.close()
+    var sheared_scene = false
     for index in 0..<gathered.gprims.count:
         let gprim = gathered.gprims.items[index]
+        if gprim.kind == GprimKind.instance:
+            if depth >= most_depth:
+                try warnings.add_path("Skipped instances nested too deep: ", stage.names, gprim.path)
+                continue
+            var slot = instances.prototype_count()
+            var found = false
+            for at in 0..<roots.count:
+                if roots.items[at] == gprim.prototype:
+                    slot = slots.items[at]
+                    found = true
+            if not found:
+                discard(try instances.add_prototype(try import_prototype(stage, gprim.prototype, options, warnings, depth + 1)))
+                try roots.push(gprim.prototype)
+                try slots.push(slot)
+            let placement = placement_of(&gprim.world, &sheared_scene)
+            try instances.add_instance(slot, &placement, true)
+            continue
         if gprim.kind != GprimKind.instancer: continue
         if depth >= most_depth:
             try warnings.add_path("Skipped point instancers nested too deep: ", stage.names, gprim.path)
@@ -111,6 +136,7 @@ func import_instances(stage: Stage*, gathered: const Gathered*, options: const I
             let placement = placement_of(&rows.matrices.items[at], &sheared)
             try instances.add_instance(base + (usize)proto, &placement, rows.visible.items[at])
         if sheared: try warnings.add_path("Some instances are sheared; they take the nearest translation, rotation and scale: ", stage.names, gprim.path)
+    if sheared_scene: try warnings.add("Some instances are sheared; they take the nearest translation, rotation and scale")
     if instances.count() == 0:
         close_instances(instances)
         return none
@@ -125,6 +151,16 @@ func import_root(stage: Stage*, root: u32, options: const ImportOptions*, warnin
     var gathered = Gathered()
     defer gathered.close()
     gathered.anchor = stage.names.parent(root)
+    let identity = Matrix4d.identity()
+    try gather(stage, root, options.purposes, &identity, &gathered)
+    return try import_gathered(stage, &gathered, options, warnings, depth)
+
+## The set of a flattened prototype (an over at the root holding the
+## instance's prims), in its own space; element paths relative to it.
+func import_prototype(stage: Stage*, root: u32, options: const ImportOptions*, warnings: Warnings*, depth: usize) -> GeometrySet*!:
+    var gathered = Gathered()
+    defer gathered.close()
+    gathered.anchor = root
     let identity = Matrix4d.identity()
     try gather(stage, root, options.purposes, &identity, &gathered)
     return try import_gathered(stage, &gathered, options, warnings, depth)
@@ -155,7 +191,7 @@ func expand_instancers(stage: Stage*, gathered: Gathered*, options: const Import
                 for placed in inner.gprims.view():
                     let first = gathered.inherited.count
                     for held in inner.inherited.items[placed.first..<placed.end]: try gathered.inherited.push(held)
-                    try gathered.gprims.push(Gprim(path = placed.path, kind = placed.kind, world = placed.world.times(&rows.matrices.items[at]), material = placed.material, first = first, end = gathered.inherited.count))
+                    try gathered.gprims.push(Gprim(path = placed.path, kind = placed.kind, world = placed.world.times(&rows.matrices.items[at]), material = placed.material, first = first, end = gathered.inherited.count, prototype = placed.prototype))
 
 ## The nearest geocore placement of a row-vector matrix.
 func placement_of(matrix: const Matrix4d*, sheared: bool*) -> Placement:

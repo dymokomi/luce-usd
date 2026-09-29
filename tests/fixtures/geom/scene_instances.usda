@@ -1,0 +1,63 @@
+#usda 1.0
+(
+    doc = "Two scene-graph instances of one asset, and a third with a different variant."
+)
+
+class Xform "Asset" (
+    variantSets = "size"
+    variants = {
+        string size = "small"
+    }
+)
+{
+    def Mesh "Tri"
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+    }
+
+    variantSet "size" = {
+        "big" {
+            over "Tri"
+            {
+                point3f[] points = [(0, 0, 0), (2, 0, 0), (0, 2, 0)]
+            }
+        }
+        "small" {
+            over "Tri"
+            {
+                point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+            }
+        }
+    }
+}
+
+def Xform "A" (
+    instanceable = true
+    references = </Asset>
+)
+{
+    double3 xformOp:translate = (5, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+}
+
+def Xform "B" (
+    instanceable = true
+    references = </Asset>
+)
+{
+    double3 xformOp:translate = (0, 5, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+}
+
+def Xform "C" (
+    instanceable = true
+    references = </Asset>
+    variants = {
+        string size = "big"
+    }
+)
+{
+    double3 xformOp:translate = (0, 0, 5)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+}

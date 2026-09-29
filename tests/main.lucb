@@ -124,6 +124,8 @@ pub func main(arguments: str[]) -> i32!:
     settle(&tracker, "mesh import")
     inject(&tracker, every, geom_checks.mesh_features)
     try geom_checks.folded_faces()
+    try geom_checks.scene_instances()
+    inject(&tracker, every, geom_checks.scene_instances)
     inject(&tracker, every, geom_checks.folded_faces)
     try geom_checks.shapes()
     settle(&tracker, "shapes")

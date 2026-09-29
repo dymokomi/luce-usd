@@ -6,7 +6,7 @@ import memory
 from geocore import Mesh, GeometrySet
 from geocore_growing import Growing
 from geocore_kernel import dispose_set, set_mesh, attribute_entry, corner_span, triangle_span, group_bits, set_find, curves_type, points_component, Curves, PointCloud, AttributeStore, cloud_store, curves_knot_offsets
-from usd_kernel import ImportOptions, ExportOptions, Warnings, import_layer, export_set, write_usda, Names, LayerData, read_usda, read_file, most_bytes, Stage, earliest, gather, Gathered, GprimKind, Matrix4d, local_transform, absolute_root, purpose_render
+from usd_kernel import Composer, flatten_stage, absolute_path, ImportOptions, ExportOptions, Warnings, import_layer, export_set, write_usda, Names, LayerData, read_usda, read_file, most_bytes, Stage, earliest, gather, Gathered, GprimKind, Matrix4d, local_transform, absolute_root, purpose_render
 
 func near(a: f64, b: f64) -> bool:
     return math.abs(a - b) < 1e-5
@@ -411,3 +411,42 @@ pub func folded_faces() -> !:
         let y = (a.y + b.y + c.y) / 3.0
         assert(not (x > 1.0 and y > 1.0))
     assert(near(area, 3.0))
+
+## A composed stage with scene-graph instances: flattened with prototypes,
+## each prototype imports once and each instance becomes a row; flattening
+## everything places each instance's gprims instead.
+func import_scene(realize: bool) -> GeometrySet*!:
+    var names = try Names()
+    defer names.close()
+    var identifier = Growing[u8]()
+    defer identifier.close()
+    try absolute_path("tests/fixtures/geom/scene_instances.usda", &identifier)
+    var composer = try Composer(&names, (str)identifier.view(), "")
+    defer composer.close()
+    var flat = try LayerData(&names)
+    defer flat.close()
+    try flatten_stage(&composer, &flat, false, not realize)
+    var warnings = Warnings()
+    defer warnings.close()
+    let options = ImportOptions(time = math.nan, realize = realize, purposes = 0, convert_units = false, subdivide_unauthored = false)
+    return try import_layer(&flat, &options, &warnings)
+
+pub func scene_instances() -> !:
+    let set = try import_scene(false)
+    defer dispose_set(set)
+    # A and B share a prototype; C's variant makes its own.
+    assert(set_mesh(set) == none and set.instance_count() == 3)
+    let a = try set.instance_translation(0)
+    let b = try set.instance_translation(1)
+    let c = try set.instance_translation(2)
+    assert(near(a.x, 5.0) and near(b.y, 5.0) and near(c.z, 5.0))
+    let flat = try import_scene(true)
+    defer dispose_set(flat)
+    let mesh = set_mesh(flat) else trap("no mesh")
+    assert(mesh.face_count() == 3)
+    # C's big triangle, placed at z = 5.
+    var found = false
+    for at in 0..<mesh.point_count():
+        let p = try mesh.point(at)
+        found = found or (near(p.x, 2.0) and near(p.z, 5.0))
+    assert(found)
