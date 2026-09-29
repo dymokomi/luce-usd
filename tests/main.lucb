@@ -10,6 +10,7 @@ import path_checks
 import value_checks
 import number_checks
 import usda_checks
+import usdc_checks
 
 ## Counts live blocks and fails the allocation after `remaining` more.
 struct Tracker: memory.Allocator:
@@ -84,4 +85,11 @@ pub func main(arguments: str[]) -> i32!:
     try usda_checks.large_arrays()
     settle(&tracker, "usda large arrays")
     inject(&tracker, 200, usda_checks.round_trip)
+    try usdc_checks.fixtures()
+    settle(&tracker, "usdc fixtures")
+    try usdc_checks.integers()
+    settle(&tracker, "integer coding")
+    try usdc_checks.damaged()
+    settle(&tracker, "damaged crates")
+    inject(&tracker, 120, usdc_checks.fixtures)
     return 0

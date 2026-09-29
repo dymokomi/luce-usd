@@ -200,10 +200,26 @@ extend Writer:
             try self.byte(' ')
             try self.key(key)
             try self.put(" = ")
-            try self.value(entry)
+            if entry.kind == ValueKind.path_expression:
+                # TfStringify prints path expressions in dictionaries unquoted.
+                try self.bare_expressions(entry)
+            else:
+                try self.value(entry)
             try self.put("\n")
         try self.indent(indent)
         try self.put("}\n")
+
+    ## A path expression value, or an array of them, without quotes.
+    mutating func bare_expressions(value: const Value*) -> !:
+        if not value.array:
+            try self.token_text(value.as_token())
+            return
+        try self.byte('[')
+        let bytes = value.bytes()
+        for index in 0..<value.count:
+            if index > 0: try self.put(", ")
+            try self.token_text(memory.read[u32]((void*)&bytes[index * 4]))
+        try self.byte(']')
 
     ## A dictionary key: bare when it is an identifier, quoted otherwise.
     mutating func key(text: str) -> !:

@@ -1,0 +1,331 @@
+## ValueReps into Values (CrateFile::_UnpackValue and _Reader::Read):
+## always-inlined values in the payload (4-byte scalars, token, string, path
+## and asset indexes, enums), values inlined when they fit (doubles exact as
+## floats, integers in 32 bits, vectors of int8 components, matrices with an
+## int8 diagonal, empty dictionaries), and everything else at the payload's
+## file offset: dictionaries, list ops, time samples, vectors, references,
+## payloads, relocates and nested values.
+
+## Values nest (dictionaries, VtValues, time samples) at most this deep.
+let most_depth: usize = 64
+
+extend Crate:
+    ## The value `rep` holds (arrays included, decoded here).
+    mutating func value(rep: u64) -> Value!:
+        if rep_array_edit(rep): error(errors.unsupported, "crate array edits are not supported yet")
+        if rep_array(rep): return try self.array(rep)
+        let kind = rep_type(rep)
+        let payload = rep_payload(rep)
+        let inline_bits = payload & 0xFFFFFFFF
+        match (ValueKind)kind:
+            .boolean, .uchar:
+                return Value.scalar((ValueKind)kind, inline_bits & 0xFF)
+            .int:
+                return Value.scalar(ValueKind.int, (u64)(i64)(i32)(u32)inline_bits)
+            .uint:
+                return Value.scalar(ValueKind.uint, inline_bits)
+            .half:
+                return Value.scalar(ValueKind.half, inline_bits & 0xFFFF)
+            .float:
+                return Value.scalar(ValueKind.float, inline_bits)
+            .int64:
+                if rep_inlined(rep): return Value.scalar(ValueKind.int64, (u64)(i64)(i32)(u32)inline_bits)
+                return Value.scalar(ValueKind.int64, try self.u64_at(payload))
+            .uint64:
+                if rep_inlined(rep): return Value.scalar(ValueKind.uint64, inline_bits)
+                return Value.scalar(ValueKind.uint64, try self.u64_at(payload))
+            .double:
+                if rep_inlined(rep): return Value.scalar(ValueKind.double, ((f64)f32.bits((u32)inline_bits)).bits())
+                return Value.scalar(ValueKind.double, try self.u64_at(payload))
+            .time_code:
+                if rep_inlined(rep): return Value.scalar(ValueKind.time_code, ((f64)f32.bits((u32)inline_bits)).bits())
+                return Value.scalar(ValueKind.time_code, try self.u64_at(payload))
+            .string:
+                return Value.scalar(ValueKind.string, (u64)try self.string(inline_bits))
+            .token:
+                return Value.scalar(ValueKind.token, (u64)try self.token(inline_bits))
+            .asset:
+                return Value.scalar(ValueKind.asset, (u64)try self.token(inline_bits))
+            .path_expression:
+                if rep_inlined(rep): return Value.scalar(ValueKind.path_expression, (u64)try self.string(inline_bits))
+                return Value.scalar(ValueKind.path_expression, (u64)try self.string((u64)try self.u32_at(payload)))
+            .specifier, .permission:
+                return Value.scalar((ValueKind)kind, inline_bits)
+            .variability:
+                # The legacy "config" variability (2) reads as uniform.
+                return Value.scalar(ValueKind.variability, variability_uniform if inline_bits == 2 else inline_bits)
+            .value_block, .animation_block:
+                return Value.marker((ValueKind)kind)
+            .matrix2d, .matrix3d, .matrix4d, .vec2d, .vec3d, .vec4d, .vec2f, .vec3f, .vec4f, .vec2h, .vec3h, .vec4h, .vec2i, .vec3i, .vec4i, .quatd, .quatf, .quath:
+                return try self.tuple_value((ValueKind)kind, rep)
+            .dictionary:
+                if rep_inlined(rep): return Value.of_object(ValueKind.dictionary, (void*)try Dictionary.create())
+                var end = payload
+                return try self.dictionary_at(&end)
+            .token_vector, .path_vector, .string_vector:
+                return try self.id_vector((ValueKind)kind, payload)
+            .double_vector:
+                let count = try self.u64_at(payload)
+                var column = try Column[u8].copy_of(try self.bytes_at(payload + 8, count * 8))
+                return Value.of_records(ValueKind.double_vector, (usize)count, column)
+            .layer_offset_vector:
+                let count = try self.u64_at(payload)
+                var column = try Column[u8].copy_of(try self.bytes_at(payload + 8, count * 16))
+                return Value.of_records(ValueKind.layer_offset_vector, (usize)count, column)
+            .variant_selection_map:
+                return try self.selection_map(payload)
+            .relocates:
+                return try self.relocates_at(payload)
+            .token_list_op, .string_list_op, .path_list_op, .reference_list_op, .payload_list_op, .int_list_op, .int64_list_op, .uint_list_op, .uint64_list_op, .unregistered_value_list_op:
+                return try self.list_op_at((ValueKind)kind, payload)
+            .payload:
+                # A single payload (files before list-op payloads): an explicit list op of one.
+                let list = try ListOp.create()
+                var value = Value.of_object(ValueKind.payload_list_op, (void*)list)
+                errdefer value.release()
+                list.explicit = true
+                var at = payload
+                let item = try self.payload_item(&at)
+                # An empty payload means no payload: an empty explicit list.
+                let empty = self.names.text_of((u32)item.a).length == 0 and (u32)item.b == empty_path
+                if not empty: try list.push(ListPart.explicit, item)
+                return value
+            .time_samples:
+                return try self.time_samples_at(payload)
+            .value:
+                var end = payload
+                return try self.nested(&end)
+            .unregistered_value:
+                var end = payload
+                var inner = try self.nested(&end)
+                errdefer inner.release()
+                if inner.kind == ValueKind.string:
+                    return Value.scalar(ValueKind.unregistered_value, inner.bits)
+                if inner.kind == ValueKind.dictionary:
+                    let object = inner.object else trap("dictionary")
+                    inner.object = none
+                    inner.release()
+                    return Value.of_object(ValueKind.unregistered_value, object)
+                if inner.kind == ValueKind.unregistered_value_list_op: return inner
+                error(errors.invalid, "an unregistered crate value of an unexpected type")
+            .spline:
+                error(errors.unsupported, "crate spline values are not supported yet")
+            _:
+                error(errors.unsupported, "a crate value type this reader does not know")
+
+    ## A vector, quaternion or matrix: inline (int8 components or diagonal)
+    ## or its bytes at the payload.
+    mutating func tuple_value(kind: ValueKind, rep: u64) -> Value!:
+        let size = element_bytes(kind)
+        let payload = rep_payload(rep)
+        if not rep_inlined(rep): return try Value.of_bytes(kind, try self.bytes_at(payload, (u64)size))
+        # A four-byte vector (half2) is always inlined as its own bytes.
+        if size <= 4:
+            var raw: u8[4]
+            memory.write[u32]((void*)&raw[0], (u32)(payload & 0xFFFFFFFF))
+            return try Value.of_bytes(kind, raw[..<size])
+        var bytes: u8[128]
+        let scalar = scalar_of(kind)
+        let scalar_size = element_bytes(scalar)
+        let matrix = kind == ValueKind.matrix2d or kind == ValueKind.matrix3d or kind == ValueKind.matrix4d
+        if matrix:
+            let rows: usize = 2 if kind == ValueKind.matrix2d else (3 if kind == ValueKind.matrix3d else 4)
+            for row in 0..<rows:
+                let value = (f64)(i8)(u8)((payload >> (u64)(row * 8)) & 0xFF)
+                memory.write[f64]((void*)&bytes[(row * rows + row) * 8], value)
+            return try Value.of_bytes(kind, bytes[..<size])
+        let count = components(kind)
+        for index in 0..<count:
+            let component = (i8)(u8)((payload >> (u64)(index * 8)) & 0xFF)
+            store_small(scalar, component, &bytes[index * scalar_size])
+        return try Value.of_bytes(kind, bytes[..<size])
+
+    ## A token, path or string vector: u64 count, then u32 indexes.
+    mutating func id_vector(kind: ValueKind, at: u64) -> Value!:
+        let count = try self.u64_at(at)
+        let raw = try self.bytes_at(at + 8, count * 4)
+        var column = try Column[u8].allocate((usize)count * 4)
+        errdefer column.release()
+        let ids = column.span()
+        for index in 0..<(usize)count:
+            let crate_index = (u64)memory.read[u32]((void*)&raw[index * 4])
+            var id: u32 = 0
+            match kind:
+                .token_vector: id = try self.token(crate_index)
+                .path_vector: id = try self.path(crate_index)
+                _: id = try self.string(crate_index)
+            memory.write[u32]((void*)&ids[index * 4], id)
+        return Value.of_records(kind, (usize)count, column)
+
+    ## A dictionary at `*at`: u64 count, then (string index, nested value)
+    ## pairs; `*at` moves past it.
+    mutating func dictionary_at(at: u64*) -> Value!:
+        if self.depth >= most_depth: error(errors.invalid, "crate values nested too deeply")
+        self.depth += 1
+        defer self.depth -= 1
+        let dictionary = try Dictionary.create()
+        var value = Value.of_object(ValueKind.dictionary, (void*)dictionary)
+        errdefer value.release()
+        let count = try self.u64_at(*at)
+        if count > (u64)self.data.length: error(errors.invalid, "a crate dictionary with too many entries")
+        *at += 8
+        for _ in 0..<count:
+            let key = try self.string((u64)try self.u32_at(*at))
+            *at += 4
+            try dictionary.put(key, try self.nested(at))
+        return value
+
+    ## A nested VtValue at `*at`: an int64 offset (relative to `*at`) to its
+    ## ValueRep; `*at` moves past the rep, as the reader's stream does.
+    mutating func nested(at: u64*) -> Value!:
+        if self.depth >= most_depth: error(errors.invalid, "crate values nested too deeply")
+        self.depth += 1
+        defer self.depth -= 1
+        let offset = try self.i64_at(*at)
+        let rep_at = (i64)*at + offset
+        if rep_at < 0: error(errors.invalid, "a crate value offset before the file")
+        let rep = try self.u64_at((u64)rep_at)
+        *at = (u64)rep_at + 8
+        return try self.value(rep)
+
+    ## A variant selection map: u64 count, then (string, string) index pairs.
+    mutating func selection_map(at: u64) -> Value!:
+        let count = try self.u64_at(at)
+        let raw = try self.bytes_at(at + 8, count * 8)
+        var column = try Column[u8].allocate((usize)count * 8)
+        errdefer column.release()
+        let pairs = column.span()
+        for index in 0..<(usize)count * 2:
+            memory.write[u32]((void*)&pairs[index * 4], try self.string((u64)memory.read[u32]((void*)&raw[index * 4])))
+        return Value.of_records(ValueKind.variant_selection_map, (usize)count, column)
+
+    ## Relocates: u64 count, then (source, target) path index pairs.
+    mutating func relocates_at(at: u64) -> Value!:
+        let count = try self.u64_at(at)
+        let raw = try self.bytes_at(at + 8, count * 8)
+        var column = try Column[u8].allocate((usize)count * 8)
+        errdefer column.release()
+        let pairs = column.span()
+        for index in 0..<(usize)count * 2:
+            memory.write[u32]((void*)&pairs[index * 4], try self.path((u64)memory.read[u32]((void*)&raw[index * 4])))
+        return Value.of_records(ValueKind.relocates, (usize)count, column)
+
+    ## A list op: a header byte (explicit, then which parts follow), then
+    ## each part as a u64 count and its items.
+    mutating func list_op_at(kind: ValueKind, at: u64) -> Value!:
+        let list = try ListOp.create()
+        var value = Value.of_object(kind, (void*)list)
+        errdefer value.release()
+        let bits = (try self.bytes_at(at, 1))[0]
+        list.explicit = bits & 1 != 0
+        var cursor = at + 1
+        # The header's part order: explicit, added, deleted, ordered, prepended, appended.
+        let flags: u8[6] = [2, 4, 8, 16, 32, 64]
+        let parts: ListPart[6] = [ListPart.explicit, ListPart.added, ListPart.deleted, ListPart.ordered, ListPart.prepended, ListPart.appended]
+        # The file order of the parts: explicit, added, prepended, appended, deleted, ordered.
+        let order: usize[6] = [0, 1, 4, 5, 2, 3]
+        for position in order:
+            if bits & flags[position] == 0: continue
+            let count = try self.u64_at(cursor)
+            if count > (u64)self.data.length: error(errors.invalid, "a crate list op with too many items")
+            cursor += 8
+            for _ in 0..<count:
+                try list.push(parts[position], try self.list_item(kind, &cursor))
+        return value
+
+    ## One list op item at `*at`, advancing it.
+    mutating func list_item(kind: ValueKind, at: u64*) -> ListItem!:
+        var item = ListItem(a = 0, b = 0, offset = 0.0, scale = 1.0, custom = none)
+        match kind:
+            .token_list_op:
+                item.a = (u64)try self.token((u64)try self.u32_at(*at))
+                *at += 4
+            .string_list_op:
+                item.a = (u64)try self.string((u64)try self.u32_at(*at))
+                *at += 4
+            .path_list_op:
+                item.a = (u64)try self.path((u64)try self.u32_at(*at))
+                *at += 4
+            .int_list_op:
+                item.a = (u64)(i64)(i32)try self.u32_at(*at)
+                *at += 4
+            .uint_list_op:
+                item.a = (u64)try self.u32_at(*at)
+                *at += 4
+            .int64_list_op, .uint64_list_op:
+                item.a = try self.u64_at(*at)
+                *at += 8
+            .reference_list_op:
+                item.a = (u64)try self.string((u64)try self.u32_at(*at))
+                let prim = (u64)try self.u32_at(*at + 4)
+                item.b = (u64)try self.path(prim)
+                item.offset = try self.f64_at(*at + 8)
+                item.scale = try self.f64_at(*at + 16)
+                *at += 24
+                var custom = try self.dictionary_at(at)
+                if let object = custom.object:
+                    custom.object = none
+                    let dictionary = (Dictionary*)object
+                    if dictionary.count() == 0:
+                        var empty = Value.of_object(ValueKind.dictionary, object)
+                        empty.release()
+                    else:
+                        item.custom = dictionary
+            .payload_list_op:
+                item = try self.payload_item(at)
+            .unregistered_value_list_op:
+                # Each item is a VtValue holding a string.
+                var inner = try self.nested(at)
+                defer inner.release()
+                if inner.kind != ValueKind.string: error(errors.invalid, "an unregistered crate list item that is not a string")
+                item.a = inner.bits
+            _: error(errors.invalid, "a crate list op of an unknown kind")
+        return item
+
+    ## A payload at `*at`: asset string, prim path, and (from 0.8.0) a layer offset.
+    mutating func payload_item(at: u64*) -> ListItem!:
+        var item = ListItem(a = (u64)try self.string((u64)try self.u32_at(*at)), b = 0, offset = 0.0, scale = 1.0, custom = none)
+        item.b = (u64)try self.path((u64)try self.u32_at(*at + 4))
+        *at += 8
+        if self.since(8):
+            item.offset = try self.f64_at(*at)
+            item.scale = try self.f64_at(*at + 8)
+            *at += 16
+        return item
+
+    ## Time samples: an offset to the times' ValueRep, an offset to the
+    ## values, then a u64 count and that many ValueReps.
+    mutating func time_samples_at(at: u64) -> Value!:
+        let samples = try TimeSamples.create()
+        var value = Value.of_object(ValueKind.time_samples, (void*)samples)
+        errdefer value.release()
+        let times_offset = try self.i64_at(at)
+        let times_at = (i64)at + times_offset
+        if times_at < 0: error(errors.invalid, "a crate time sample offset before the file")
+        let times_rep = try self.u64_at((u64)times_at)
+        var times = try self.value(times_rep)
+        defer times.release()
+        var time_values: const f64[] = times.doubles()
+        if times.kind == ValueKind.double and times.array:
+            let bytes = times.bytes()
+            time_values = f64[]((f64*)bytes.data, bytes.length // 8)
+        elif times.kind != ValueKind.double_vector:
+            error(errors.invalid, "crate sample times that are not doubles")
+        let values_offset_at = (u64)times_at + 8
+        let values_offset = try self.i64_at(values_offset_at)
+        let values_at = (i64)values_offset_at + values_offset
+        if values_at < 0: error(errors.invalid, "a crate time sample offset before the file")
+        let count = try self.u64_at((u64)values_at)
+        if count != (u64)time_values.length: error(errors.invalid, "crate time samples with more values than times")
+        for index in 0..<(usize)count:
+            let rep = try self.u64_at((u64)values_at + 8 + (u64)index * 8)
+            try samples.put(time_values[index], try self.value(rep))
+        return value
+
+## Store an int8 component as a scalar of `kind`.
+func store_small(kind: ValueKind, value: i8, out: u8*):
+    match kind:
+        .double: memory.write[f64]((void*)out, (f64)value)
+        .float: memory.write[f32]((void*)out, (f32)value)
+        .half: memory.write[u16]((void*)out, ((f16)(f32)value).bits())
+        _: memory.write[i32]((void*)out, (i32)value)

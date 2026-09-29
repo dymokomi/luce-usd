@@ -8,12 +8,12 @@ a gradual rewrite of Pixar's [OpenUSD](https://github.com/PixarAnimationStudios/
 UsdGeom) and each names the OpenUSD sources it ports. `docs/PORT.md` tracks
 what is ported.
 
-Status: **M2**. The Sdf data model (tokens, paths, values, list ops, layer
-data) and the usda text format, read and written exactly as OpenUSD does:
-2,017 of the 2,056 layers in OpenUSD's test corpus print byte-identical to
-`usdcat` (splines and array edits are not read yet). `Usd.serialization(path)`
-names a file's serialization by its signature. The usdc crate format comes
-next (docs/PORT.md has the plan).
+Status: **M3**. The Sdf data model (tokens, paths, values, list ops, layer
+data), the usda text format read and written exactly as OpenUSD does, and
+usdc crate reading (every crate version, compressed arrays, parallel
+decode). Against OpenUSD's own test corpus, 2,019 of 2,056 text layers print
+byte-identical to `usdcat`, and every crate reads identically (splines and
+array edits are not read yet). Crate writing comes next (docs/PORT.md).
 
 ## Exports
 

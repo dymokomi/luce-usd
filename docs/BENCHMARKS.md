@@ -14,11 +14,15 @@ corner `uv`, as luce-geocore's benchmark saves it.
 | Reference: read that file whole (bytes) | 6.1 ms | 84,089,051 |
 | usda: read the grid layer (bytes) | 111 ms | 156,993,389 |
 | usda: write the grid layer (bytes) | 124 ms | 108,574,613 |
+| usdc: read the grid layer (bytes) | 18 ms | 30,863,382 |
 
 The usda grid is the same mesh as a layer: points, face vertex counts and
 indices, and a faceVarying `primvars:st`, written with 17-digit doubles for
 the uvs (the written layer prints floats in their shorter float form).
 Numeric arrays parse and format in parallel chunks on luce-geocore's pool.
+The usdc grid is the same layer written by OpenUSD's usdcat (crate 0.8.0,
+compressed integer arrays); crate arrays decode in parallel, each straight
+into its column (the time excludes reading the file, about 3 ms).
 
 ## Targets
 

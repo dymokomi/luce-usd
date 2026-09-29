@@ -1,0 +1,80 @@
+## Array values (CrateFile's UnpackArray and _ReadPossiblyCompressedArray):
+## a count (u32 before 0.7.0, u64 after; a rank before it before 0.5.0),
+## then the elements. Integer arrays of 16 or more may be integer-
+## compressed (0.5.0); half, float and double arrays may hold 'i' (all
+## integral: compressed int32s) or 't' (a lookup table and compressed
+## indexes) (0.6.0). Token, string, asset and path expression arrays hold
+## crate indexes. Elements go straight into the array's column.
+
+## Arrays shorter than this are never compressed.
+let min_compressed: u64 = 16
+
+extend Crate:
+    ## The array value `rep` holds.
+    func array(rep: u64) -> Value!:
+        let kind = (ValueKind)rep_type(rep)
+        let size = element_bytes(kind)
+        if size == 0: error(errors.invalid, "a crate array of a type that cannot form arrays")
+        let payload = rep_payload(rep)
+        if payload == 0: return Value.of_array(kind, 0, Column[u8]())
+        var at = payload
+        if not self.since(5): at += 4
+        var count: u64 = 0
+        if self.since(7):
+            count = try self.u64_at(at)
+            at += 8
+        else:
+            count = (u64)try self.u32_at(at)
+            at += 4
+        if count > (u64)self.data.length * 8: error(errors.invalid, "a crate array longer than the file can hold")
+        var column = try Column[u8].allocate((usize)count * size)
+        errdefer column.release()
+        let out = column.span()
+        let compressed = rep_compressed(rep) and count >= min_compressed
+        match kind:
+            .int, .uint, .int64, .uint64:
+                if compressed and self.since(5):
+                    discard(try self.compressed_ints(at, (usize)count, size, out))
+                else:
+                    memory.copy(out, try self.bytes_at(at, count * (u64)size), out.length)
+            .half, .float, .double:
+                if compressed and self.since(6):
+                    try self.compressed_reals(kind, at, (usize)count, out)
+                else:
+                    memory.copy(out, try self.bytes_at(at, count * (u64)size), out.length)
+            .token, .string, .asset, .path_expression:
+                let raw = try self.bytes_at(at, count * 4)
+                for index in 0..<(usize)count:
+                    let crate_index = (u64)memory.read[u32]((void*)&raw[index * 4])
+                    let id = try self.token(crate_index) if kind == ValueKind.token else try self.string(crate_index)
+                    memory.write[u32]((void*)&out[index * 4], id)
+            _:
+                memory.copy(out, try self.bytes_at(at, count * (u64)size), out.length)
+        return Value.of_array(kind, (usize)count, column)
+
+    ## A compressed half, float or double array: 'i' then compressed int32s,
+    ## or 't' then a lookup table and compressed u32 indexes.
+    func compressed_reals(kind: ValueKind, at: u64, count: usize, out: u8[]) -> !:
+        let code = (try self.bytes_at(at, 1))[0]
+        let ints = try alloc u8[count * 4] in memory.heap
+        defer free(ints) in memory.heap
+        if code == 'i':
+            discard(try self.compressed_ints(at + 1, count, 4, ints))
+            for index in 0..<count:
+                let value = memory.read[i32]((void*)&ints[index * 4])
+                match kind:
+                    .double: memory.write[f64]((void*)&out[index * 8], (f64)value)
+                    .float: memory.write[f32]((void*)&out[index * 4], (f32)value)
+                    _: memory.write[u16]((void*)&out[index * 2], ((f16)(f32)value).bits())
+            return
+        if code == 't':
+            let size = element_bytes(kind)
+            let entries = (u64)try self.u32_at(at + 1)
+            let table = try self.bytes_at(at + 5, entries * (u64)size)
+            discard(try self.compressed_ints(at + 5 + entries * (u64)size, count, 4, ints))
+            for index in 0..<count:
+                let entry = (u64)memory.read[u32]((void*)&ints[index * 4])
+                if entry >= entries: error(errors.invalid, "a crate lookup index outside its table")
+                memory.copy(out[index * size..], table[(usize)entry * size..], size)
+            return
+        error(errors.invalid, "a compressed crate array with an unknown code")

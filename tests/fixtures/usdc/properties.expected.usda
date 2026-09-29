@@ -1,0 +1,21 @@
+#usda 1.0
+
+def "a"
+{
+    PointIndex i = 1
+    matrix4d m = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1) )
+    point3f[] p = [(1, 2, 3)]
+    rel q = None
+    custom rel r
+    string s = "x" (
+        customData = {
+            int a = 1
+        }
+        doc = "hi"
+    )
+    Transform t = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1) )
+    varying rel v
+    float3 x = (1, 2, 3)
+    add rel z = </a>
+}
+

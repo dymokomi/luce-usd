@@ -211,6 +211,7 @@ extend Reader:
         self.at += 1
         let text = try self.unescape(raw)
         return self.names.parse_path(text) catch failure:
+            if failure.code == memory.exhausted: error(failure.code, failure.message)
             error(errors.invalid, self.where("not a valid path"))
 
 func hex_digit(byte: u8) -> i32:

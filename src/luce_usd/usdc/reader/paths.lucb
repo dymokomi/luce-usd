@@ -1,0 +1,135 @@
+## The path tree (CrateFile::_ReadPaths). From 0.4.0 it is three
+## integer-compressed columns: the path index each entry fills, its element
+## token (negative for a prim property), and a jump: -2 a leaf, -1 a child
+## only, 0 a sibling only, n > 0 a child next and a sibling n entries on.
+## Before 0.4.0 it is a stream of headers (index, element token, bits) with
+## a sibling offset when an entry has both a child and a sibling. Elements
+## append as SdfPath::AppendElementToken does: `{set=sel}`, `[target]`,
+## `.name`, or a prim name.
+
+## A branch to come back to: an entry (or file offset) and its parent.
+struct Branch:
+    var at: u64
+    var parent: u32
+
+extend Crate:
+    mutating func read_paths(start: u64) -> !:
+        let count = try self.u64_at(start)
+        if count > (u64)self.data.length: error(errors.invalid, "a crate claims more paths than it can hold")
+        try self.paths.fill((usize)count, empty_path)
+        if not self.since(4):
+            try self.read_path_headers(start + 8)
+            return
+        let entries = try self.u64_at(start + 8)
+        if entries > count: error(errors.invalid, "a crate path table with more entries than paths")
+        let size = (usize)entries
+        let columns = try alloc u8[size * 12] in memory.heap
+        defer free(columns) in memory.heap
+        var at = start + 16
+        at = try self.compressed_ints(at, size, 4, columns[..<size * 4])
+        at = try self.compressed_ints(at, size, 4, columns[size * 4..<size * 8])
+        discard(try self.compressed_ints(at, size, 4, columns[size * 8..]))
+        var stack = Growing[Branch]()
+        defer stack.close()
+        if size == 0: return
+        var index: usize = 0
+        var parent = empty_path
+        var steps: usize = 0
+        while true:
+            steps += 1
+            if steps > size * 2 + 2: error(errors.invalid, "a crate path tree that loops")
+            if index >= size: error(errors.invalid, "a crate path jump outside the table")
+            let target = (usize)memory.read[u32]((void*)&columns[index * 4])
+            if target >= self.paths.count: error(errors.invalid, "a crate path index outside the table")
+            let element = memory.read[i32]((void*)&columns[(size + index) * 4])
+            let jump = memory.read[i32]((void*)&columns[(size * 2 + index) * 4])
+            var here = absolute_root
+            if parent != empty_path:
+                let token_index = (u64)(element if element >= 0 else -element)
+                here = try self.append_element(parent, try self.token(token_index), element < 0)
+            self.paths.items[target] = here
+            let child = jump > 0 or jump == -1
+            let sibling = jump >= 0
+            if child:
+                if sibling:
+                    if jump > 0 and index + (usize)jump >= size: error(errors.invalid, "a crate path sibling outside the table")
+                    try stack.push(Branch(at = (u64)(index + (usize)jump), parent = parent))
+                parent = here
+                index += 1
+            elif sibling:
+                index += 1
+            else:
+                if stack.count == 0: break
+                stack.count -= 1
+                let branch = stack.items[stack.count]
+                index = (usize)branch.at
+                parent = branch.parent
+
+    ## The header stream of files before 0.4.0.
+    mutating func read_path_headers(start: u64) -> !:
+        let size: u64 = 16 if not self.since(1) else 12
+        let skip: u64 = 4 if not self.since(1) else 0
+        var stack = Growing[Branch]()
+        defer stack.close()
+        var at = start
+        var parent = empty_path
+        var steps: usize = 0
+        while true:
+            steps += 1
+            if steps > self.paths.count * 2 + 2: error(errors.invalid, "a crate path tree that loops")
+            let header = try self.bytes_at(at + skip, 9)
+            at += size
+            let target = (usize)memory.read[u32]((void*)&header[0])
+            if target >= self.paths.count: error(errors.invalid, "a crate path index outside the table")
+            let element = (u64)memory.read[u32]((void*)&header[4])
+            let bits = header[8]
+            var here = absolute_root
+            if parent != empty_path:
+                here = try self.append_element(parent, try self.token(element), bits & 4 != 0)
+            self.paths.items[target] = here
+            let child = bits & 1 != 0
+            let sibling = bits & 2 != 0
+            if child:
+                if sibling:
+                    let offset = try self.i64_at(at)
+                    at += 8
+                    if offset < 0: error(errors.invalid, "a crate path sibling offset before the file")
+                    try stack.push(Branch(at = (u64)offset, parent = parent))
+                parent = here
+            elif sibling:
+                discard(0)
+            else:
+                if stack.count == 0: break
+                stack.count -= 1
+                let branch = stack.items[stack.count]
+                at = branch.at
+                parent = branch.parent
+
+    ## `parent` with the element `token` appended.
+    mutating func append_element(parent: u32, token: u32, property: bool) -> u32!:
+        if property: return try self.names.property(parent, token)
+        let text = self.names.text_of(token)
+        if text.length == 0: error(errors.invalid, "an empty crate path element")
+        let first = text.bytes[0]
+        if first == '{':
+            # {set=selection}
+            var equals: usize = 1
+            while equals < text.length and text.bytes[equals] != '=': equals += 1
+            if equals >= text.length or text.bytes[text.length - 1] != '}': error(errors.invalid, "a malformed crate variant selection")
+            let set = try self.names.token((str)text.bytes[1..<equals])
+            let selection = try self.names.token((str)text.bytes[equals + 1..<text.length - 1])
+            return try self.names.variant(parent, set, selection)
+        if first == '[':
+            if text.bytes[text.length - 1] != ']': error(errors.invalid, "a malformed crate target element")
+            let target = self.names.parse_path((str)text.bytes[1..<text.length - 1]) catch failure:
+                if failure.code == memory.exhausted: error(failure.code, failure.message)
+                error(errors.invalid, "a crate target element that is not a path")
+            return try self.names.target(parent, target)
+        if first == '.':
+            let name = try self.names.token((str)text.bytes[1..])
+            let kind = self.names.kind(parent)
+            if kind == PathKind.target: return try self.names.relational(parent, name)
+            if kind == PathKind.mapper: return try self.names.mapper_arg(parent, name)
+            if (str)text.bytes[1..] == "expression": return try self.names.expression(parent)
+            return try self.names.property(parent, name)
+        return try self.names.child(parent, token)

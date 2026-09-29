@@ -1,0 +1,91 @@
+## The usdc reader: crates OpenUSD wrote (tests/fixtures/usdc, made by
+## usdcat from our layers) read into layers that print as usdcat prints
+## them; the integer coding round-trips; damaged crates fail cleanly.
+import memory
+from usd_kernel import Names, LayerData, read_usdc, write_usda, read_file, most_bytes, decode_integers, encode_integers, encoded_bound, invalid, unsupported
+from geocore_growing import Growing
+
+pub func fixtures() -> !:
+    try fixture("values")
+    try fixture("properties")
+    try fixture("composition")
+    try fixture("arrays")
+
+func fixture(name: str) -> !:
+    var buffer: u8[256]
+    let crate = try read_file(try format(buffer, f"tests/fixtures/usdc/{name}.usdc"), most_bytes)
+    defer free(crate) in memory.heap
+    var expected_buffer: u8[256]
+    let expected = try read_file(try format(expected_buffer, f"tests/fixtures/usdc/{name}.expected.usda"), most_bytes)
+    defer free(expected) in memory.heap
+    var names = try Names()
+    defer names.close()
+    var layer = try LayerData(&names)
+    defer layer.close()
+    try read_usdc(crate, &layer)
+    var out = Growing[u8]()
+    defer out.close()
+    try write_usda(&layer, &out)
+    if (str)out.view() != (str)expected:
+        print(f"crate fixture {name} prints differently:")
+        print((str)out.view())
+    assert((str)out.view() == (str)expected)
+
+## Encode then decode integers of both widths, with every code in play.
+pub func integers() -> !:
+    let count: usize = 1000
+    var values = try alloc i64[count] in memory.heap
+    defer free(values) in memory.heap
+    var state: u64 = 7
+    for index in 0..<count:
+        state = state *% 6364136223846793005 +% 1442695040888963407
+        let pick = (state >> 60) & 3
+        var step: i64 = 1
+        if pick == 1: step = (i64)((state >> 20) & 0xFF) - 128
+        elif pick == 2: step = (i64)((state >> 20) & 0xFFFF) - 32768
+        elif pick == 3: step = (i64)((state >> 20) & 0xFFFFFFF) - 134217728
+        values[index] = (values[index - 1] if index > 0 else 0) + step
+    let widths: usize[2] = [4, 8]
+    for width in widths:
+        let raw = try alloc u8[count * width] in memory.heap
+        defer free(raw) in memory.heap
+        for index in 0..<count:
+            if width == 4: memory.write[i32]((void*)&raw[index * 4], (i32)values[index])
+            else: memory.write[i64]((void*)&raw[index * 8], values[index] * 1000003)
+        let encoded = try alloc u8[encoded_bound(count, width)] in memory.heap
+        defer free(encoded) in memory.heap
+        let length = try encode_integers(raw, count, width, encoded)
+        let back = try alloc u8[count * width] in memory.heap
+        defer free(back) in memory.heap
+        try decode_integers(encoded[..<length], count, width, back)
+        for index in 0..<raw.length: assert(back[index] == raw[index])
+
+## Truncated and damaged crates fail with invalid or unsupported, or read;
+## they never read out of bounds.
+pub func damaged() -> !:
+    var buffer: u8[256]
+    let crate = try read_file(try format(buffer, f"tests/fixtures/usdc/arrays.usdc"), most_bytes)
+    defer free(crate) in memory.heap
+    let copy = try alloc u8[crate.length] in memory.heap
+    defer free(copy) in memory.heap
+    var names = try Names()
+    defer names.close()
+    var cut: usize = 0
+    while cut < crate.length:
+        try attempt(&names, crate[..<cut])
+        cut += 7
+    var state: u64 = 99
+    for trial in 0..<400:
+        memory.copy(copy, crate, crate.length)
+        state = state *% 6364136223846793005 +% 1442695040888963407
+        let at = (usize)((state >> 16) % (u64)crate.length)
+        copy[at] = copy[at] ^ (u8)(1 << (u8)(trial % 8))
+        try attempt(&names, copy)
+
+func attempt(names: Names*, data: const u8[]) -> !:
+    var layer = try LayerData(names)
+    defer layer.close()
+    read_usdc(data, &layer) catch failure:
+        if failure.code != invalid and failure.code != unsupported:
+            print(f"a damaged crate failed with an unexpected code: {failure.message}")
+            assert(false)

@@ -65,3 +65,10 @@ pub let read_usda = usda_reader.read_usda
 import luce_usd.usda.writer as usda_writer
 
 pub let write_usda = usda_writer.write_usda
+import luce_usd.usdc.reader as usdc_reader
+import luce_usd.usdc.compression as crate_compression
+
+pub let read_usdc = usdc_reader.read_usdc
+pub let decode_integers = crate_compression.decode_integers
+pub let encode_integers = crate_compression.encode_integers
+pub let encoded_bound = crate_compression.encoded_bound

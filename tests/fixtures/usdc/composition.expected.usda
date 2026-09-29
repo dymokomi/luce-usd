@@ -1,0 +1,99 @@
+#usda 1.0
+(
+    "Composition arcs and structure a layer can hold"
+    defaultPrim = "World"
+    subLayers = [
+        @./base.usda@ (offset = 10; scale = 2),
+        @weak.usda@
+    ]
+    relocates = {
+        </World/Old>: </World/New>
+    }
+)
+
+def Xform "World" (
+    prepend apiSchemas = ["GeomModelAPI", "MaterialBindingAPI"]
+    customData = {
+        asset icon = @./icon.png@
+        dictionary nested = {
+            double3 offset = (1, 2, 3)
+            string[] tags = ["a", "b c"]
+        }
+    }
+    inherits = </_class_Thing>
+    kind = "assembly"
+    payload = @./heavy.usda@
+    references = [
+        @./ref.usda@</Asset> (offset = 5),
+        </Local> (
+            customData = {
+                int weight = 3
+            }
+        )
+    ]
+    append specializes = </_Base>
+    variants = {
+        string lod = "high"
+        string shade = "`'${SHADE}'`"
+    }
+    prepend variantSets = ["lod", "shade"]
+)
+{
+    reorder properties = ["b", "a"]
+    reorder nameChildren = ["Two", "One"]
+    float a.timeSamples = {
+        -1: 0.25,
+        0: None,
+        2.5: 1e-7,
+    }
+    float b = 1
+    float b.connect = </World/One.out>
+    custom rel material:binding = </World/Looks/Red> (
+        bindMaterialAs = "strongerThanDescendants"
+    )
+    prepend rel proxy = [
+        </World/One>,
+        </World/Two.attr>,
+    ]
+    quatf xformOp:orient = (0.7071068, 0, 0.7071068, 0)
+    double3 xformOp:translate = (1, 2.5, -3)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+
+    def Scope "One"
+    {
+        float out = 3
+    }
+
+    def Scope "Two"
+    {
+        int64[] big = [-9223372036854775808, 9223372036854775807]
+        string doc = """two
+lines"""
+        half[] halves = [0.0999756, 65504, -6.10352e-05]
+        matrix4d m = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (1e20, -0, 0.000001, 1) )
+    }
+    variantSet "lod" = {
+        "high" (
+            doc = "detailed"
+        ) {
+            def Mesh "detail"
+            {
+                point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+            }
+
+        }
+        "low" {
+            over "detail" (
+                active = false
+            )
+            {
+            }
+
+        }
+    }
+}
+
+class "_class_Thing"
+{
+}
+

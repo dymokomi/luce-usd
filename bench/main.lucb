@@ -12,7 +12,7 @@ import geocore
 from geocore import Vector3, Mesh, GeometrySet
 from geocore_kernel import save_geometry, load_geometry, adopt_set
 from geocore_growing import Growing
-from usd_kernel import read_file, most_bytes, Names, LayerData, read_usda, write_usda
+from usd_kernel import read_file, most_bytes, Names, LayerData, read_usda, read_usdc, write_usda
 from io import path
 
 func row(name: str, started: u64, count: usize):
@@ -67,6 +67,7 @@ pub func main(arguments: str[]) -> i32!:
     row("Reference: read that file whole (bytes)", started, bytes.length)
     free(bytes) in memory.heap
     if arguments.length > 1: try usda_rows(arguments[1])
+    if arguments.length > 2: try usdc_rows(arguments[2])
     return 0
 
 ## usda layers: the grid mesh (837x837, points, indices and a faceVarying
@@ -87,3 +88,15 @@ func usda_rows(file_path: str) -> !:
     try write_usda(&layer, &out)
     row("usda: write the grid layer (bytes)", started, out.count)
 
+
+## usdc layers: the grid mesh read from a crate into LayerData.
+func usdc_rows(file_path: str) -> !:
+    let data = try read_file(file_path, most_bytes)
+    defer free(data) in memory.heap
+    var names = try Names()
+    defer names.close()
+    var layer = try LayerData(&names)
+    defer layer.close()
+    let started = time.now()
+    try read_usdc(data, &layer)
+    row("usdc: read the grid layer (bytes)", started, data.length)
