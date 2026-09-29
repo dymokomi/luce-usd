@@ -14,16 +14,16 @@ struct ArcItem:
 
 extend Composer:
     ## Add the references (or payloads) of `node`.
-    mutating func eval_arcs(index: PrimIndex*, node: u32, payloads: bool, frame: const Frame*?, tasks: Growing[u8]*) -> !:
-        if not index.nodes.items[(usize)node].contributes(): return
+    mutating func eval_arcs(indexer: Indexer*, node: u32, payloads: bool) -> !:
+        if not indexer.index.node(node).contributes(): return
         if payloads and not try self.loads_payloads(): return
-        let stack = index.nodes.items[(usize)node].stack
-        let path = index.nodes.items[(usize)node].path
+        let stack = indexer.index.node(node).stack
+        let path = indexer.index.node(node).path
         var arcs = Growing[ArcItem]()
         defer arcs.close()
         try self.compose_arcs(stack, path, payloads, &arcs)
         for number in 0..<arcs.count:
-            try self.add_ref_arc(index, node, arcs.items[number], (i32)number, payloads, frame, tasks)
+            try self.add_ref_arc(indexer, node, arcs.items[number], (i32)number, payloads)
 
     ## The site's reference (payload) list ops applied weakest layer first.
     mutating func compose_arcs(stack: usize, path: u32, payloads: bool, out: Growing[ArcItem]*) -> !:
@@ -96,10 +96,10 @@ extend Composer:
         return try self.names.token((str)anchored.view())
 
     ## One reference or payload arc from `node`.
-    mutating func add_ref_arc(index: PrimIndex*, node: u32, arc: ArcItem, number: i32, payload: bool, frame: const Frame*?, tasks: Growing[u8]*) -> !:
+    mutating func add_ref_arc(indexer: Indexer*, node: u32, arc: ArcItem, number: i32, payload: bool) -> !:
         let names = self.names
-        let stack = index.nodes.items[(usize)node].stack
-        let node_path = index.nodes.items[(usize)node].path
+        let stack = indexer.index.node(node).stack
+        let node_path = indexer.index.node(node).path
         var prim = (u32)arc.item.b
         if prim != empty_path and not (names.is_absolute(prim) and names.is_prim(prim) and not names.has_variant_selection(prim)):
             try self.problems.add("Invalid reference or payload prim path")
@@ -135,32 +135,43 @@ extend Composer:
         if internal: map.root_identity = true
         let ancestral = not (names.node(prim).depth == 1 and names.is_prim(prim))
         let kind = ArcType.payload if payload else ArcType.reference
-        try self.add_arc(index, node, (i32)node, kind, target_stack, prim, map, number, namespace_depth(names, node_path), contribute, ancestral, frame, tasks)
+        discard(try self.add_arc(indexer, node, (i32)node, kind, target_stack, prim, map, number, namespace_depth(names, node_path), contribute, ancestral))
 
     ## Add an arc (_AddArc): unless it closes a cycle, a new child node, or
-    ## (bringing ancestral opinions) its target's own index as a subtree.
-    ## `map` is taken.
-    mutating func add_arc(index: PrimIndex*, parent: u32, origin: i32, kind: ArcType, stack: usize, path: u32, map: MapFunction, sibling: i32, depth: i32, contribute: bool, ancestral: bool, frame: const Frame*?, tasks: Growing[u8]*) -> !:
+    ## (bringing ancestral opinions) its target's own index as a subtree;
+    ## then queue the new nodes' tasks. `map` is taken. Whether a node was
+    ## added.
+    mutating func add_arc(indexer: Indexer*, parent: u32, origin: i32, kind: ArcType, stack: usize, path: u32, map: MapFunction, sibling: i32, depth: i32, contribute: bool, ancestral: bool) -> bool!:
         var owned = map
-        if try self.closes_cycle(index, parent, stack, path, frame):
+        let index = &indexer.index
+        if kind != ArcType.variant and try self.closes_cycle(index, parent, stack, path, indexer.frame):
             owned.close()
             try self.problems.add("Cycle detected")
-            return
+            return false
         var added: u32 = 0
         if not ancestral:
-            let node = Node(stack = stack, path = path, arc = kind, parent = (i32)parent, origin = origin, children = Growing[u32](), sibling = sibling, depth = depth, map_to_parent = owned, inert = not contribute, culled = false, has_specs = self.site_has_specs(stack, path))
+            let node = Node(stack = stack, path = path, arc = kind, parent = (i32)parent, origin = origin, children = Growing[u32](), sibling = sibling, depth = depth, map_to_parent = owned, inert = false, culled = false, has_specs = self.site_has_specs(stack, path), restricted = 0)
             added = try index.insert_child(parent, node)
-            try tasks.push(task_references | task_payloads)
+            if not contribute:
+                index.set_inert(self.names, added)
+                # Not even ancestrally (SetSpecContributionRestrictedDepth(1)).
+                index.nodes.items[(usize)added].restricted = 1
         else:
-            let below = Frame(index = index, parent = parent, stack = stack, path = path, previous = frame)
-            var sub = self.build(stack, path, &below, contribute) catch failure:
+            let below = Frame(index = index, parent = parent, stack = stack, path = path, previous = indexer.frame)
+            # Variants wait for the outer index, which knows stronger selections.
+            var sub = self.build(stack, path, &below, contribute, false) catch failure:
                 owned.close()
                 error(failure.code, failure.message)
             defer sub.close()
             added = try append_subtree(index, parent, &sub, kind, origin, sibling, depth, owned)
-            # The subtree evaluated its own arcs.
-            while tasks.count < index.nodes.count: try tasks.push(0)
-        if path == absolute_root: inert_subtree(index, added)
+        # A nested build evaluated the subtree's expressed arcs; its
+        # ancestral variants are evaluated only where variants are.
+        var tasks = all_tasks
+        if ancestral: tasks = tasks & ~expressed_arc_tasks
+        if not (indexer.variants and ancestral): tasks = tasks & ~ancestral_variant_tasks
+        try indexer.add_tasks(added, tasks)
+        if path == absolute_root: inert_subtree(index, added, self.names)
+        return true
 
     ## Whether an arc from `parent` to (`stack`, `path`) returns to a site
     ## at, above or below one on the way to the root, through every stack
@@ -214,16 +225,16 @@ func append_subtree(index: PrimIndex*, parent: u32, sub: const PrimIndex*, kind:
             owned = MapFunction.identity()
         else:
             node_map = try node.map_to_parent.copy()
-        index.nodes.push(Node(stack = node.stack, path = node.path, arc = kind if root else node.arc, parent = (i32)parent if root else node.parent + (i32)base, origin = origin if root else (node.origin + (i32)base if node.origin >= 0 else -1), children = children, sibling = sibling if root else node.sibling, depth = depth if root else node.depth, map_to_parent = node_map, inert = node.inert, culled = node.culled, has_specs = node.has_specs)) catch failure:
+        index.nodes.push(Node(stack = node.stack, path = node.path, arc = kind if root else node.arc, parent = (i32)parent if root else node.parent + (i32)base, origin = origin if root else (node.origin + (i32)base if node.origin >= 0 else -1), children = children, sibling = sibling if root else node.sibling, depth = depth if root else node.depth, map_to_parent = node_map, inert = node.inert, culled = node.culled, has_specs = node.has_specs, restricted = node.restricted)) catch failure:
             node_map.close()
             error(failure.code, failure.message)
     try index.link_child(parent, base)
     return base
 
 ## Make a node and everything under it inert (_InertSubtree).
-func inert_subtree(index: PrimIndex*, node: u32):
-    index.nodes.items[(usize)node].inert = true
-    for child in index.nodes.items[(usize)node].children.view(): inert_subtree(index, child)
+func inert_subtree(index: PrimIndex*, node: u32, names: const Names*):
+    index.set_inert(names, node)
+    for child in index.nodes.items[(usize)node].children.view(): inert_subtree(index, child, names)
 
 ## A layer's defaultPrim as a path: a root prim's name, or a prim path
 ## (SdfLayer::GetDefaultPrimAsPath).

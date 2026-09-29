@@ -13,7 +13,7 @@ struct Case:
     var session: str
     var unloaded: str
 
-let cases: Case[7] = [
+let cases: Case[11] = [
     Case(name = "BasicAncestralReference", session = "", unloaded = ""),
     Case(name = "BasicReferenceDiamond", session = "", unloaded = ""),
     Case(name = "BasicTimeOffset", session = "", unloaded = ""),
@@ -21,6 +21,10 @@ let cases: Case[7] = [
     Case(name = "SubrootReferenceNonCycle", session = "", unloaded = ""),
     Case(name = "BasicOwner", session = "session.usda", unloaded = ""),
     Case(name = "BasicPayloadDiamond", session = "", unloaded = "/RootUnloaded"),
+    Case(name = "BasicNestedVariants", session = "", unloaded = ""),
+    Case(name = "TrickyVariantSelectionInVariant", session = "", unloaded = ""),
+    Case(name = "TrickyVariantWeakerSelection", session = "", unloaded = ""),
+    Case(name = "TrickyNonLocalVariantSelection", session = "", unloaded = ""),
 ]
 
 pub func museum() -> !:

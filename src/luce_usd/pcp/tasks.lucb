@@ -1,0 +1,95 @@
+## The work queue of one index build, after Pcp_PrimIndexer's tasks
+## (pxr/usd/pcp/primIndex.cpp): each node's arcs are tasks, taken in the
+## priority order of their kinds (references, then payloads, inherits,
+## specializes, ancestral variants, variants), and among tasks of one kind
+## in node order, except that variant selections go strongest node first
+## so a stronger node's selection is found before a weaker one asks.
+
+## Task kinds in priority order (Pcp's Task::Type).
+let task_references: u32 = 4
+let task_payloads: u32 = 8
+let task_inherits: u32 = 16
+let task_specializes: u32 = 32
+let task_implied_specializes: u32 = 64
+let task_implied_classes: u32 = 128
+let task_ancestral_variant_sets: u32 = 256
+let task_ancestral_variant_authored: u32 = 512
+let task_ancestral_variant_fallback: u32 = 1024
+let task_ancestral_variant_none: u32 = 2048
+let task_variant_sets: u32 = 8192
+let task_variant_authored: u32 = 16384
+let task_variant_fallback: u32 = 32768
+let task_variant_none: u32 = 65536
+
+## Every kind; the arcs a node's own opinions express; the ancestral and
+## the plain variant kinds.
+let all_tasks: u32 = 0x1FFFF
+let expressed_arc_tasks: u32 = task_references | task_payloads | task_inherits | task_specializes
+let ancestral_variant_tasks: u32 = task_ancestral_variant_sets
+let variant_tasks: u32 = task_variant_sets
+
+## One task: a kind and a node, and for variant tasks the prim path the
+## variant set is at, its name and its position among the node's sets.
+struct Task:
+    var kind: u32
+    var node: u32
+    var path: u32
+    var name: u32
+    var number: i32
+
+## One index being built and its queue.
+struct Indexer:
+    var index: PrimIndex
+    var queue: Growing[Task]
+    var frame: const Frame*?
+    ## Whether variants are evaluated (not in the nested builds arcs make).
+    var variants: bool
+
+    mutating func close():
+        self.index.close()
+        self.queue.close()
+
+    mutating func add(task: Task) -> !:
+        try self.queue.push(task)
+
+    ## Queue `kinds` for `node` and every node under it (Pcp's
+    ## _AddTasksForNodeRecursively): the node sets for variant kinds, the
+    ## kind itself for arc kinds.
+    mutating func add_tasks(node: u32, kinds: u32) -> !:
+        var mask = kinds
+        if not self.variants: mask = mask & ~variant_tasks
+        let children = self.index.nodes.items[(usize)node].children.view()
+        for child in children: try self.add_tasks(child, mask)
+        for kind in [task_ancestral_variant_sets, task_variant_sets, task_specializes, task_inherits, task_payloads, task_references]:
+            if mask & kind != 0: try self.add(Task(kind = kind, node = node, path = 0, name = 0, number = 0))
+
+    ## The next task, highest priority first (none when done).
+    mutating func pop(names: const Names*) -> Task?:
+        if self.queue.count == 0: return none
+        var best: usize = 0
+        for at in 1..<self.queue.count:
+            if self.before(names, self.queue.items[at], self.queue.items[best]): best = at
+        let task = self.queue.items[best]
+        self.queue.items[best] = self.queue.items[self.queue.count - 1]
+        self.queue.count -= 1
+        return task
+
+    ## Whether task `a` runs before task `b` (Task::PriorityOrder).
+    func before(names: const Names*, a: Task, b: Task) -> bool:
+        if a.kind != b.kind: return a.kind < b.kind
+        let selection = a.kind == task_variant_authored or a.kind == task_variant_fallback or a.kind == task_ancestral_variant_authored or a.kind == task_ancestral_variant_fallback
+        if selection:
+            if a.node != b.node: return self.index.compare_nodes(a.node, b.node) < 0
+            if a.path != b.path: return names.path_less(a.path, b.path)
+            return a.number < b.number
+        if a.node != b.node: return a.node < b.node
+        if a.path != b.path: return names.path_less(a.path, b.path)
+        return a.number < b.number
+
+    ## Queued fallback and none-found variant tasks become authored ones
+    ## again: a new variant may author selections (RetryVariantTasks).
+    mutating func retry_variants():
+        for at in 0..<self.queue.count:
+            let kind = self.queue.items[at].kind
+            if kind == task_variant_fallback or kind == task_variant_none: self.queue.items[at].kind = task_variant_authored
+            elif kind == task_ancestral_variant_fallback or kind == task_ancestral_variant_none: self.queue.items[at].kind = task_ancestral_variant_authored

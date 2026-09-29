@@ -1,14 +1,13 @@
-## Building prim indexes, after Pcp_BuildPrimIndex (pxr/usd/pcp/primIndex.cpp).
-## A prim's index starts as its parent's with every site extended by the
-## prim's name (ancestral opinions), then each node's arcs are added: all
-## references before any payload, new nodes' arcs in turn. An arc to a
-## prim that is not a root prim brings that prim's own ancestral opinions,
-## so its target's index is built first (one stack frame down) and added as
-## a subtree. Afterwards subtrees with no opinions are culled.
-
-## Arc kinds a node still has to evaluate.
-let task_references: u8 = 1
-let task_payloads: u8 = 2
+## Building prim indexes, after Pcp_BuildPrimIndex and PcpComputePrimIndex
+## (pxr/usd/pcp/primIndex.cpp). A prim's index starts as its parent's with
+## every site extended by the prim's name (ancestral opinions); a variant
+## selection's starts as its one site. Then tasks run in priority order
+## (tasks.lucb): each node's references, payloads and variant sets, the
+## variants those select. An arc to a prim that is not a root prim brings
+## that prim's own ancestral opinions, so its target's index is built first
+## (one stack frame down, variants left for the outer index to choose) and
+## added as a subtree. The finished index culls subtrees with no opinions
+## and is stored in strength order.
 
 ## One level of nested index building (PcpPrimIndex_StackFrame): the graph
 ## and node the index being built will hang under, and the site requested.
@@ -29,6 +28,8 @@ pub struct Composer:
     pub var root_stack: usize
     ## Path texts whose prims' payloads are not loaded (a prefix each).
     pub var unloaded: Growing[Growing[u8]]
+    ## Variant fallbacks: (set, selection) token pairs, preferred first.
+    pub var variant_fallbacks: Growing[u32]
     ## The prim whose index is being built (payload loading asks about it).
     var composing: u32
     var cached_paths: Growing[u32]
@@ -57,6 +58,7 @@ pub struct Composer:
         self.problems = problems
         self.root_stack = root_stack
         self.unloaded = Growing[Growing[u8]]()
+        self.variant_fallbacks = Growing[u32]()
         self.composing = absolute_root
         self.cached_paths = Growing[u32]()
         self.cached = Growing[PrimIndex]()
@@ -64,6 +66,7 @@ pub struct Composer:
     pub mutating func close():
         for at in 0..<self.unloaded.count: self.unloaded.items[at].close()
         self.unloaded.close()
+        self.variant_fallbacks.close()
         for at in 0..<self.cached.count: self.cached.items[at].close()
         self.cached.close()
         self.cached_paths.close()
@@ -74,49 +77,55 @@ pub struct Composer:
     pub func keys() -> const FieldKeys*:
         return &self.layers.layer(self.stacks.stack(self.root_stack).layers.items[0]).keys
 
-    ## The index of prim `path` of the root layer stack (built once).
+    ## The index of prim `path` of the root layer stack (built once):
+    ## culled and stored in strength order (PcpComputePrimIndex).
     pub mutating func index(path: u32) -> const PrimIndex*!:
         for at in 0..<self.cached_paths.count:
             if self.cached_paths.items[at] == path: return &self.cached.items[at]
         let outer = self.composing
         self.composing = path
         defer self.composing = outer
-        var made = try self.build(self.root_stack, path, none, true)
+        var built = try self.build(self.root_stack, path, none, true, true)
+        defer built.close()
+        cull(&built, self.names)
+        var made = try finalized(&built)
         errdefer made.close()
         try self.cached_paths.push(path)
         errdefer self.cached_paths.count -= 1
         try self.cached.push(made)
         return &self.cached.items[self.cached.count - 1]
 
-    ## The index of `path` in layer stack `stack`.
-    mutating func build(stack: usize, path: u32, frame: const Frame*?, contribute_root: bool) -> PrimIndex!:
+    ## The index of `path` in layer stack `stack` (Pcp_BuildPrimIndex).
+    ## `variants`: whether variant sets are evaluated.
+    mutating func build(stack: usize, path: u32, frame: const Frame*?, contribute_root: bool, variants: bool) -> PrimIndex!:
         if path == absolute_root:
             var index = try PrimIndex.rooted(stack, path)
             index.nodes.items[0].has_specs = self.site_has_specs(stack, path)
             return index
-        var index = try self.ancestral(stack, path, frame)
-        errdefer index.close()
-        index.nodes.items[0].inert = not contribute_root
-        var tasks = Growing[u8]()
-        defer tasks.close()
-        try tasks.fill(index.nodes.count, task_references | task_payloads)
-        try self.run_tasks(&index, &tasks, frame)
-        cull(&index, self.names)
-        return index
-
-    ## The parent's index with every site extended by the prim's name, its
-    ## culled nodes left out.
-    mutating func ancestral(stack: usize, path: u32, frame: const Frame*?) -> PrimIndex!:
-        let parent_path = self.names.parent(path)
-        var parent = PrimIndex()
-        defer parent.close()
-        if frame == none and stack == self.root_stack:
-            let cached = try self.index(parent_path)
-            parent = try copy_index(cached)
+        var indexer = Indexer(index = PrimIndex(), queue = Growing[Task](), frame = frame, variants = variants)
+        defer indexer.close()
+        if self.names.kind(path) == PathKind.variant:
+            # A variant selection's ancestral opinions come with its prim's.
+            indexer.index = try PrimIndex.rooted(stack, path)
+            indexer.index.nodes.items[0].has_specs = self.site_has_specs(stack, path)
         else:
-            parent = try self.build(stack, parent_path, frame, true)
-        var index = try without_culled(&parent)
+            indexer.index = try self.ancestral(stack, path, frame, variants)
+        if not contribute_root: indexer.index.set_inert(self.names, 0)
+        try indexer.add_tasks(0, all_tasks & ~ancestral_variant_tasks)
+        try self.run_tasks(&indexer)
+        let done = indexer.index
+        indexer.index = PrimIndex()
+        return done
+
+    ## The parent's index with every site extended by the prim's name.
+    mutating func ancestral(stack: usize, path: u32, frame: const Frame*?, variants: bool) -> PrimIndex!:
+        let parent_path = self.names.parent(path)
+        var index = PrimIndex()
         errdefer index.close()
+        if frame == none and stack == self.root_stack:
+            index = try copy_index(try self.index(parent_path))
+        else:
+            index = try self.build(stack, parent_path, frame, true, variants)
         let name = self.names.name(path)
         for at in 0..<index.nodes.count:
             let node = &index.nodes.items[at]
@@ -167,26 +176,21 @@ pub struct Composer:
             if self.layers.layer(layer).find(path) != none: return true
         return false
 
-    ## Evaluate arcs until none is left: every reference before any payload,
-    ## the newest node first. The arcs push the tasks of the nodes they add.
-    mutating func run_tasks(index: PrimIndex*, tasks: Growing[u8]*, frame: const Frame*?) -> !:
+    ## Run the queue's tasks until none is left; tasks add nodes, and the
+    ## nodes' own tasks.
+    mutating func run_tasks(indexer: Indexer*) -> !:
         while true:
-            var chosen = pending_task(tasks, task_references)
-            var kind = task_references
-            if chosen == tasks.count:
-                chosen = pending_task(tasks, task_payloads)
-                kind = task_payloads
-            if chosen == tasks.count: return
-            tasks.items[chosen] = tasks.items[chosen] & ~kind
-            try self.eval_arcs(index, (u32)chosen, kind == task_payloads, frame, tasks)
-
-## The newest node with task `kind` pending, or tasks.count.
-func pending_task(tasks: const Growing[u8]*, kind: u8) -> usize:
-    var at = tasks.count
-    while at > 0:
-        at -= 1
-        if tasks.items[at] & kind != 0: return at
-    return tasks.count
+            let task = indexer.pop(self.names) else return
+            let kind = task.kind
+            if kind == task_references: try self.eval_arcs(indexer, task.node, false)
+            elif kind == task_payloads: try self.eval_arcs(indexer, task.node, true)
+            elif kind == task_variant_sets: try self.eval_variant_sets(indexer, task.node)
+            elif kind == task_ancestral_variant_sets: try self.eval_ancestral_variant_sets(indexer, task.node)
+            elif kind == task_variant_authored or kind == task_ancestral_variant_authored:
+                try self.eval_authored_variant(indexer, task, kind == task_ancestral_variant_authored)
+            elif kind == task_variant_fallback or kind == task_ancestral_variant_fallback:
+                try self.eval_fallback_variant(indexer, task, kind == task_ancestral_variant_fallback)
+            # None-found tasks only wait for retry_variants.
 
 ## A copy of `index`.
 func copy_index(index: const PrimIndex*) -> PrimIndex!:
@@ -198,47 +202,85 @@ func copy_index(index: const PrimIndex*) -> PrimIndex!:
         errdefer children.close()
         try children.assign(node.children.view())
         let map = try node.map_to_parent.copy()
-        try made.nodes.push(Node(stack = node.stack, path = node.path, arc = node.arc, parent = node.parent, origin = node.origin, children = children, sibling = node.sibling, depth = node.depth, map_to_parent = map, inert = node.inert, culled = node.culled, has_specs = node.has_specs))
+        var copied = *node
+        copied.children = children
+        copied.map_to_parent = map
+        try made.nodes.push(copied)
     return made
 
-## A copy of `index` without its culled nodes (PcpPrimIndex_Graph::Finalize).
-func without_culled(index: const PrimIndex*) -> PrimIndex!:
+## `index` finalized (PcpPrimIndex_Graph::Finalize): nodes renumbered in
+## strength order, and culled nodes left out unless a kept node's chain
+## of origins passes through them.
+func finalized(index: const PrimIndex*) -> PrimIndex!:
+    var order = Growing[u32]()
+    defer order.close()
+    try index.order(&order, false)
+    var erasable = Growing[bool]()
+    defer erasable.close()
+    for at in 0..<index.nodes.count: try erasable.push(index.nodes.items[at].culled)
+    for at in 0..<index.nodes.count:
+        if index.nodes.items[at].origin >= 0: keep_origin_chain(index, &erasable, (u32)at)
     var mapping = Growing[i32]()
     defer mapping.close()
+    try mapping.fill(index.nodes.count, -1)
     var kept: i32 = 0
-    for at in 0..<index.nodes.count:
-        let keep = not index.nodes.items[at].culled
-        try mapping.push(kept if keep else -1)
-        if keep: kept += 1
+    for node in order.view():
+        if erasable.items[(usize)node]: continue
+        mapping.items[(usize)node] = kept
+        kept += 1
     var made = PrimIndex()
     errdefer made.close()
-    for at in 0..<index.nodes.count:
-        let node = &index.nodes.items[at]
-        if mapping.items[at] < 0: continue
+    for node in order.view():
+        if mapping.items[(usize)node] < 0: continue
+        let entry = &index.nodes.items[(usize)node]
         var children = Growing[u32]()
         errdefer children.close()
-        for child in node.children.view():
+        for child in entry.children.view():
             if mapping.items[(usize)child] >= 0: try children.push((u32)mapping.items[(usize)child])
-        let map = try node.map_to_parent.copy()
-        let parent = mapping.items[(usize)node.parent] if node.parent >= 0 else -1
-        let origin = mapping.items[(usize)node.origin] if node.origin >= 0 else -1
-        try made.nodes.push(Node(stack = node.stack, path = node.path, arc = node.arc, parent = parent, origin = origin, children = children, sibling = node.sibling, depth = node.depth, map_to_parent = map, inert = node.inert, culled = false, has_specs = node.has_specs))
+        let map = try entry.map_to_parent.copy()
+        var copied = *entry
+        copied.children = children
+        copied.map_to_parent = map
+        copied.parent = mapping.items[(usize)entry.parent] if entry.parent >= 0 else -1
+        copied.origin = mapping.items[(usize)entry.origin] if entry.origin >= 0 else -1
+        try made.nodes.push(copied)
     return made
 
-## Mark subtrees without opinions culled (_CullSubtreesWithNoOpinions): a
-## node is kept when it contributes specs, when a child is kept, when it is
-## the root, or when its arc was introduced at its own namespace depth.
-func cull(index: PrimIndex*, names: const Names*):
-    if index.nodes.count > 0: discard(cull_node(index, 0, names))
+## Culled nodes on a kept node's chain of origins, and their parents, stay
+## (_ComputeEraseCulledNodeIndexMapping's processOriginChain).
+func keep_origin_chain(index: const PrimIndex*, erasable: Growing[bool]*, start: u32):
+    var node = start
+    var subsequent = false
+    while true:
+        let entry = &index.nodes.items[(usize)node]
+        if not erasable.items[(usize)node]:
+            subsequent = true
+        elif subsequent:
+            var at = (i32)node
+            while at >= 0 and erasable.items[(usize)at]:
+                erasable.items[(usize)at] = false
+                if at != (i32)node: keep_origin_chain(index, erasable, (u32)at)
+                at = index.nodes.items[(usize)at].parent
+        if entry.origin == entry.parent or entry.origin < 0: return
+        node = (u32)entry.origin
 
-func cull_node(index: PrimIndex*, node: u32, names: const Names*) -> bool:
-    var kept_child = false
-    for child in index.nodes.items[(usize)node].children.view():
-        if not cull_node(index, child, names): kept_child = true
+## Mark subtrees without opinions culled (_CullSubtreesWithNoOpinions).
+func cull(index: PrimIndex*, names: const Names*):
+    if index.nodes.count == 0: return
+    for child in index.nodes.items[0].children.view(): cull_subtree(index, child, names)
+
+func cull_subtree(index: PrimIndex*, node: u32, names: const Names*):
+    for child in index.nodes.items[(usize)node].children.view(): cull_subtree(index, child, names)
+    if can_cull(index, node, names): index.set_culled(names, node)
+
+## _NodeCanBeCulled: a node stays when it is the root, when its arc was
+## introduced at its own namespace depth, when a child stays, or when it
+## contributes specs.
+func can_cull(index: const PrimIndex*, node: u32, names: const Names*) -> bool:
     let entry = &index.nodes.items[(usize)node]
-    if node == 0 or kept_child or (entry.has_specs and entry.contributes()): return false
-    # An arc introduced at this prim stays (its depth below introduction,
-    # the parent's namespace depth less the arc's, is 0).
-    if entry.parent >= 0 and entry.depth == namespace_depth(names, index.nodes.items[(usize)entry.parent].path): return false
-    entry.culled = true
-    return true
+    if entry.culled: return true
+    if entry.parent < 0: return false
+    if entry.depth == namespace_depth(names, index.nodes.items[(usize)entry.parent].path): return false
+    for child in entry.children.view():
+        if not index.nodes.items[(usize)child].culled: return false
+    return not (entry.has_specs and entry.contributes())

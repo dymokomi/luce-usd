@@ -23,6 +23,9 @@ pub struct Node:
     pub var inert: bool
     pub var culled: bool
     pub var has_specs: bool
+    ## The path depth at which the node was first kept from contributing
+    ## (GetSpecContributionRestrictedDepth); 0 while it is not.
+    pub var restricted: u32
 
     pub mutating func close():
         self.children.close()
@@ -50,7 +53,7 @@ pub struct PrimIndex:
     pub static func rooted(stack: usize, path: u32) -> PrimIndex!:
         var index = PrimIndex()
         errdefer index.close()
-        try index.nodes.push(Node(stack = stack, path = path, arc = ArcType.root, parent = -1, origin = -1, children = Growing[u32](), sibling = 0, depth = 0, map_to_parent = MapFunction.identity(), inert = false, culled = false, has_specs = false))
+        try index.nodes.push(Node(stack = stack, path = path, arc = ArcType.root, parent = -1, origin = -1, children = Growing[u32](), sibling = 0, depth = 0, map_to_parent = MapFunction.identity(), inert = false, culled = false, has_specs = false, restricted = 0))
         return index
 
     ## Nodes strongest first (pre-order), culled subtrees included unless
@@ -110,16 +113,56 @@ pub struct PrimIndex:
         if (u8)x.arc != (u8)y.arc: return -1 if (u8)x.arc < (u8)y.arc else 1
         if x.depth != y.depth: return -1 if x.depth > y.depth else 1
         if x.origin != y.origin and x.origin >= 0 and y.origin >= 0:
-            let result = self.origin_stronger(0, (u32)x.origin, (u32)y.origin)
+            let result = self.compare_nodes((u32)x.origin, (u32)y.origin)
             if result != 0: return result
         if x.sibling != y.sibling: return -1 if x.sibling < y.sibling else 1
         return 0
 
+    ## PcpCompareNodeStrength: negative when `a` is stronger (a pre-order
+    ## walk meets it first), positive when `b` is, 0 for the same node.
+    pub func compare_nodes(a: u32, b: u32) -> i32:
+        if a == b: return 0
+        return self.first_met(0, a, b)
+
     ## Which of `a` and `b` a pre-order walk from `node` meets first.
-    func origin_stronger(node: u32, a: u32, b: u32) -> i32:
+    func first_met(node: u32, a: u32, b: u32) -> i32:
         if node == a: return -1
         if node == b: return 1
         for child in self.nodes.items[(usize)node].children.view():
-            let result = self.origin_stronger(child, a, b)
+            let result = self.first_met(child, a, b)
             if result != 0: return result
         return 0
+
+    ## Make `node` inert, recording where it was first restricted
+    ## (PcpNodeRef::SetInert).
+    pub mutating func set_inert(names: const Names*, node: u32):
+        let entry = &self.nodes.items[(usize)node]
+        let was = entry.inert or entry.culled
+        entry.inert = true
+        if not was and entry.restricted == 0: entry.restricted = names.node(entry.path).depth
+
+    ## Mark `node` culled, recording where it was first restricted.
+    pub mutating func set_culled(names: const Names*, node: u32):
+        let entry = &self.nodes.items[(usize)node]
+        if entry.culled: return
+        if entry.restricted == 0: entry.restricted = names.node(entry.path).depth
+        entry.culled = true
+
+    ## Whether `node` may contribute opinions at the ancestral `path`
+    ## (_NodeCanContributeAncestralOpinions).
+    pub func contributes_at(names: const Names*, node: u32, path: u32) -> bool:
+        let restricted = self.nodes.items[(usize)node].restricted
+        return restricted == 0 or restricted > names.node(path).depth
+
+    ## The node's path at the namespace depth its arc was introduced at
+    ## (GetPathAtIntroduction): variant selections above that depth stay.
+    pub func path_at_introduction(names: const Names*, node: u32) -> u32:
+        let entry = &self.nodes.items[(usize)node]
+        if entry.parent < 0: return entry.path
+        var below = namespace_depth(names, self.nodes.items[(usize)entry.parent].path) - entry.depth
+        var path = entry.path
+        while below > 0:
+            while names.kind(path) == PathKind.variant: path = names.parent(path)
+            path = names.parent(path)
+            below -= 1
+        return path

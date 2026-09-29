@@ -25,6 +25,8 @@ pub func composition_report(names: Names*, root: str, session: str, unloaded: st
     var composer = try Composer(names, (str)root_id.view(), (str)session_id.view())
     defer composer.close()
     if unloaded.length > 0: try composer.exclude_payloads(unloaded)
+    # The test's default fallbacks, {'standin': ['render']}.
+    try composer.add_variant_fallback("standin", "render")
     let base = ar.directory_of((str)root_id.view())
     try rule(out)
     try put(out, "Layer Stack:\n")
@@ -60,6 +62,7 @@ func report_prim(composer: Composer*, path: u32, base: str, out: Growing[u8]*, p
     try put(out, "\nPrim Stack:\n")
     for site in sites.view(): try site_line(composer, out, site, base)
     try time_offsets(composer, index, base, out)
+    try variant_selections(composer, index, out)
     var children = Growing[u32]()
     defer children.close()
     try composer.child_names(index, &children)
@@ -131,6 +134,42 @@ func target_section(composer: Composer*, index: const PrimIndex*, path: u32, pro
             try put(out, "    ")
             try composer.names.write_path(target, out)
             try put(out, "\n")
+
+## The "Variant Selections" section: the selection of each variant node
+## whose path ends in one, the strongest per set, sorted by set name.
+func variant_selections(composer: Composer*, index: const PrimIndex*, out: Growing[u8]*) -> !:
+    let names = composer.names
+    var order = Growing[u32]()
+    defer order.close()
+    try index.order(&order, false)
+    var sets = Growing[u32]()
+    defer sets.close()
+    var chosen = Growing[u32]()
+    defer chosen.close()
+    for node in order.view():
+        let path = index.node(node).path
+        if names.kind(path) != PathKind.variant: continue
+        let set = names.name(path)
+        var at = sets.count
+        while at > 0 and text_less(names.text_of(set), names.text_of(sets.items[at - 1])): at -= 1
+        if at > 0 and sets.items[at - 1] == set: continue
+        try sets.push(set)
+        try chosen.push(names.node(path).extra)
+        var move = sets.count - 1
+        while move > at:
+            sets.items[move] = sets.items[move - 1]
+            chosen.items[move] = chosen.items[move - 1]
+            move -= 1
+        sets.items[at] = set
+        chosen.items[at] = names.node(path).extra
+    if sets.count == 0: return
+    try put(out, "\nVariant Selections:\n")
+    for at in 0..<sets.count:
+        try put(out, "    {")
+        try put(out, names.text_of(sets.items[at]))
+        try put(out, " = ")
+        try put(out, names.text_of(chosen.items[at]))
+        try put(out, "}\n")
 
 ## The "Time Offsets" section, when a node or layer has an offset.
 func time_offsets(composer: Composer*, index: const PrimIndex*, base: str, out: Growing[u8]*) -> !:

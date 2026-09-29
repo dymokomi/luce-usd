@@ -2,15 +2,16 @@
 ## opinions make up each prim of a stage, and in what strength order. A
 ## layer stack is a root layer and its sublayers; a prim index is a graph of
 ## nodes, each a site (a layer stack and a path in it) reached from its
-## parent by an arc (reference, payload; variants, inherits and specializes
-## follow in M9), with a map from its namespace to the parent's. Opinions are
+## parent by an arc (reference, payload, variant; inherits and specializes
+## follow), with a map from its namespace to the parent's. Opinions are
 ## read strongest first: nodes in strength order, and within a node its
 ## layer stack's layers, strongest first.
 ##
 ## This fragment holds time offsets and arc types; layers.lucb opens layers,
 ## layer_stack.lucb builds layer stacks, map.lucb maps paths between
-## namespaces, graph.lucb holds the node graph, build.lucb and arcs.lucb
-## build prim indexes, compose.lucb answers what composes, report.lucb
+## namespaces, graph.lucb holds the node graph, tasks.lucb orders the work
+## of building an index, build.lucb, arcs.lucb and variants.lucb build prim
+## indexes, compose.lucb answers what composes, report.lucb
 ## prints it as OpenUSD's composition results do.
 import math
 import memory

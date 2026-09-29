@@ -1,0 +1,197 @@
+## Variants, after _EvalNodeVariantSets, _EvalNodeAncestralVariantSets,
+## _EvalNodeAuthoredVariant, _EvalNodeFallbackVariant,
+## _ComposeVariantSelection, _AddVariantArc and _AddAncestralVariantArc
+## (pxr/usd/pcp/primIndex.cpp) and PcpComposeSiteVariantSets, SetOptions
+## and Selection (composeSite.cpp). A node's variant sets are its site's
+## variantSetNames list ops applied weakest layer first. A set's selection
+## is the one an earlier variant node chose for the same prim, else the
+## strongest authored one met walking the index in strength order from the
+## root (or the node closest to it the prim's path maps to), else the first
+## fallback the set offers. A variant arc's site is the node's path with the
+## selection appended, and its map is the identity. Ancestral variant sets,
+## those of prims above a node that arrived with its ancestral opinions,
+## select alike and bring the whole index below the selection.
+
+## A node and a path in its namespace.
+struct Located:
+    var node: u32
+    var path: u32
+
+extend Composer:
+    ## Prefer `selection` for variant set `set` when nothing selects one
+    ## (PcpCache::SetVariantFallbacks); earlier calls are preferred.
+    pub mutating func add_variant_fallback(set: str, selection: str) -> !:
+        try self.variant_fallbacks.push(try self.names.token(set))
+        try self.variant_fallbacks.push(try self.names.token(selection))
+
+    mutating func eval_variant_sets(indexer: Indexer*, node: u32) -> !:
+        if not indexer.index.node(node).contributes(): return
+        try self.variant_sets_at(indexer, node, indexer.index.node(node).path, false)
+
+    ## The variant sets of the prims above the node, up to the nearest
+    ## variant selection (whose sets were evaluated already).
+    mutating func eval_ancestral_variant_sets(indexer: Indexer*, node: u32) -> !:
+        var path = self.names.parent(indexer.index.node(node).path)
+        while path > relative_root:
+            if indexer.index.contributes_at(self.names, node, path):
+                try self.variant_sets_at(indexer, node, path, true)
+                if self.names.kind(path) == PathKind.variant: return
+            path = self.names.parent(path)
+
+    ## Queue a selection task for each variant set at `path` of the node's
+    ## layer stack (_EvalVariantSetsAtSite).
+    mutating func variant_sets_at(indexer: Indexer*, node: u32, path: u32, ancestral: bool) -> !:
+        var sets = Growing[ListItem]()
+        defer sets.close()
+        let layers = self.stacks.stack(indexer.index.node(node).stack).layers.view()
+        var position = layers.length
+        while position > 0:
+            position -= 1
+            let data = self.layers.layer(layers[position])
+            let spec = data.find(path) else continue
+            let field = data.get(spec, data.keys.variant_set_names) else continue
+            let list = field.list_op() else continue
+            try apply_list_op(list, &sets)
+        let kind = task_ancestral_variant_authored if ancestral else task_variant_authored
+        for number in 0..<sets.count:
+            try indexer.add(Task(kind = kind, node = node, path = path, name = (u32)sets.items[number].a, number = (i32)number))
+
+    ## Select the task's variant from authored opinions, or defer it to
+    ## the fallbacks.
+    mutating func eval_authored_variant(indexer: Indexer*, task: Task, ancestral: bool) -> !:
+        if not indexer.index.contributes_at(self.names, task.node, task.path): return
+        let prim = try self.names.strip_variants(task.path)
+        let selection = try self.composed_selection(&indexer.index, task.node, prim, task.name)
+        if selection == 0:
+            var later = task
+            later.kind = task_ancestral_variant_fallback if ancestral else task_variant_fallback
+            try indexer.add(later)
+            return
+        try self.add_variant_arc(indexer, task, selection, ancestral)
+
+    ## Select the first fallback the set offers, or wait for a retry.
+    mutating func eval_fallback_variant(indexer: Indexer*, task: Task, ancestral: bool) -> !:
+        if not indexer.index.contributes_at(self.names, task.node, task.path): return
+        let set_path = try self.names.variant(task.path, task.name, 0)
+        let layers = self.stacks.stack(indexer.index.node(task.node).stack).layers.view()
+        var selection: u32 = 0
+        var at: usize = 0
+        while at + 1 < self.variant_fallbacks.count and selection == 0:
+            let wanted = self.variant_fallbacks.items[at + 1]
+            if self.variant_fallbacks.items[at] == task.name:
+                for layer in layers:
+                    let data = self.layers.layer(layer)
+                    let spec = data.find(set_path) else continue
+                    let options = data.get(spec, data.keys.variant_children) else continue
+                    for option in options.ids():
+                        if option == wanted: selection = wanted
+            at += 2
+        if selection == 0:
+            var later = task
+            later.kind = task_ancestral_variant_none if ancestral else task_variant_none
+            try indexer.add(later)
+            return
+        try self.add_variant_arc(indexer, task, selection, ancestral)
+
+    ## The selection for variant set `set` of the prim at `path` in the
+    ## node's namespace; 0 when none (or the empty one) is authored.
+    mutating func composed_selection(index: const PrimIndex*, node: u32, path: u32, set: u32) -> u32!:
+        let names = self.names
+        let start = try self.toward_root(index, node, path)
+        var nodes = Growing[Located]()
+        defer nodes.close()
+        try self.walk_translated(index, start.node, start.path, &nodes)
+        # A variant node chose this set's selection for this prim before.
+        for visit in nodes.view():
+            if visit.path == empty_path or index.node(visit.node).arc != ArcType.variant: continue
+            let intro = index.path_at_introduction(names, visit.node)
+            if names.kind(intro) != PathKind.variant or names.name(intro) != set: continue
+            if prim_of(names, intro) == visit.path: return names.node(intro).extra
+        # The strongest authored selection.
+        for visit in nodes.view():
+            if visit.path == empty_path: continue
+            if not index.contributes_at(names, visit.node, visit.path): continue
+            var site = visit.path
+            if index.node(visit.node).arc == ArcType.variant:
+                let intro = index.path_at_introduction(names, visit.node)
+                site = try names.replace_prefix(site, try names.strip_variants(intro), intro)
+            if let found = self.site_selection(index.node(visit.node).stack, site, set): return found
+        return 0
+
+    ## `path` (in `node`'s namespace) mapped to the root node, or to the
+    ## node closest to it that it maps to, with that node's variant
+    ## selections put back (Pcp_TranslatePathFromNodeToRootOrClosestNode).
+    mutating func toward_root(index: const PrimIndex*, node: u32, path: u32) -> Located!:
+        let names = self.names
+        if node == 0: return Located(node = 0, path = path)
+        var here = Located(node = node, path = try names.strip_variants(path))
+        var map = try index.map_to_root(names, node)
+        defer map.close()
+        let at_root = try map.map(names, here.path, false)
+        if at_root != empty_path:
+            here = Located(node = 0, path = at_root)
+        else:
+            while index.node(here.node).parent >= 0:
+                let up = try index.node(here.node).map_to_parent.map(names, here.path, false)
+                if up == empty_path: break
+                here = Located(node = (u32)index.node(here.node).parent, path = up)
+        let intro = index.path_at_introduction(names, here.node)
+        if names.has_variant_selection(intro):
+            here.path = try names.replace_prefix(here.path, try names.strip_variants(intro), intro)
+        return here
+
+    ## The nodes under `node` in strength order, each with `path` mapped
+    ## down into its namespace (empty where it does not map).
+    mutating func walk_translated(index: const PrimIndex*, node: u32, path: u32, out: Growing[Located]*) -> !:
+        try out.push(Located(node = node, path = path))
+        for child in index.node(node).children.view():
+            var below = empty_path
+            if path != empty_path: below = try index.node(child).map_to_parent.map(self.names, path, true)
+            try self.walk_translated(index, child, below, out)
+
+    ## The strongest selection for `set` authored at the site, when any
+    ## layer authors one (PcpComposeSiteVariantSelection).
+    func site_selection(stack: usize, path: u32, set: u32) -> u32?:
+        for layer in self.stacks.stack(stack).layers.view():
+            let data = self.layers.layer(layer)
+            let spec = data.find(path) else continue
+            let field = data.get(spec, data.keys.variant_selection) else continue
+            let pairs = field.ids()
+            var at: usize = 0
+            while at + 1 < pairs.length:
+                if pairs[at] == set: return pairs[at + 1]
+                at += 2
+        return none
+
+    ## Add the variant arc for `selection` of the task's set; a new variant
+    ## may author selections pending tasks are waiting for.
+    mutating func add_variant_arc(indexer: Indexer*, task: Task, selection: u32, ancestral: bool) -> !:
+        let names = self.names
+        let stack = indexer.index.node(task.node).stack
+        let node_path = indexer.index.node(task.node).path
+        if not ancestral:
+            let path = try names.variant(node_path, task.name, selection)
+            let added = try self.add_arc(indexer, task.node, (i32)task.node, ArcType.variant, stack, path, MapFunction.identity(), task.number, namespace_depth(names, node_path), true, false)
+            if added and self.might_select(stack, path): indexer.retry_variants()
+            return
+        let selected = try names.variant(task.path, task.name, selection)
+        let path = try names.replace_prefix(node_path, task.path, selected)
+        let added = try self.add_arc(indexer, task.node, (i32)task.node, ArcType.variant, stack, path, MapFunction.identity(), task.number, namespace_depth(names, task.path), true, true)
+        if added and self.might_select(stack, selected): indexer.retry_variants()
+
+    ## Whether the site authors selections or arcs that could bring some
+    ## (_SiteMightIntroducePendingVariantSelections).
+    func might_select(stack: usize, path: u32) -> bool:
+        for layer in self.stacks.stack(stack).layers.view():
+            let data = self.layers.layer(layer)
+            let spec = data.find(path) else continue
+            let keys = &data.keys
+            for key in [keys.variant_selection, keys.references, keys.inherit_paths, keys.specializes, keys.payload]:
+                if data.get(spec, key) != none: return true
+        return false
+
+## The nearest prim path at or above `path` (SdfPath::GetPrimPath).
+func prim_of(names: const Names*, path: u32) -> u32:
+    var at = path
+    while at > relative_root and names.kind(at) != PathKind.prim: at = names.parent(at)
+    return at

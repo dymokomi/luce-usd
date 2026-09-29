@@ -3,7 +3,9 @@ layers.lucb
 layer_stack.lucb
 map.lucb
 graph.lucb
+tasks.lucb
 build.lucb
 arcs.lucb
+variants.lucb
 compose.lucb
 report.lucb

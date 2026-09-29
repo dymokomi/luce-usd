@@ -1,0 +1,32 @@
+#usda 1.0
+(
+    """
+    This case exercises simple nesting of variant sets in one file.
+    This came from bug 63723.
+    """
+)
+
+def StdAvarsModel "Foo"
+{
+    def GprimPivot "A"
+    {
+        def GprimPivot "Number"
+        {
+            def GprimPivot "one"
+            {
+            }
+        }
+    }
+}
+
+def Scope "DirectlyNestedVariants"
+{
+    def Sphere "anim_spooky_anim_sphere"
+    {
+    }
+
+    def Sphere "anim_spooky_sphere"
+    {
+    }
+}
+
