@@ -143,8 +143,8 @@ extend Composer:
                     implied = there
                     break
             if implied == none:
-                let class_map = try transfer.implied_class(names, &index.node(child).map_to_parent)
                 let path = try self.inherit_path(index.node(destination).path, index.node(child).path, transfer)
+                let class_map = try transfer.implied_class(names, &index.node(child).map_to_parent)
                 let entry = index.node(child)
                 implied = try self.add_class_arc(indexer, path, entry.arc, destination, child, class_map, entry.sibling, entry.stack, entry.path)
             let found = implied else continue

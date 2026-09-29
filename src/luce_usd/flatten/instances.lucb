@@ -128,8 +128,10 @@ extend Flattener:
         if target == empty_path: return
         let list = try ListOp.create()
         var owner = Value.of_object(ValueKind.reference_list_op, (void*)list)
-        errdefer owner.release()
-        try list.push(ListPart.added, ListItem(a = 0, b = (u64)target, offset = 0.0, scale = 1.0, custom = none))
+        list.push(ListPart.added, ListItem(a = 0, b = (u64)target, offset = 0.0, scale = 1.0, custom = none)) catch failure:
+            owner.release()
+            error(failure.code, failure.message)
+        # set takes the value, releasing it when it fails.
         try self.out.set(spec, self.out.keys.references, owner)
 
 ## Sort prototype indexes by their sources' paths, or (`by_text`) by the
