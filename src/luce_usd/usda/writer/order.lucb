@@ -1,0 +1,153 @@
+## Orders and field classes: TfDictionaryLessThan (pxr/base/tf/
+## stringUtils.cpp), which sorts metadata and properties case-insensitively
+## with digit runs compared by value; and which of a spec's fields the
+## writer puts in its metadata section (Sdf_IsMetadataField: every field
+## that is metadata for the spec's type, and every field the type does not
+## know, which may be plugin metadata).
+
+## The fields each spec type knows that are not metadata.
+let prim_fields: str[13] = ["specifier", "comment", "inheritPaths", "specializes", "primChildren", "primOrder",
+    "properties", "propertyOrder", "references", "relocates", "variantSelection", "variantSetChildren",
+    "variantSetNames"]
+let attribute_fields: str[10] = ["custom", "variability", "comment", "default", "typeName", "spline",
+    "connectionChildren", "connectionPaths", "displayUnit", "timeSamples"]
+let relationship_fields: str[6] = ["custom", "variability", "comment", "default", "targetChildren", "targetPaths"]
+let layer_fields: str[6] = ["comment", "primChildren", "layerRelocates", "primOrder", "subLayers", "subLayerOffsets"]
+
+## Whether field `name` belongs in the metadata section of a `kind` spec.
+func is_metadata(kind: SpecType, name: str) -> bool:
+    match kind:
+        .prim, .variant:
+            for field in prim_fields:
+                if field == name: return false
+        .attribute:
+            for field in attribute_fields:
+                if field == name: return false
+        .relationship:
+            for field in relationship_fields:
+                if field == name: return false
+        .pseudo_root:
+            for field in layer_fields:
+                if field == name: return false
+        _: return true
+    return true
+
+inline func is_digit(byte: u8) -> bool:
+    return byte >= '0' and byte <= '9'
+
+inline func is_alpha(byte: u8) -> bool:
+    return (byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z')
+
+## The first index at or after `start` where a and b differ, below `end`.
+func mismatch(a: const u8[], b: const u8[], start: usize, end: usize) -> usize:
+    var at = start
+    while at < end and a[at] == b[at]: at += 1
+    return at
+
+## TfDictionaryLessThan: letters compare ignoring case ('_' before
+## letters), digit runs compare as numbers, and case and leading zeros
+## break ties.
+func dictionary_less(left: str, right: str) -> bool:
+    let l_text = left.bytes
+    let r_text = right.bytes
+    let l_size = l_text.length
+    let r_size = r_text.length
+    var l_at: usize = 0
+    var r_at: usize = 0
+    var common = l_size if l_size < r_size else r_size
+    l_at = mismatch(l_text, r_text, 0, common)
+    r_at = l_at
+    if l_at == common and l_size == r_size: return false
+    # Positions in both strings advance together until digit runs of
+    # different lengths shift them apart.
+    var l_end = common
+    while true:
+        if l_at == l_end: break
+        let l = l_text[l_at]
+        let r = r_text[r_at]
+        let both_ascii = l < 0x80 and r < 0x80
+        let differs = (l & 0xDF) != (r & 0xDF)
+        let letters = l >= 0x40 and r >= 0x40
+        if both_ascii and differs and letters:
+            return ((l +% 5) & 31) < ((r +% 5) & 31)
+        if is_digit(l) or is_digit(r):
+            if is_digit(l) and is_digit(r):
+                var l_start = l_at
+                var r_start = r_at
+                while l_start > 0 and is_digit(l_text[l_start - 1]): l_start -= 1
+                while r_start > 0 and is_digit(r_text[r_start - 1]): r_start -= 1
+                var l_digits_end = l_at
+                var r_digits_end = r_at
+                while l_digits_end < l_size and is_digit(l_text[l_digits_end]): l_digits_end += 1
+                while r_digits_end < r_size and is_digit(r_text[r_digits_end]): r_digits_end += 1
+                while l_start != l_digits_end and l_text[l_start] == '0': l_start += 1
+                while r_start != r_digits_end and r_text[r_start] == '0': r_start += 1
+                while l_start != l_digits_end and r_start != r_digits_end and l_text[l_start] == r_text[r_start]:
+                    l_start += 1
+                    r_start += 1
+                if (l_start == l_digits_end) != (r_start == r_digits_end):
+                    return l_start == l_digits_end and r_start != r_digits_end
+                if l_start != l_digits_end and r_start != r_digits_end:
+                    let l_count = l_digits_end - l_start
+                    let r_count = r_digits_end - r_start
+                    if l_count != r_count: return l_count < r_count
+                    return l_text[l_start] < r_text[r_start]
+                l_at = l_digits_end
+                r_at = r_digits_end
+                let l_rest = l_size - l_at
+                let r_rest = r_size - r_at
+                l_end = l_at + (l_rest if l_rest < r_rest else r_rest)
+            else:
+                if l_at == 0: return l < r
+                let previous = l_text[l_at - 1]
+                return is_digit(r) if is_digit(previous) else is_digit(l)
+        elif not is_alpha(l) or not is_alpha(r):
+            return l < r
+        else:
+            l_at += 1
+            r_at += 1
+        # The next difference, with the two positions offset alike.
+        while l_at < l_end and l_text[l_at] == r_text[r_at]:
+            l_at += 1
+            r_at += 1
+    if l_at != l_size or r_at != r_size: return l_at == l_size
+    common = l_size if l_size < r_size else r_size
+    let first = mismatch(l_text, r_text, 0, common)
+    let l = l_text[first] if first < l_size else 0
+    let r = r_text[first] if first < r_size else 0
+    return r == '0' or (l != '0' and l < r)
+
+extend Writer:
+    ## The fields of `spec` for its metadata section, sorted by name
+    ## (dictionary order, or byte order for the layer), without `comment`.
+    func metadata_fields(spec: const Spec*, extra: FieldFilter, fields: Growing[u32]*) -> !:
+        fields.clear()
+        for field in spec.fields.view():
+            let name = self.text(field.name)
+            if field.name == self.keys.comment: continue
+            if field.name == self.keys.type_name and (spec.kind == SpecType.prim or spec.kind == SpecType.variant): continue
+            if is_metadata(spec.kind, name) or extra(self.keys, field.name): try fields.push(field.name)
+        let dictionary = spec.kind != SpecType.pseudo_root
+        # Insertion sort: metadata sections are short.
+        for index in 1..<fields.count:
+            let current = fields.items[index]
+            var at = index
+            while at > 0 and self.less(current, fields.items[at - 1], dictionary):
+                fields.items[at] = fields.items[at - 1]
+                at -= 1
+            fields.items[at] = current
+
+    func less(left: u32, right: u32, dictionary: bool) -> bool:
+        let a = self.text(left)
+        let b = self.text(right)
+        if dictionary: return dictionary_less(a, b)
+        return byte_less(a, b)
+
+## Which extra fields a spec type writes in its metadata section.
+type FieldFilter = func(FieldKeys, u32) -> bool
+
+func byte_less(a: str, b: str) -> bool:
+    let common = a.length if a.length < b.length else b.length
+    for index in 0..<common:
+        if a.bytes[index] != b.bytes[index]: return a.bytes[index] < b.bytes[index]
+    return a.length < b.length

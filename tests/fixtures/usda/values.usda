@@ -1,0 +1,39 @@
+#usda 1.0
+(
+    upAxis = "Z"
+    metersPerUnit = 0.01
+    customLayerData = { string foo = "bar" 
+        int[] a = [1,2]
+        double d = 0.1 }
+)
+def Mesh "m" (
+    kind = "component"
+    hidden = true
+    customData = { bool b = true }
+    myUnknown = [1, 2, (3,4)]
+    references = @./x.usda@</a> (offset = 2; scale = 0.5)
+)
+{
+    bool b = true
+    bool[] bs = [true, false, 1]
+    float f = 0.1
+    double dd = 0.1
+    half h = 0.1
+    float3 v = (0.1, 1e20, -0)
+    point3f[] p = [(1,2,3), (4.5, 6, 7)]
+    matrix4d m = ((1,0,0,0),(0,1,0,0),(0,0,1,0),(1.5,2,3,1))
+    quatf q = (1, 0.5, 0.25, 0)
+    string s = "a\nb\"c'"
+    token t = "tok"
+    asset a = @@@a@b.usda@@@
+    uchar u = 200
+    double inf = inf
+    float n = -inf
+    double big = 12345678901234567890
+    float small = 1e-45
+    timecode tc = 10
+    float anim.timeSamples = { 1: 2, 1.5: None, 3: 0.3 }
+    rel r = </m.b>
+    uniform token[] tt = ["a", "b"]
+    int64 i64 = -9223372036854775808
+}

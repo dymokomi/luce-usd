@@ -1,0 +1,322 @@
+## Numeric arrays, the bulk of geometry layers, without the general value
+## machinery: a first pass finds the array's end and counts its elements,
+## noting a split point every `chunk_bytes`; the elements are then parsed
+## straight into their column, in parallel on luce-geocore's pool when the
+## array is large. Anything unusual (comments, strings, inf and nan, a
+## malformed element) sends the array back to the general parser, which
+## reads it the same way and reports any error.
+import geocore_parallel as pool
+
+## Text per parallel chunk.
+let chunk_bytes: usize = 262144
+## Arrays of less text parse on this thread.
+let parallel_bytes: usize = 524288
+## The most chunks one array splits into.
+let most_chunks: usize = 4096
+
+## Where a chunk starts: its byte offset and first element.
+struct Split:
+    var at: usize
+    var element: usize
+
+## One parallel array parse.
+struct ArrayParse:
+    var data: const u8[]
+    var kind: ValueKind
+    var size: usize
+    var splits: const Split[]
+    var end: usize
+    var out: u8[]
+    var failed: @bool
+
+## Whether arrays of `kind` take the fast path.
+func fast_kind(kind: ValueKind) -> bool:
+    match kind:
+        .uchar, .int, .uint, .int64, .uint64, .half, .float, .double, .time_code: return true
+        .vec2d, .vec3d, .vec4d, .vec2f, .vec3f, .vec4f, .vec2h, .vec3h, .vec4h, .vec2i, .vec3i, .vec4i: return true
+        .quatd, .quatf, .quath: return true
+        _: return false
+
+## One parallel element count: per split, its elements (a tuple's '(' or
+## a number's first character), and whether the text holds anything the
+## fast path does not take.
+struct ArrayCount:
+    var data: const u8[]
+    var tuples: bool
+    var splits: Split[]
+    var end: usize
+    var failed: @bool
+
+extend Reader:
+    ## The numeric array at the cursor (at its '['), or none to use the
+    ## general parser (the cursor unchanged).
+    mutating func fast_array(kind: ValueKind) -> Value?!:
+        if not fast_kind(kind): return none
+        let start = self.at
+        let data = self.data
+        # A numeric array holds no other ']': the first one ends it.
+        let found = memchr((const void*)&data[start], 93, data.length - start) else return none
+        let end = start + (usize)((u8*)found - (u8*)&data[start])
+        let tuples = components(kind) > 1
+        # Split points: every chunk_bytes, moved to the next element start.
+        var splits = Growing[Split]()
+        defer splits.close()
+        try splits.push(Split(at = start + 1, element = 0))
+        var at = start + 1 + chunk_bytes
+        while at < end and splits.count < most_chunks:
+            if tuples:
+                while at < end and data[at] != '(': at += 1
+            else:
+                while at < end and data[at] != ',': at += 1
+                if at < end: at += 1
+            if at >= end: break
+            try splits.push(Split(at = at, element = 0))
+            at += chunk_bytes
+        var count = ArrayCount(data = data, tuples = tuples, splits = splits.items[..<splits.count], end = end, failed = false)
+        if end - start < parallel_bytes:
+            for index in 0..<splits.count: count_chunk((void*)&count, index)
+        else:
+            pool.run(splits.count, count_chunk, (void*)&count)
+        if count.failed.load(): return none
+        # Prefix sums turn each split's count into its first element.
+        var elements: usize = 0
+        for index in 0..<splits.count:
+            let here = splits.items[index].element
+            splits.items[index].element = elements
+            elements += here
+        let size = element_bytes(kind)
+        var column = try Column[u8].allocate(elements * size)
+        var job = ArrayParse(data = data, kind = kind, size = size, splits = splits.view(), end = end, out = column.span(), failed = false)
+        if end - start < parallel_bytes:
+            for index in 0..<splits.count: parse_chunk((void*)&job, index)
+        else:
+            pool.run(splits.count, parse_chunk, (void*)&job)
+        if job.failed.load():
+            column.release()
+            return none
+        self.at = end + 1
+        return Value.of_array(kind, elements, column)
+
+extern func memchr(text: const void*, byte: i32, count: usize) -> void*?
+
+## Count split `index`'s elements into its `element`; flag text the fast
+## path does not take.
+func count_chunk(context: void*?, index: usize):
+    let raw = context else return
+    let job = (ArrayCount*)raw
+    let first = job.splits[index].at
+    let stop = job.splits[index + 1].at if index + 1 < job.splits.length else job.end
+    let bytes = job.data.data
+    var elements: usize = 0
+    var previous: u8 = ','
+    for at in first..<stop:
+        let byte = bytes[at]
+        let numeric = (byte >= '0' and byte <= '9') or byte == '-' or byte == '+' or byte == '.' or byte == 'e' or byte == 'E'
+        if job.tuples:
+            if byte == '(': elements += 1
+            elif not numeric and byte != ')' and byte != ',' and byte != ' ' and byte != '\t' and byte != '\n' and byte != '\r':
+                job.failed.store(true)
+                return
+        else:
+            if numeric:
+                let before = (previous >= '0' and previous <= '9') or previous == '-' or previous == '+' or previous == '.' or previous == 'e' or previous == 'E'
+                if not before: elements += 1
+            elif byte != ',' and byte != ' ' and byte != '\t' and byte != '\n' and byte != '\r':
+                job.failed.store(true)
+                return
+        previous = byte
+    job.splits[index].element = elements
+
+## Parse split `index`'s elements into the column; flag a failure.
+func parse_chunk(context: void*?, index: usize):
+    let raw = context else return
+    let job = (ArrayParse*)raw
+    let split = job.splits[index]
+    let stop = job.splits[index + 1].at if index + 1 < job.splits.length else job.end
+    let last = job.splits[index + 1].element if index + 1 < job.splits.length else (job.out.length // job.size)
+    var at = split.at
+    var element = split.element
+    let data = job.data
+    let components_count = components(job.kind)
+    let scalar = scalar_of(job.kind)
+    let scalar_size = element_bytes(scalar)
+    let quaternion = job.kind == ValueKind.quatd or job.kind == ValueKind.quatf or job.kind == ValueKind.quath
+    while element < last:
+        at = skip_blanks(data, at, stop)
+        let base = &job.out[element * job.size]
+        if components_count == 1:
+            at = number_into(data, at, stop, scalar, base)
+            if at == 0:
+                job.failed.store(true)
+                return
+        else:
+            if at >= stop or data[at] != '(':
+                job.failed.store(true)
+                return
+            at += 1
+            for index_in_tuple in 0..<components_count:
+                at = skip_blanks(data, at, stop)
+                let target = (index_in_tuple + 3) % 4 if quaternion else index_in_tuple
+                at = number_into(data, at, stop, scalar, base + target * scalar_size)
+                if at == 0:
+                    job.failed.store(true)
+                    return
+                # No line end before a comma (the grammar's ListOf).
+                at = skip_inline_blanks(data, at, stop)
+                if index_in_tuple + 1 < components_count:
+                    if at >= stop or data[at] != ',':
+                        job.failed.store(true)
+                        return
+                    at += 1
+                else:
+                    at = skip_blanks(data, at, stop)
+            if at >= stop or data[at] != ')':
+                job.failed.store(true)
+                return
+            at += 1
+        element += 1
+        at = skip_inline_blanks(data, at, stop)
+        if at < stop and data[at] == ',': at += 1
+        elif element < last:
+            job.failed.store(true)
+            return
+    if skip_blanks(data, at, stop) != stop:
+        job.failed.store(true)
+
+func skip_inline_blanks(data: const u8[], origin: usize, stop: usize) -> usize:
+    var at = origin
+    while at < stop and (data[at] == ' ' or data[at] == '\t'): at += 1
+    return at
+
+func skip_blanks(data: const u8[], origin: usize, stop: usize) -> usize:
+    var at = origin
+    while at < stop and (data[at] == ' ' or data[at] == '\t' or data[at] == '\n' or data[at] == '\r'): at += 1
+    return at
+
+## Parse the number at `at` into a scalar of `kind` at `out`; the offset
+## after it, or 0 when the text is not a number the fast path takes.
+## Numbers read as the general parser reads them: with '.', 'e' or 'E' as
+## a double (then narrowed), otherwise as an integer.
+func number_into(data: const u8[], origin: usize, stop: usize, kind: ValueKind, out: u8*) -> usize:
+    var at = origin
+    let negative = at < stop and data[at] == '-'
+    if negative: at += 1
+    let digits_start = at
+    var mantissa: u64 = 0
+    var digits: usize = 0
+    var real = false
+    var scale: i64 = 0
+    while at < stop and data[at] >= '0' and data[at] <= '9':
+        if digits < 19:
+            mantissa = mantissa * 10 + (u64)(data[at] - '0')
+            if mantissa != 0: digits += 1
+        else:
+            return 0
+        at += 1
+    let whole = at - digits_start
+    if at < stop and data[at] == '.':
+        real = true
+        at += 1
+        while at < stop and data[at] >= '0' and data[at] <= '9':
+            if digits < 19:
+                mantissa = mantissa * 10 + (u64)(data[at] - '0')
+                if mantissa != 0: digits += 1
+            elif data[at] != '0':
+                return 0
+            else:
+                # A trailing zero past 19 digits changes nothing but the scale.
+                scale += 1
+            scale -= 1
+            at += 1
+        if whole == 0 and at == digits_start + 1: return 0
+    elif whole == 0:
+        return 0
+    if at < stop and (data[at] == 'e' or data[at] == 'E'):
+        real = true
+        at += 1
+        let down = at < stop and data[at] == '-'
+        if at < stop and (data[at] == '-' or data[at] == '+'): at += 1
+        var exponent: i64 = 0
+        var count: usize = 0
+        while at < stop and data[at] >= '0' and data[at] <= '9':
+            if count == 6: return 0
+            exponent = exponent * 10 + (i64)(data[at] - '0')
+            count += 1
+            at += 1
+        if count == 0: return 0
+        scale += -exponent if down else exponent
+    # The number must end here.
+    if at < stop and not (data[at] == ',' or data[at] == ')' or data[at] == ' ' or data[at] == '\t' or data[at] == '\n' or data[at] == '\r' or data[at] == ']'): return 0
+    if real:
+        var value: f64 = 0.0
+        if let fast = fast_decimal(mantissa, scale, negative): value = fast
+        else:
+            value = numbers.parse_f64(data[origin..<at]) catch failure:
+                recover 0.0
+            if value != value: return 0
+        store_real(kind, value, out) else return 0
+        return at
+    # An integer: "-0" reads as the double -0.
+    if negative and mantissa == 0:
+        store_real(kind, -0.0, out) else return 0
+        return at
+    store_integer(kind, mantissa, negative, out) else return 0
+    return at
+
+## Clinger's fast path for mantissa * 10^scale, or none.
+func fast_decimal(mantissa: u64, scale: i64, negative: bool) -> f64?:
+    if mantissa > 9007199254740992 or scale < -22 or scale > 22: return none
+    var value = (f64)mantissa
+    value = value * numbers.exact_power(scale) if scale >= 0 else value / numbers.exact_power(-scale)
+    return -value if negative else value
+
+## Store a double as `kind` (floats narrow, integers truncate in range).
+func store_real(kind: ValueKind, value: f64, out: u8*) -> unit?:
+    match kind:
+        .double, .time_code: memory.write[f64]((void*)out, value)
+        .float: memory.write[f32]((void*)out, (f32)value)
+        .half: memory.write[u16]((void*)out, ((f16)(f32)value).bits())
+        _:
+            if not (value == value) or value >= 9223372036854775808.0 or value < -9223372036854775808.0: return none
+            let whole = (i64)value
+            if whole < 0: return store_integer(kind, (u64)(-%whole), true, out)
+            return store_integer(kind, (u64)whole, false, out)
+    return ()
+
+## Store an integer as `kind`, range-checked; none out of range.
+func store_integer(kind: ValueKind, magnitude: u64, negative: bool, out: u8*) -> unit?:
+    if negative and magnitude > 9223372036854775808: return none
+    let signed: i64 = -%(i64)magnitude if negative else 0
+    match kind:
+        .double, .time_code:
+            memory.write[f64]((void*)out, -(f64)magnitude if negative else (f64)magnitude)
+        .float:
+            memory.write[f32]((void*)out, (f32)signed if negative else (f32)magnitude)
+        .half:
+            let value: f32 = (f32)signed if negative else (f32)magnitude
+            memory.write[u16]((void*)out, ((f16)value).bits())
+        .int:
+            if negative:
+                if magnitude > 2147483648: return none
+                memory.write[i32]((void*)out, (i32)signed)
+            else:
+                if magnitude > 2147483647: return none
+                memory.write[i32]((void*)out, (i32)magnitude)
+        .uint:
+            if negative and magnitude != 0: return none
+            if magnitude > 4294967295: return none
+            memory.write[u32]((void*)out, (u32)magnitude)
+        .uchar:
+            if negative and magnitude != 0: return none
+            if magnitude > 255: return none
+            memory.write[u8]((void*)out, (u8)magnitude)
+        .int64:
+            if negative: memory.write[i64]((void*)out, signed)
+            else:
+                if magnitude > 9223372036854775807: return none
+                memory.write[i64]((void*)out, (i64)magnitude)
+        .uint64:
+            if negative and magnitude != 0: return none
+            memory.write[u64]((void*)out, magnitude)
+        _: return none
+    return ()

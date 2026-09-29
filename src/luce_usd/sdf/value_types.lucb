@@ -6,6 +6,7 @@
 ## written to .usdc need no mapping. A type name ("point3f[]", "color3f") is
 ## a kind, an array flag and a role; the role says how geometry treats the
 ## values and is what distinguishes point3f from float3.
+import memory
 
 ## What a value holds. The numbers are crateDataTypes.h's; 0 is no value.
 pub enum ValueKind as u8:
@@ -75,6 +76,9 @@ pub enum ValueKind as u8:
     ## Not a crate kind: text kept as written for a value this port does not
     ## interpret (splines, array edits); written back unchanged.
     verbatim = 201
+    ## Not a crate kind: a single path (a relationship's default), its id in
+    ## `bits`.
+    path = 202
 
 ## How geometry treats a value type's values (SdfValueRoleNames).
 pub enum Role as u8:
@@ -247,3 +251,26 @@ let extra_names: TypeName[4] = [
     TypeName("Transform", ValueKind.matrix4d, Role.transform),
     TypeName("PointIndex", ValueKind.int, Role.point_index),
 ]
+
+## The name usda writes for the type named `text`, as
+## SdfValueTypeNames->GetSerializationName gives it: legacy names become the
+## standard name of the same kind and role (Vec3f is float3, PointFloat is
+## point3f, Matrix4d is matrix4d); a name with no standard alias (Transform,
+## PointIndex) and an unknown name stay as they are. The [] of an array
+## stays. `buffer` holds the result when it gains a "[]".
+pub func serialization_name(text: str, buffer: u8[]) -> str:
+    let found = find_type(text) else return text
+    let (entry, array) = found
+    for index in 0..<standard_names:
+        let standard = type_names[index]
+        if standard.kind == entry.kind and standard.role == entry.role and standard.kind != ValueKind.empty:
+            if not array: return standard.text
+            if standard.text.length + 2 > buffer.length: return text
+            memory.copy(buffer, standard.text.bytes, standard.text.length)
+            buffer[standard.text.length] = '['
+            buffer[standard.text.length + 1] = ']'
+            return (str)buffer[..<standard.text.length + 2]
+    return text
+
+## The standard (non-legacy) entries at the start of type_names.
+let standard_names: usize = 56

@@ -100,3 +100,104 @@ extend Names:
             if kind == PathKind.target or kind == PathKind.mapper: return true
             at = self.node(at).parent
         return false
+
+    ## `path` relative to the prim (or variant, or root) path `anchor`, with
+    ## the fewest `..` steps (SdfPath::MakeRelativePath).
+    pub mutating func make_relative(path: u32, anchor: u32) -> u32!:
+        if path == empty_path: return empty_path
+        if not self.node(path).absolute:
+            return try self.make_relative(try self.make_absolute(path, anchor), anchor)
+        var chain: u32[4096] = ---
+        let prim = self.prim_part(path)
+        # The property part, deepest first.
+        var tail: u32[64] = ---
+        var tail_count: usize = 0
+        var at = path
+        while at != prim:
+            if tail_count == tail.length: error(errors.limit, "a property path too deep")
+            tail[tail_count] = at
+            tail_count += 1
+            at = self.node(at).parent
+        var this_node = prim
+        var anchor_node = anchor
+        var count: usize = 0
+        var dot_dots: usize = 0
+        while self.node(this_node).depth > self.node(anchor_node).depth:
+            chain[count] = this_node
+            count += 1
+            this_node = self.node(this_node).parent
+        while self.node(this_node).depth < self.node(anchor_node).depth:
+            dot_dots += 1
+            anchor_node = self.node(anchor_node).parent
+        while this_node != anchor_node:
+            dot_dots += 1
+            chain[count] = this_node
+            count += 1
+            this_node = self.node(this_node).parent
+            anchor_node = self.node(anchor_node).parent
+        var result = relative_root
+        for _ in 0..<dot_dots: result = try self.child(result, self.dot_dot)
+        var index = count
+        while index > 0:
+            index -= 1
+            let node = self.node(chain[index])
+            result = try self.find_or_add(result, node.kind, node.element, node.extra)
+        index = tail_count
+        while index > 0:
+            index -= 1
+            let node = self.node(tail[index])
+            result = try self.find_or_add(result, node.kind, node.element, node.extra)
+        return result
+
+    ## SdfPath's order: absolute before relative, the prim part before the
+    ## property part, then element by element from the root (kinds in node
+    ## type order, names by bytes, targets by this order), a prefix first.
+    pub func path_less(left: u32, right: u32) -> bool:
+        if left == right: return false
+        if left == empty_path or right == empty_path: return left == empty_path
+        let l_absolute = self.node(left).absolute
+        let r_absolute = self.node(right).absolute
+        if l_absolute != r_absolute: return l_absolute
+        let l_prim = self.prim_part(left)
+        let r_prim = self.prim_part(right)
+        if l_prim != r_prim: return self.chain_less(l_prim, r_prim, 0)
+        return self.chain_less(left, right, self.node(l_prim).depth)
+
+    ## The order of two paths over their nodes deeper than `base`.
+    func chain_less(left: u32, right: u32, base: u32) -> bool:
+        let l_depth = self.node(left).depth
+        let r_depth = self.node(right).depth
+        if l_depth == base or r_depth == base: return l_depth == base and r_depth != base
+        var l = left
+        var r = right
+        while self.node(l).depth > self.node(r).depth: l = self.node(l).parent
+        while self.node(r).depth > self.node(l).depth: r = self.node(r).parent
+        if l == r: return l_depth < r_depth
+        while self.node(l).parent != self.node(r).parent:
+            l = self.node(l).parent
+            r = self.node(r).parent
+        return self.node_less(l, r)
+
+    ## Two sibling nodes: by kind, then by content.
+    func node_less(left: u32, right: u32) -> bool:
+        let a = self.node(left)
+        let b = self.node(right)
+        if a.kind != b.kind: return (u8)a.kind < (u8)b.kind
+        match a.kind:
+            .variant:
+                let set_a = self.text_of(a.element)
+                let set_b = self.text_of(b.element)
+                if set_a != set_b: return bytes_less(set_a, set_b)
+                return bytes_less(self.text_of(a.extra), self.text_of(b.extra))
+            .target, .mapper:
+                return self.path_less(a.element, b.element)
+            .expression, .root:
+                return false
+            _:
+                return bytes_less(self.text_of(a.element), self.text_of(b.element))
+
+func bytes_less(a: str, b: str) -> bool:
+    let common = a.length if a.length < b.length else b.length
+    for index in 0..<common:
+        if a.bytes[index] != b.bytes[index]: return a.bytes[index] < b.bytes[index]
+    return a.length < b.length

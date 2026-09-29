@@ -9,7 +9,7 @@ record; statuses change as milestones land.
 |---|---|---|---|
 | M0 | `sdf/crateFile.cpp`, `textFileFormat.cpp`, `zipFile.cpp` (signatures) | `sniff.lucb`, `source.lucb` | done |
 | M1 | `sdf/path*.cpp`, `pathParser.h`, `tf/token`, `crateDataTypes.h`, `schema.cpp` (type names), `listOp.cpp`, `data.cpp` | `sdf/` | done |
-| M2 | `sdf/textFileFormat*`, `fileIO_Common.cpp`, `parserValueContext.cpp` | `usda/` | planned |
+| M2 | `sdf/textFileFormatParser*`, `textParserHelpers.cpp`, `parserHelpers.cpp`, `parserValueContext.cpp`, `fileIO_Common.*`, `usdaFileFormat.cpp`, `schema.cpp` (metadata fields, validators), `tf/stringUtils.cpp` (TfDictionaryLessThan, double text) | `usda/`, `sdf/schema.lucb` | done: 2,017 of 2,056 testenv layers byte-identical to usdcat |
 | M3 | `sdf/crateFile.cpp`, `crateData.cpp`, `integerCoding.cpp`, `tf/fastCompression.cpp` (LZ4: luce-compress) | `usdc/` | planned |
 | M4 | `sdf/crateFile.cpp` (writing) | `usdc/` | planned |
 | M5 | `sdf/zipFile.cpp`, `usdUtils/usdzPackage.cpp` (zip writing: luce-compress) | `usdz/` | planned |
@@ -30,3 +30,12 @@ record; statuses change as milestones land.
 | Python, usdview, Tf notices, change processing, edit targets | Whole layers are loaded and written; a live editable stage is a separate product. |
 | Value clips, Ts spline evaluation, UsdSkel, UsdLux, UsdShade networks, MaterialX, UsdPhysics, UsdVol, cameras | Geometry first. Splines and unknown values round-trip as opaque data. |
 | Tf, Vt, Gf, Work as libraries | Base, luce-geocore's columns and parallel pool cover them. |
+
+## Parity scores
+
+Measured with the local driver (docs/PARITY.md) against OpenUSD v26.08.
+
+| Suite | Score | Known gaps |
+|---|---|---|
+| usda (all testenv `.usda` usdcat accepts) | 2,017 / 2,056 byte-identical | attribute splines (`.spline`, Ts) and array edits (`edit [...]`) are refused; path expression values are not re-anchored to their prim |
+| sdf-parsing (testSdfParsing) | 69 printed as expected, 113 bad files rejected, 8 differ | the same spline and array-edit files; two baselines made with a test plugin's metadata registered |

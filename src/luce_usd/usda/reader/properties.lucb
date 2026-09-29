@@ -1,0 +1,257 @@
+## Attributes and relationships, after the grammar's PropertySpec: an
+## attribute declaration with a default value (or None, AnimationBlock) and
+## metadata, `.timeSamples`, `.connect` and list-op connections; a
+## relationship with its targets, metadata and list-op targets. Target and
+## connection paths expand against the owning prim, and each target or
+## connection that is set explicitly or added gets its own spec, as Sdf's
+## parser makes them.
+
+extend Reader:
+    ## One property statement in the body of the prim at `prim`.
+    mutating func property_spec(prim: u32, properties: Growing[u32]*) -> !:
+        if let part = self.list_op_keyword():
+            try self.skip_inline()
+            if self.sees_relationship():
+                let (name, spec) = try self.relationship_head(prim, properties)
+                try self.skip_inline()
+                if self.peek() == '=':
+                    try self.assignment()
+                    try self.targets(name, spec, part, prim)
+                return
+            let (name, spec, _, _) = try self.attribute_head(prim, properties)
+            try self.skip_inline()
+            try self.expect('.', "expected '.connect' in a connection list edit")
+            try self.skip_inline()
+            if not self.keyword("connect"): error(errors.invalid, self.where("expected 'connect'"))
+            try self.assignment()
+            try self.connections(name, spec, part, prim)
+            return
+        if self.sees_relationship():
+            try self.relationship(prim, properties)
+            return
+        try self.attribute(prim, properties)
+
+    ## Whether a relationship declaration starts here.
+    func sees_relationship() -> bool:
+        return self.sees("rel") or self.sees("varying") or (self.sees("custom") and self.relationship_after_custom())
+
+    func relationship_after_custom() -> bool:
+        var index = self.at + 6
+        while index < self.data.length and (self.data[index] == ' ' or self.data[index] == '\t'): index += 1
+        let rest = self.data[index..]
+        return starts_with_word(rest, "rel") or starts_with_word(rest, "varying")
+
+    ## `[custom] [varying] rel name`: the property path and its spec.
+    mutating func relationship_head(prim: u32, properties: Growing[u32]*) -> (u32, usize)!:
+        var custom = false
+        var variability = variability_uniform
+        if self.keyword("custom"):
+            custom = true
+            try self.skip_inline()
+        if self.keyword("varying"):
+            variability = variability_varying
+            try self.skip_inline()
+        if not self.keyword("rel"): error(errors.invalid, self.where("expected 'rel'"))
+        try self.skip_inline()
+        let name = try self.names.token(try self.namespaced_name())
+        let path = try self.names.property(prim, name)
+        var spec: usize = 0
+        if let found = self.layer.find(path):
+            spec = found
+        else:
+            spec = try self.layer.create_spec(path, SpecType.relationship)
+            try properties.push(name)
+        try self.set_field(spec, self.keys.variability, Value.scalar(ValueKind.variability, variability))
+        if custom: try self.set_field(spec, self.keys.custom, Value.scalar(ValueKind.boolean, 1))
+        return (path, spec)
+
+    mutating func relationship(prim: u32, properties: Growing[u32]*) -> !:
+        let (path, spec) = try self.relationship_head(prim, properties)
+        let before = self.at
+        try self.skip_inline()
+        if self.peek() == '.':
+            self.at += 1
+            try self.skip_inline()
+            if not self.keyword("default"): error(errors.invalid, self.where("expected 'default'"))
+            try self.assignment()
+            let target = try self.path_ref()
+            try self.set_field(spec, self.keys.default, Value.scalar(ValueKind.path, (u64)target))
+            return
+        if self.peek() == '[':
+            error(errors.invalid, self.where("the bracketed relationship target form is not supported yet"))
+        if self.peek() == '=':
+            try self.assignment()
+            try self.targets(path, spec, ListPart.explicit, prim)
+            try self.skip_inline()
+        else:
+            self.at = before
+            try self.skip_inline()
+        if self.peek() == '(': try self.metadata(spec, applies_relationship, prim)
+
+    ## `None | <path> | [<path>, ...]` as the targets of `path`.
+    mutating func targets(path: u32, spec: usize, part: ListPart, prim: u32) -> !:
+        var items = Growing[ListItem]()
+        defer items.close()
+        let none_given = self.sees("None")
+        try self.path_list(&items, prim)
+        if items.count == 0 and part != ListPart.explicit:
+            error(errors.invalid, self.where("None or an empty list is only allowed for explicit targets"))
+        discard(none_given)
+        for item in items.view(): try self.check_target_path((u32)item.a)
+        try self.check_unique(items.view())
+        if part == ListPart.explicit or part == ListPart.added:
+            var children = Growing[u32]()
+            defer children.close()
+            if let existing = self.layer.get(spec, self.keys.target_children): try children.assign(existing.ids())
+            for item in items.view():
+                let target_path = try self.names.target(path, (u32)item.a)
+                if self.layer.find(target_path) == none:
+                    discard(try self.layer.create_spec(target_path, SpecType.relationship_target))
+                    try children.push((u32)item.a)
+            if children.count > 0:
+                var column = try Column[u8].allocate(children.count * 4)
+                memory.copy(column.span(), u8[]((u8*)children.items.data, children.count * 4), children.count * 4)
+                try self.set_field(spec, self.keys.target_children, Value.of_records(ValueKind.path_vector, children.count, column))
+        try self.set_list_items(spec, self.keys.target_paths, ValueKind.path_list_op, part, items.view())
+
+    ## `[custom] [uniform|config] type[[]] name`: the property path, its
+    ## spec, its value kind and whether it is an array.
+    mutating func attribute_head(prim: u32, properties: Growing[u32]*) -> (u32, usize, ValueKind, bool)!:
+        var custom = false
+        var variability = variability_varying
+        if self.keyword("custom"):
+            custom = true
+            try self.skip_inline()
+        if self.keyword("uniform") or self.keyword("config"):
+            variability = variability_uniform
+            try self.skip_inline()
+        let type_start = self.at
+        discard(try self.identifier())
+        let type_end = self.at
+        let array = try self.array_brackets()
+        let type_text = (str)self.data[type_start..<type_end]
+        # An unknown type is kept by name; its values keep their text.
+        var entry_kind = ValueKind.empty
+        if let found = find_type(type_text):
+            entry_kind = found.0.kind
+            # opaque and group values cannot be authored.
+            if entry_kind == ValueKind.empty: entry_kind = ValueKind.value
+        # The typeName field is the name as written, with its [].
+        var full = type_text
+        if array:
+            self.scratch.clear()
+            try self.scratch.assign(type_text.bytes)
+            try self.scratch.push('[')
+            try self.scratch.push(']')
+            full = (str)self.scratch.view()
+        let type_name = try self.names.token(full)
+        try self.skip_inline()
+        let name = try self.names.token(try self.namespaced_name())
+        let path = try self.names.property(prim, name)
+        var spec: usize = 0
+        if let existing = self.layer.find(path):
+            spec = existing
+            if let old = self.layer.get(spec, self.keys.type_name):
+                if old.as_token() != type_name: error(errors.invalid, self.where("an attribute's type cannot change"))
+            if let old = self.layer.get(spec, self.keys.variability):
+                if old.bits != variability: error(errors.invalid, self.where("an attribute's variability cannot change"))
+        else:
+            spec = try self.layer.create_spec(path, SpecType.attribute)
+            try properties.push(name)
+            try self.set_field(spec, self.keys.custom, Value.scalar(ValueKind.boolean, 0))
+        if custom: try self.set_field(spec, self.keys.custom, Value.scalar(ValueKind.boolean, 1))
+        if self.layer.get(spec, self.keys.type_name) == none:
+            try self.set_field(spec, self.keys.type_name, Value.scalar(ValueKind.token, (u64)type_name))
+        if self.layer.get(spec, self.keys.variability) == none:
+            try self.set_field(spec, self.keys.variability, Value.scalar(ValueKind.variability, variability))
+        return (path, spec, entry_kind, array)
+
+    mutating func attribute(prim: u32, properties: Growing[u32]*) -> !:
+        let (path, spec, kind, array) = try self.attribute_head(prim, properties)
+        let before = self.at
+        try self.skip_inline()
+        if self.peek() == '.':
+            self.at += 1
+            try self.skip_inline()
+            if self.keyword("timeSamples"):
+                try self.assignment()
+                try self.time_samples(spec, kind, array)
+                return
+            if self.keyword("connect"):
+                try self.assignment()
+                try self.connections(path, spec, ListPart.explicit, prim)
+                return
+            if self.keyword("spline"):
+                error(errors.invalid, self.where("attribute splines are not supported yet"))
+            error(errors.invalid, self.where("expected timeSamples, connect or spline"))
+        if self.peek() == '=':
+            try self.assignment()
+            try self.set_field(spec, self.keys.default, try self.attribute_value(kind, array))
+            try self.skip_inline()
+        else:
+            self.at = before
+            try self.skip_inline()
+        if self.peek() == '(': try self.metadata(spec, applies_attribute, prim)
+
+    ## An attribute value: None (a value block), AnimationBlock, or a typed value.
+    mutating func attribute_value(kind: ValueKind, array: bool) -> Value!:
+        if self.keyword("None"): return Value.marker(ValueKind.value_block)
+        if self.keyword("AnimationBlock"): return Value.marker(ValueKind.animation_block)
+        # A path reference is a path value, whatever the attribute's type.
+        if self.peek() == '<': return Value.scalar(ValueKind.path, (u64)try self.path_ref())
+        if self.sees("edit"): error(errors.invalid, self.where("array edits are not supported yet"))
+        if kind == ValueKind.value: error(errors.invalid, self.where("found an authored opinion for an opaque attribute"))
+        if kind == ValueKind.empty:
+            var recorded = Growing[u8]()
+            defer recorded.close()
+            try self.recorded_item(&recorded)
+            return Value.scalar(ValueKind.unregistered_value, (u64)try self.names.token((str)recorded.view()))
+        return try self.typed_value(kind, array)
+
+    ## `{ time: value, ... }` into the timeSamples field.
+    mutating func time_samples(spec: usize, kind: ValueKind, array: bool) -> !:
+        try self.expect('{', "expected '{' to open time samples")
+        let samples = try TimeSamples.create()
+        var value = Value.of_object(ValueKind.time_samples, (void*)samples)
+        errdefer value.release()
+        try self.skip_all()
+        if self.peek() != '}':
+            while true:
+                let time = (try self.number()).as_double()
+                try self.skip_inline()
+                try self.expect(':', "expected ':' after a sample time")
+                try self.skip_inline()
+                if self.keyword("None"): try samples.put(time, Value.marker(ValueKind.value_block))
+                else: try samples.put(time, try self.attribute_value(kind, array))
+                if not (try self.list_end('}')): break
+        try self.expect('}', "expected '}' to close time samples")
+        try self.set_field(spec, self.keys.time_samples, value)
+
+    ## `None | <path> | [<path>, ...]` as the connections of `path`.
+    mutating func connections(path: u32, spec: usize, part: ListPart, prim: u32) -> !:
+        var items = Growing[ListItem]()
+        defer items.close()
+        try self.path_list(&items, prim)
+        if items.count == 0 and part != ListPart.explicit:
+            error(errors.invalid, self.where("None or an empty list is only allowed for explicit connections"))
+        for item in items.view(): try self.check_target_path((u32)item.a)
+        try self.check_unique(items.view())
+        if part == ListPart.explicit or part == ListPart.added:
+            var children = Growing[u32]()
+            defer children.close()
+            for item in items.view():
+                let connection = try self.names.target(path, (u32)item.a)
+                if self.layer.find(connection) == none: discard(try self.layer.create_spec(connection, SpecType.connection))
+                try children.push((u32)item.a)
+            var column = try Column[u8].allocate(children.count * 4)
+            if children.count > 0: memory.copy(column.span(), u8[]((u8*)children.items.data, children.count * 4), children.count * 4)
+            try self.set_field(spec, self.keys.connection_children, Value.of_records(ValueKind.path_vector, children.count, column))
+        try self.set_list_items(spec, self.keys.connection_paths, ValueKind.path_list_op, part, items.view())
+
+func starts_with_word(data: const u8[], word: str) -> bool:
+    if data.length < word.length: return false
+    for index in 0..<word.length:
+        if data[index] != word.bytes[index]: return false
+    if data.length == word.length: return true
+    let next = data[word.length]
+    return not ((next >= 'a' and next <= 'z') or (next >= 'A' and next <= 'Z') or (next >= '0' and next <= '9') or next == '_')

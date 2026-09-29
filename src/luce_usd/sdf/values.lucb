@@ -278,6 +278,9 @@ func destroy(kind: ValueKind, object: void*):
             samples.times.close()
             samples.values.close()
             free(samples) in memory.heap
+        .unregistered_value:
+            # An unregistered field's parsed dictionary.
+            destroy(ValueKind.dictionary, object)
         _:
             if not is_list_op(kind): trap("a value composite of an unknown kind")
             let list = (ListOp*)object
@@ -303,7 +306,7 @@ pub func same(left: const Value*, right: const Value*) -> bool:
     let second = right.object else return false
     if first == second: return true
     match left.kind:
-        .dictionary:
+        .dictionary, .unregistered_value:
             let x = (const Dictionary*)first
             let y = (const Dictionary*)second
             if x.keys.count != y.keys.count: return false

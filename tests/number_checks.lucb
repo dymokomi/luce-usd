@@ -1,0 +1,35 @@
+## usda number text against reference cases (tests/number_cases.lucb, made
+## by generate_number_cases.py): shortest doubles and floats laid out as
+## TfStringify does, halves as "%g", and correctly rounded parsing.
+from usd_kernel import write_double, write_float, write_half, parse_number
+from geocore_growing import Growing
+import number_cases
+
+pub func exercise() -> !:
+    var out = Growing[u8]()
+    defer out.close()
+    var failures: usize = 0
+    for case in number_cases.double_cases:
+        out.clear()
+        try write_double(&out, f64.bits(case.bits))
+        if (str)out.view() != case.text:
+            if failures < 10: print(f"double {hex(case.bits)}: {(str)out.view()} expected {case.text}")
+            failures += 1
+    for case in number_cases.float_cases:
+        out.clear()
+        try write_float(&out, f32.bits(case.bits))
+        if (str)out.view() != case.text:
+            if failures < 20: print(f"float {hex(case.bits)}: {(str)out.view()} expected {case.text}")
+            failures += 1
+    for case in number_cases.half_cases:
+        out.clear()
+        try write_half(&out, case.bits)
+        if (str)out.view() != case.text:
+            if failures < 30: print(f"half {hex(case.bits)}: {(str)out.view()} expected {case.text}")
+            failures += 1
+    for case in number_cases.parse_cases:
+        let value = try parse_number(case.text.bytes)
+        if value.bits() != case.bits:
+            if failures < 40: print(f"parse {case.text}: {hex(value.bits())} expected {hex(case.bits)}")
+            failures += 1
+    assert(failures == 0)

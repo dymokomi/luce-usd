@@ -1,0 +1,74 @@
+## The layer: `#usda 1.0`, the layer metadata section (comment first, then
+## fields in byte order, subLayers with their offsets, layer relocates), the
+## root prim order, and each root prim after a blank line.
+
+extend Writer:
+    mutating func write_layer() -> !:
+        try self.put("#usda 1.0\n")
+        let root = self.layer.spec(0)
+        # The metadata section is written only when it holds something.
+        let start = self.out.count
+        try self.put("(\n")
+        let header_start = self.out.count
+        if let comment = root.get(self.keys.comment):
+            if self.text(comment.as_token()).length > 0:
+                try self.indent(1)
+                try self.quoted(self.text(comment.as_token()))
+                try self.put("\n")
+        var fields = Growing[u32]()
+        defer fields.close()
+        try self.metadata_fields(root, layer_extra, &fields)
+        for name in fields.view():
+            let value = root.get(name) else continue
+            if name == self.keys.documentation:
+                if self.text(value.as_token()).length > 0:
+                    try self.indent(1)
+                    try self.put("doc = ")
+                    try self.quoted(self.text(value.as_token()))
+                    try self.put("\n")
+            elif name == self.keys.sub_layers:
+                try self.sublayers(root, value)
+            elif name == self.keys.has_owned_sub_layers:
+                if value.as_bool():
+                    try self.indent(1)
+                    try self.put("hasOwnedSubLayers = true\n")
+            else:
+                try self.simple_field(1, name, value)
+        if let relocates = root.get(self.keys.layer_relocates):
+            if relocates.count > 0: try self.relocates(1, true, relocates)
+        if self.out.count == header_start:
+            self.out.count = start
+        else:
+            try self.put(")\n")
+        if let order = root.get(self.keys.prim_order):
+            if order.count > 1:
+                try self.put("\nreorder rootPrims = ")
+                try self.name_vector(order.ids())
+                try self.put("\n")
+        if let children = root.get(self.keys.prim_children):
+            for name in children.ids():
+                try self.put("\n")
+                let path = try self.names.child(absolute_root, name)
+                let spec = self.layer.find(path) else continue
+                try self.write_prim(spec, 0)
+        try self.put("\n")
+
+    ## `subLayers = [ @a@ (offset = 1; scale = 2), ... ]`.
+    mutating func sublayers(root: const Spec*, value: const Value*) -> !:
+        try self.indent(1)
+        try self.put("subLayers = [\n")
+        let paths = value.ids()
+        var offsets: const f64[]
+        if let stored = root.get(self.keys.sub_layer_offsets): offsets = stored.doubles()
+        for index in 0..<paths.length:
+            try self.indent(2)
+            try asset_into(self.out, self.text(paths[index]))
+            if index * 2 + 1 < offsets.length:
+                try self.layer_offset(0, false, offsets[index * 2], offsets[index * 2 + 1])
+            try self.put(",\n" if index + 1 < paths.length else "\n")
+        try self.indent(1)
+        try self.put("]\n")
+
+## The layer's metadata section also takes subLayers.
+func layer_extra(keys: FieldKeys, name: u32) -> bool:
+    return name == keys.sub_layers

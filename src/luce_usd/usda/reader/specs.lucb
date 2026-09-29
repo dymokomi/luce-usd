@@ -1,0 +1,194 @@
+## The layer and its prims: the header and layer metadata, root prims and
+## the root prim order, prim specs with their specifier, type, metadata and
+## contents, and variant sets with their variants. Children and property
+## names are recorded in the order they appear, as primChildren and
+## properties fields, and a variant set's variants as variantChildren.
+
+extend Reader:
+    ## The whole layer.
+    mutating func read_layer() -> !:
+        if not (self.data.length >= 6 and (str)self.data[..<6] == "#usda "):
+            error(errors.invalid, "not a usda layer: it must start with '#usda '")
+        while not self.at_end() and self.peek() != '\n' and self.peek() != '\r': self.at += 1
+        try self.skip_all()
+        if self.peek() == '(': try self.metadata(0, applies_layer, absolute_root)
+        var children = Growing[u32]()
+        defer children.close()
+        while true:
+            try self.skip_all()
+            if self.at_end(): break
+            if self.keyword("reorder"):
+                try self.skip_inline()
+                if not self.keyword("rootPrims"): error(errors.invalid, self.where("expected 'rootPrims' after 'reorder'"))
+                try self.assignment()
+                try self.set_field(0, self.keys.prim_order, try self.name_list())
+                try self.skip_line()
+                continue
+            try self.prim_spec(absolute_root, &children)
+            try self.skip_line()
+            if not self.at_end() and self.peek() != '\n' and self.peek() != '\r':
+                error(errors.invalid, self.where("expected a line end after a prim"))
+        try self.set_field(0, self.keys.prim_children, try token_vector(children.view()))
+
+    ## `String | [String, ...]` as a token vector.
+    mutating func name_list() -> Value!:
+        var names = Growing[u32]()
+        defer names.close()
+        if self.peek() == '[':
+            self.at += 1
+            try self.skip_all()
+            while true:
+                try names.push(try self.names.token(try self.string()))
+                if not (try self.list_end(']')): break
+            try self.expect(']', "expected ']' after names")
+        else:
+            try names.push(try self.names.token(try self.string()))
+        return try token_vector(names.view())
+
+    ## `def|over|class [Type] "name" [( metadata )] { contents }` under
+    ## `parent`, its name appended to `siblings`.
+    mutating func prim_spec(parent: u32, siblings: Growing[u32]*) -> !:
+        var specifier = specifier_def
+        if self.keyword("def"): specifier = specifier_def
+        elif self.keyword("over"): specifier = specifier_over
+        elif self.keyword("class"): specifier = specifier_class
+        else: error(errors.invalid, self.where("expected def, over or class"))
+        try self.skip_inline()
+        var type_name: u32 = 0
+        if not self.sees_string():
+            let start = self.at
+            discard(try self.identifier())
+            while true:
+                let before = self.at
+                try self.skip_inline()
+                if self.peek() != '.':
+                    self.at = before
+                    break
+                self.at += 1
+                try self.skip_inline()
+                discard(try self.identifier())
+            type_name = try self.names.token((str)self.data[start..<self.at])
+            try self.skip_inline()
+        let name_text = try self.string()
+        if identifier_at(name_text.bytes, 0) != name_text.length or name_text.length == 0:
+            error(errors.invalid, self.where("not a valid prim name"))
+        let name = try self.names.token(name_text)
+        let path = try self.names.child(parent, name)
+        if self.layer.find(path) != none: error(errors.invalid, self.where("a duplicate prim"))
+        let spec = try self.layer.create_spec(path, SpecType.prim)
+        try siblings.push(name)
+        try self.set_field(spec, self.keys.specifier, Value.scalar(ValueKind.specifier, specifier))
+        if type_name != 0: try self.set_field(spec, self.keys.type_name, Value.scalar(ValueKind.token, (u64)type_name))
+        try self.skip_all()
+        if self.peek() == '(':
+            try self.metadata(spec, applies_prim, path)
+            try self.skip_all()
+        try self.expect('{', "expected '{' to open a prim")
+        try self.contents(path, spec)
+        try self.expect('}', "expected '}' to close a prim")
+
+    ## The items of a prim or variant body, up to its closing '}'; then its
+    ## primChildren and properties fields.
+    mutating func contents(path: u32, spec: usize) -> !:
+        var children = Growing[u32]()
+        defer children.close()
+        var properties = Growing[u32]()
+        defer properties.close()
+        while true:
+            try self.skip_all()
+            if self.peek() == '}' or self.at_end(): break
+            if self.sees("def") or self.sees("over") or self.sees("class"):
+                try self.prim_spec(path, &children)
+                try self.item_line_end()
+                continue
+            if self.keyword("variantSet"):
+                try self.variant_set(path, spec)
+                try self.item_line_end()
+                continue
+            let start = self.at
+            if self.keyword("reorder"):
+                try self.skip_inline()
+                if self.keyword("nameChildren"):
+                    try self.assignment()
+                    try self.set_field(spec, self.keys.prim_order, try self.name_list())
+                    try self.body_statement_end()
+                    continue
+                if self.keyword("properties"):
+                    try self.assignment()
+                    try self.set_field(spec, self.keys.property_order, try self.name_list())
+                    try self.body_statement_end()
+                    continue
+                self.at = start
+            try self.property_spec(path, &properties)
+            try self.body_statement_end()
+        if children.count > 0: try self.set_field(spec, self.keys.prim_children, try token_vector(children.view()))
+        if properties.count > 0: try self.set_field(spec, self.keys.properties, try token_vector(properties.view()))
+
+    ## A line end must follow a prim or variant set (or the body closes).
+    mutating func item_line_end() -> !:
+        try self.skip_line()
+        let byte = self.peek()
+        if byte == '\n' or byte == '\r':
+            self.at += 1
+            return
+        if byte == '}' or self.at_end(): return
+        error(errors.invalid, self.where("expected a line end"))
+
+    ## `variantSet "name" = { "variant" [( metadata )] { contents } ... }`.
+    mutating func variant_set(prim: u32, prim_spec: usize) -> !:
+        try self.skip_inline()
+        let set_name = try self.names.token(try self.string())
+        try self.skip_all()
+        try self.expect('=', "expected '=' after the variant set name")
+        try self.skip_all()
+        try self.expect('{', "expected '{' to open a variant set")
+        let set_path = try self.names.variant(prim, set_name, 0)
+        var set_spec: usize = 0
+        if let found = self.layer.find(set_path):
+            set_spec = found
+        else:
+            set_spec = try self.layer.create_spec(set_path, SpecType.variant_set)
+            var names = Growing[u32]()
+            defer names.close()
+            if let existing = self.layer.get(prim_spec, self.keys.variant_set_children):
+                try names.assign(existing.ids())
+            try names.push(set_name)
+            try self.set_field(prim_spec, self.keys.variant_set_children, try token_vector(names.view()))
+        var variants = Growing[u32]()
+        defer variants.close()
+        while true:
+            try self.skip_all()
+            if self.peek() == '}': break
+            let variant_name = try self.string()
+            try self.check_variant_name(variant_name)
+            let variant = try self.names.token(variant_name)
+            let variant_path = try self.names.variant(prim, set_name, variant)
+            let variant_spec = try self.layer.create_spec(variant_path, SpecType.variant)
+            try variants.push(variant)
+            try self.skip_all()
+            if self.peek() == '(':
+                try self.metadata(variant_spec, applies_prim, variant_path)
+                try self.skip_all()
+            try self.expect('{', "expected '{' to open a variant")
+            try self.contents(variant_path, variant_spec)
+            try self.expect('}', "expected '}' to close a variant")
+        self.at += 1
+        try self.set_field(set_spec, self.keys.variant_children, try token_vector(variants.view()))
+
+## A token vector value of `ids`.
+func token_vector(ids: const u32[]) -> Value!:
+    var column = try Column[u8].allocate(ids.length * 4)
+    if ids.length > 0: memory.copy(column.span(), u8[]((u8*)ids.data, ids.length * 4), ids.length * 4)
+    return Value.of_records(ValueKind.token_vector, ids.length, column)
+
+extend Reader:
+    ## After a property or reorder statement in a prim body: a `;` or a line
+    ## end (or the end of the text), never the closing '}' on the same line.
+    mutating func body_statement_end() -> !:
+        try self.skip_line()
+        let byte = self.peek()
+        if byte == ';' or byte == '\n' or byte == '\r':
+            self.at += 1
+            return
+        if self.at_end(): return
+        error(errors.invalid, self.where("expected a line end or ';' after a statement"))

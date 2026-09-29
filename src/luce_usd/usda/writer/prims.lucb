@@ -1,0 +1,253 @@
+## Prims (Sdf_WritePrim and its parts): the preamble `def Type "name"`, the
+## metadata section (comment, then fields in dictionary order, with the
+## arcs, variant sets and selections, relocates and substitutions in their
+## own syntax), the body (reorder statements, properties in dictionary
+## order, children, variant sets), and variant sets with their variants.
+
+extend Writer:
+    mutating func write_prim(spec: usize, indent: usize) -> !:
+        let prim = self.layer.spec(spec)
+        var specifier = specifier_over
+        if let value = prim.get(self.keys.specifier): specifier = value.bits
+        try self.indent(indent)
+        if specifier == specifier_def: try self.put("def")
+        elif specifier == specifier_class: try self.put("class")
+        else: try self.put("over")
+        # A non-defining specifier writes a type only when one is set.
+        if let type_name = prim.get(self.keys.type_name):
+            let text = self.text(type_name.as_token())
+            if text.length > 0 and text != "__AnyType__":
+                try self.byte(' ')
+                try self.put(text)
+        try self.byte(' ')
+        try self.quoted(self.names.name_text(prim.path))
+        try self.prim_metadata(spec, indent)
+        try self.put("\n")
+        try self.indent(indent)
+        try self.put("{\n")
+        try self.prim_body(spec, indent)
+        try self.indent(indent)
+        try self.put("}\n")
+
+    ## ` (\n ... )` when the prim has a comment or metadata.
+    mutating func prim_metadata(spec: usize, indent: usize) -> !:
+        let prim = self.layer.spec(spec)
+        var fields = Growing[u32]()
+        defer fields.close()
+        try self.metadata_fields(prim, prim_extra, &fields)
+        var comment = ""
+        if let value = prim.get(self.keys.comment): comment = self.text(value.as_token())
+        if comment.length == 0 and fields.count == 0: return
+        try self.put(" (\n")
+        if comment.length > 0:
+            try self.indent(indent + 1)
+            try self.quoted(comment)
+            try self.put("\n")
+        for name in fields.view():
+            let value = prim.get(name) else continue
+            if name == self.keys.documentation:
+                try self.indent(indent + 1)
+                try self.put("doc = ")
+                try self.quoted(self.text(value.as_token()))
+                try self.put("\n")
+            elif name == self.keys.permission:
+                try self.indent(indent + 1)
+                try self.put("permission = private\n" if value.bits == permission_private else "permission = public\n")
+            elif name == self.keys.symmetry_function:
+                try self.indent(indent + 1)
+                try self.put("symmetryFunction = ")
+                try self.token_text(value.as_token())
+                try self.put("\n")
+            elif name == self.keys.payload:
+                try self.list_op(indent + 1, "payload", value)
+            elif name == self.keys.references:
+                try self.list_op(indent + 1, "references", value)
+            elif name == self.keys.variant_set_names:
+                try self.variant_set_names(indent + 1, value)
+            elif name == self.keys.inherit_paths:
+                try self.list_op(indent + 1, "inherits", value)
+            elif name == self.keys.specializes:
+                try self.list_op(indent + 1, "specializes", value)
+            elif name == self.keys.relocates:
+                try self.prim_relocates(indent + 1, prim.path, value)
+            elif name == self.keys.prefix_substitutions:
+                try self.indent(indent + 1)
+                try self.put("prefixSubstitutions = ")
+                try self.dictionary(indent + 1, value, true)
+            elif name == self.keys.suffix_substitutions:
+                try self.indent(indent + 1)
+                try self.put("suffixSubstitutions = ")
+                try self.dictionary(indent + 1, value, true)
+            elif name == self.keys.variant_selection:
+                if value.count > 0:
+                    try self.indent(indent + 1)
+                    try self.put("variants = ")
+                    try self.variant_selections(indent + 1, value)
+            else:
+                try self.simple_field(indent + 1, name, value)
+        try self.indent(indent)
+        try self.put(")")
+
+    ## `variantSets = ...` lines, explicit or per list op part.
+    mutating func variant_set_names(indent: usize, value: const Value*) -> !:
+        let list = value.list_op() else return
+        if list.explicit:
+            try self.indent(indent)
+            try self.put("variantSets = ")
+            try self.name_items(list.items(ListPart.explicit))
+            try self.put("\n")
+            return
+        try self.variant_set_part(indent, "delete variantSets = ", list.items(ListPart.deleted))
+        try self.variant_set_part(indent, "add variantSets = ", list.items(ListPart.added))
+        try self.variant_set_part(indent, "prepend variantSets = ", list.items(ListPart.prepended))
+        try self.variant_set_part(indent, "append variantSets = ", list.items(ListPart.appended))
+        try self.variant_set_part(indent, "reorder variantSets = ", list.items(ListPart.ordered))
+
+    mutating func variant_set_part(indent: usize, lead: str, items: const ListItem[]) -> !:
+        if items.length == 0: return
+        try self.indent(indent)
+        try self.put(lead)
+        try self.name_items(items)
+        try self.put("\n")
+
+    ## A name vector: one quoted name, or `["a", "b"]`.
+    mutating func name_items(items: const ListItem[]) -> !:
+        if items.length > 1: try self.byte('[')
+        for index in 0..<items.length:
+            if index > 0: try self.put(", ")
+            try self.quoted(self.text((u32)items[index].a))
+        if items.length > 1: try self.byte(']')
+
+    mutating func name_vector(ids: const u32[]) -> !:
+        if ids.length > 1: try self.byte('[')
+        for index in 0..<ids.length:
+            if index > 0: try self.put(", ")
+            try self.quoted(self.text(ids[index]))
+        if ids.length > 1: try self.byte(']')
+
+    ## Reorders, properties, children and variant sets.
+    mutating func prim_body(spec: usize, indent: usize) -> !:
+        let prim = self.layer.spec(spec)
+        if let order = prim.get(self.keys.property_order):
+            if order.count > 1:
+                try self.indent(indent + 1)
+                try self.put("reorder properties = ")
+                try self.name_vector(order.ids())
+                try self.put("\n")
+        if let order = prim.get(self.keys.prim_order):
+            if order.count > 1:
+                try self.indent(indent + 1)
+                try self.put("reorder nameChildren = ")
+                try self.name_vector(order.ids())
+                try self.put("\n")
+        var properties = Growing[usize]()
+        defer properties.close()
+        if let names = prim.get(self.keys.properties):
+            for name in names.ids():
+                let path = try self.names.property(prim.path, name)
+                if let found = self.layer.find(path): try properties.push(found)
+        try self.sort_properties(&properties)
+        for property in properties.view():
+            if self.layer.spec(property).kind == SpecType.attribute: try self.write_attribute(property, indent + 1)
+            else: try self.write_relationship(property, indent + 1)
+        var children = Growing[usize]()
+        defer children.close()
+        if let names = prim.get(self.keys.prim_children):
+            for name in names.ids():
+                let path = try self.names.child(prim.path, name)
+                if let found = self.layer.find(path): try children.push(found)
+        if properties.count > 0 and children.count > 0: try self.put("\n")
+        for index in 0..<children.count:
+            if index > 0: try self.put("\n")
+            try self.write_prim(children.items[index], indent + 1)
+        if let sets = prim.get(self.keys.variant_set_children):
+            for name in sets.ids():
+                let path = try self.names.variant(prim.path, name, 0)
+                if let found = self.layer.find(path): try self.write_variant_set(found, name, prim.path, indent + 1)
+
+    ## Properties by name in dictionary order, attributes before
+    ## relationships of the same name.
+    mutating func sort_properties(properties: Growing[usize]*) -> !:
+        for index in 1..<properties.count:
+            let current = properties.items[index]
+            var at = index
+            while at > 0 and self.property_less(current, properties.items[at - 1]):
+                properties.items[at] = properties.items[at - 1]
+                at -= 1
+            properties.items[at] = current
+
+    func property_less(left: usize, right: usize) -> bool:
+        let a = self.layer.spec(left)
+        let b = self.layer.spec(right)
+        let a_name = self.names.name_text(a.path)
+        let b_name = self.names.name_text(b.path)
+        if a_name == b_name: return (u8)a.kind < (u8)b.kind
+        return dictionary_less(a_name, b_name)
+
+    ## `variantSet "name" = { ... }` with its variants in name order.
+    mutating func write_variant_set(spec: usize, name: u32, prim: u32, indent: usize) -> !:
+        let set = self.layer.spec(spec)
+        var variants = Growing[usize]()
+        defer variants.close()
+        if let names = set.get(self.keys.variant_children):
+            for variant in names.ids():
+                let path = try self.names.variant(prim, name, variant)
+                if let found = self.layer.find(path): try variants.push(found)
+        if variants.count == 0: return
+        for index in 1..<variants.count:
+            let current = variants.items[index]
+            var at = index
+            while at > 0 and byte_less(self.variant_name(current), self.variant_name(variants.items[at - 1])):
+                variants.items[at] = variants.items[at - 1]
+                at -= 1
+            variants.items[at] = current
+        try self.indent(indent)
+        try self.put("variantSet ")
+        try self.quoted(self.text(name))
+        try self.put(" = {\n")
+        for variant in variants.view(): try self.write_variant(variant, indent + 1)
+        try self.indent(indent)
+        try self.put("}\n")
+
+    func variant_name(spec: usize) -> str:
+        return self.text(self.names.node(self.layer.spec(spec).path).extra)
+
+    mutating func write_variant(spec: usize, indent: usize) -> !:
+        try self.indent(indent)
+        try self.quoted(self.variant_name(spec))
+        try self.prim_metadata(spec, indent)
+        try self.put(" {\n")
+        try self.prim_body(spec, indent)
+        try self.put("\n")
+        try self.indent(indent)
+        try self.put("}\n")
+
+## A prim's metadata section also takes these fields, and not typeName.
+func prim_extra(keys: FieldKeys, name: u32) -> bool:
+    return name == keys.payload or name == keys.references or name == keys.relocates or name == keys.inherit_paths or name == keys.specializes or name == keys.variant_set_names or name == keys.variant_selection
+
+extend Writer:
+    ## A prim's relocates, each path relative to the prim.
+    mutating func prim_relocates(indent: usize, prim: u32, value: const Value*) -> !:
+        let pairs = value.ids()
+        var column = try Column[u8].allocate(pairs.length * 4)
+        let relative = column.span()
+        for index in 0..<pairs.length:
+            let path = pairs[index]
+            var made = empty_path
+            if path != empty_path: made = try self.names.make_relative(path, prim)
+            memory.write[u32]((void*)&relative[index * 4], made)
+        # A relocates map is ordered by its (relative) source paths.
+        let count = pairs.length // 2
+        for index in 1..<count:
+            let source = memory.read[u32]((void*)&relative[index * 8])
+            let target = memory.read[u32]((void*)&relative[index * 8 + 4])
+            var at = index
+            while at > 0 and self.names.path_less(source, memory.read[u32]((void*)&relative[(at - 1) * 8])):
+                memory.write[u64]((void*)&relative[at * 8], memory.read[u64]((void*)&relative[(at - 1) * 8]))
+                at -= 1
+            memory.write[u32]((void*)&relative[at * 8], source)
+            memory.write[u32]((void*)&relative[at * 8 + 4], target)
+        var relative_value = Value.of_records(ValueKind.relocates, value.count, column)
+        defer relative_value.release()
+        try self.relocates(indent, true, &relative_value)

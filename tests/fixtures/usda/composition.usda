@@ -1,0 +1,103 @@
+#usda 1.0
+(
+    "Composition arcs and structure a layer can hold"
+    defaultPrim = "World"
+    subLayers = [
+        @./base.usda@ (offset = 10; scale = 2),
+        @weak.usda@
+    ]
+    relocates = {
+        </World/Old>: </World/New>
+    }
+)
+
+def Xform "World" (
+    kind = "assembly"
+    prepend apiSchemas = ["GeomModelAPI", "MaterialBindingAPI"]
+    variants = {
+        string lod = "high"
+        string shade = "`'${SHADE}'`"
+    }
+    prepend variantSets = ["lod", "shade"]
+    references = [
+        @./ref.usda@</Asset> (offset = 5),
+        </Local> (
+            customData = {
+                int weight = 3
+            }
+        )
+    ]
+    payload = @./heavy.usda@
+    inherits = </_class_Thing>
+    append specializes = </_Base>
+    relocates = {
+        </World/A>: </World/B>,
+        </Else>: </World/C>
+    }
+    customData = {
+        dictionary nested = {
+            double3 offset = (1, 2, 3)
+            string[] tags = ["a", "b c"]
+        }
+        asset icon = @./icon.png@
+    }
+)
+{
+    reorder properties = ["b", "a"]
+    reorder nameChildren = ["Two", "One"]
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+    double3 xformOp:translate = (1, 2.5, -3)
+    quatf xformOp:orient = (0.7071068, 0, 0.7071068, 0)
+    custom rel material:binding = </World/Looks/Red> (
+        bindMaterialAs = "strongerThanDescendants"
+    )
+    prepend rel proxy = [
+        </World/One>,
+        </World/Two.attr>,
+    ]
+    float a.timeSamples = {
+        -1: 0.25,
+        0: None,
+        2.5: 1e-7,
+    }
+    float b = 1
+    float b.connect = </World/One.out>
+
+    def Scope "One"
+    {
+        float out = 3
+    }
+
+    def Scope "Two"
+    {
+        half[] halves = [0.1, 65504, -0.000061035156]
+        int64[] big = [-9223372036854775808, 9223372036854775807]
+        matrix4d m = ((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (1e20, -0, 0.000001, 1))
+        string doc = """two
+lines"""
+    }
+
+    variantSet "lod" = {
+        "high" (
+            doc = "detailed"
+        ) {
+            def Mesh "detail"
+            {
+                point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+            }
+
+        }
+        "low" {
+            over "detail" (
+                active = false
+            )
+            {
+            }
+
+        }
+    }
+}
+
+class "_class_Thing"
+{
+}

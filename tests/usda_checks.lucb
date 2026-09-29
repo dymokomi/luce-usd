@@ -1,0 +1,216 @@
+## The usda reader: a layer with metadata, prims, variants, attributes of
+## many types, time samples, relationships and connections reads into the
+## specs and fields Sdf's parser makes; malformed text fails with a line.
+import memory
+from usd_kernel import Names, LayerData, SpecType, ValueKind, Value, read_usda, write_usda, read_file, most_bytes, invalid, absolute_root
+from geocore_growing import Growing
+
+let sample = """#usda 1.0
+(
+    "a comment"
+    doc = "layer docs"
+    upAxis = "Z"
+    metersPerUnit = 0.01
+    customLayerData = {
+        string author = "luce"
+        int[] counts = [1, 2, 3]
+        dictionary nested = {
+            double scale = 2.5
+        }
+    }
+    subLayers = [
+        @./sub.usda@ (offset = 10; scale = 2),
+        @other.usda@
+    ]
+)
+
+def Xform "World" (
+    kind = "assembly"
+    prepend apiSchemas = ["GeomModelAPI"]
+    variants = {
+        string lod = "high"
+    }
+    prepend variantSets = "lod"
+    references = @./ref.usda@</Asset> (offset = 5)
+    myUnknown = [1, 2, (3, 4)]
+)
+{
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+    double3 xformOp:translate = (1, 2.5, -3)
+    rel material:binding = </World/Material>
+    custom float weight.timeSamples = {
+        1: 0.5,
+        2: None,
+    }
+
+    def Mesh "mesh" (
+        active = true
+    )
+    {
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        int[] faceVertexIndices = [0, 1, 2]
+        color3f[] primvars:displayColor = [(0.1, 0.2, 0.3)] (
+            interpolation = "constant"
+        )
+        matrix4d m = ((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (5, 6, 7, 1))
+        quatf q = (1, 0, 0, 0)
+        half h = 0.1
+        bool flag = true
+        string name = 'it\\'s'
+        asset tex = @@@a@b.png@@@
+        float connected.connect = <../mesh.points>
+    }
+
+    variantSet "lod" = {
+        "high" {
+            def Scope "detail"
+            {
+            }
+        }
+        "low" (
+            doc = "cheap"
+        ) {
+        }
+    }
+}
+"""
+
+func text_of(names: Names*, path: u32, out: Growing[u8]*) -> str!:
+    out.clear()
+    try names.write_path(path, out)
+    return (str)out.view()
+
+pub func exercise() -> !:
+    var names = try Names()
+    defer names.close()
+    var layer = try LayerData(&names)
+    defer layer.close()
+    try read_usda(sample.bytes, &layer)
+    let keys = layer.keys
+    let world = layer.find(try names.parse_path("/World")) else trap("World")
+    assert(layer.spec(world).kind == SpecType.prim)
+    assert(names.text_of((layer.get(world, keys.type_name) else trap("typeName")).as_token()) == "Xform")
+    assert(names.text_of((layer.get(world, keys.kind) else trap("kind")).as_token()) == "assembly")
+    let root_children = layer.get(0, keys.prim_children) else trap("root primChildren")
+    assert(root_children.count == 1)
+    let up = layer.get(0, try names.token("upAxis")) else trap("upAxis")
+    assert(names.text_of(up.as_token()) == "Z")
+    let meters = layer.get(0, try names.token("metersPerUnit")) else trap("metersPerUnit")
+    assert(meters.as_double() == 0.01)
+    let sub = layer.get(0, keys.sub_layers) else trap("subLayers")
+    assert(sub.count == 2 and names.text_of(sub.ids()[0]) == "./sub.usda")
+    let offsets = layer.get(0, keys.sub_layer_offsets) else trap("offsets")
+    assert(offsets.doubles()[0] == 10.0 and offsets.doubles()[1] == 2.0 and offsets.doubles()[3] == 1.0)
+    let translate = layer.find(try names.parse_path("/World.xformOp:translate")) else trap("translate")
+    let value = layer.get(translate, keys.default) else trap("default")
+    assert(value.kind == ValueKind.vec3d and memory.read[f64]((void*)&value.bytes()[8]) == 2.5)
+    let points_spec = layer.find(try names.parse_path("/World/mesh.points")) else trap("points")
+    let points = layer.get(points_spec, keys.default) else trap("points value")
+    assert(points.array and points.count == 3 and points.kind == ValueKind.vec3f)
+    let color = layer.find(try names.parse_path("/World/mesh.primvars:displayColor")) else trap("displayColor")
+    let interpolation = layer.get(color, try names.token("interpolation")) else trap("interpolation")
+    assert(names.text_of(interpolation.as_token()) == "constant")
+    let weight = layer.find(try names.parse_path("/World.weight")) else trap("weight")
+    let samples = (layer.get(weight, keys.time_samples) else trap("samples")).time_samples() else trap("samples")
+    assert(samples.count() == 2 and samples.values.items[1].kind == ValueKind.value_block)
+    let quoted = layer.find(try names.parse_path("/World/mesh.name")) else trap("name")
+    assert(names.text_of((layer.get(quoted, keys.default) else trap("name value")).as_token()) == "it's")
+    let asset = layer.find(try names.parse_path("/World/mesh.tex")) else trap("tex")
+    assert(names.text_of((layer.get(asset, keys.default) else trap("tex value")).as_token()) == "a@b.png")
+    assert(layer.find(try names.parse_path("/World.material:binding[/World/Material]")) != none)
+    assert(layer.find(try names.parse_path("/World/mesh.connected[/World/mesh.points]")) != none)
+    let high = layer.find(try names.parse_path("/World{lod=high}detail")) else trap("variant prim")
+    assert(layer.spec(high).kind == SpecType.prim)
+    assert(layer.find(try names.parse_path("/World{lod=}")) != none)
+    let unknown = layer.get(world, try names.token("myUnknown")) else trap("myUnknown")
+    assert(unknown.kind == ValueKind.unregistered_value and names.text_of(unknown.as_token()) == "[1, 2, (3, 4)]")
+    # Malformed text fails with the line.
+    var other = try LayerData(&names)
+    defer other.close()
+    var failed = false
+    read_usda("#usda 1.0\ndef \"A\" {\n    float x = (1, 2)\n}\n".bytes, &other) catch failure:
+        assert(failure.code == invalid)
+        failed = true
+    assert(failed)
+
+## Written text reads back to text that writes the same.
+pub func round_trip() -> !:
+    var names = try Names()
+    defer names.close()
+    var layer = try LayerData(&names)
+    defer layer.close()
+    try read_usda(sample.bytes, &layer)
+    var first = Growing[u8]()
+    defer first.close()
+    try write_usda(&layer, &first)
+    var again = try LayerData(&names)
+    defer again.close()
+    try read_usda(first.view(), &again)
+    var second = Growing[u8]()
+    defer second.close()
+    try write_usda(&again, &second)
+    if (str)first.view() != (str)second.view():
+        print((str)first.view())
+        print("----")
+        print((str)second.view())
+    assert((str)first.view() == (str)second.view())
+
+## Our fixtures print as OpenUSD's usdcat prints them (tests/fixtures/usda:
+## each NAME.usda with its NAME.expected.usda, made by usdcat).
+pub func fixtures() -> !:
+    try fixture("values")
+    try fixture("properties")
+    try fixture("composition")
+
+func fixture(name: str) -> !:
+    var buffer: u8[256]
+    let input = try read_file(try format(buffer, f"tests/fixtures/usda/{name}.usda"), most_bytes)
+    defer free(input) in memory.heap
+    var expected_buffer: u8[256]
+    let expected = try read_file(try format(expected_buffer, f"tests/fixtures/usda/{name}.expected.usda"), most_bytes)
+    defer free(expected) in memory.heap
+    var names = try Names()
+    defer names.close()
+    var layer = try LayerData(&names)
+    defer layer.close()
+    try read_usda(input, &layer)
+    var out = Growing[u8]()
+    defer out.close()
+    try write_usda(&layer, &out)
+    if (str)out.view() != (str)expected:
+        print(f"fixture {name} prints differently:")
+        print((str)out.view())
+    assert((str)out.view() == (str)expected)
+
+## Arrays past the parallel threshold read and write through the fast
+## paths, the same as small ones.
+pub func large_arrays() -> !:
+    var text = Growing[u8]()
+    defer text.close()
+    try put(&text, "#usda 1.0\n\ndef Mesh \"big\"\n{\n    int[] faceVertexIndices = [")
+    let count: usize = 120000
+    var digits: u8[64]
+    for index in 0..<count:
+        if index > 0: try put(&text, ", ")
+        try put(&text, try format(digits, f"{index * 7}"))
+    try put(&text, "]\n    point3f[] points = [")
+    for index in 0..<count:
+        if index > 0: try put(&text, ", ")
+        try put(&text, try format(digits, f"({index}, -{index}.5, 0.25)"))
+    try put(&text, "]\n}\n\n")
+    var names = try Names()
+    defer names.close()
+    var layer = try LayerData(&names)
+    defer layer.close()
+    try read_usda(text.view(), &layer)
+    let spec = layer.find(try names.parse_path("/big.points")) else trap("points")
+    let points = layer.get(spec, layer.keys.default) else trap("points value")
+    assert(points.count == count and points.kind == ValueKind.vec3f)
+    assert(memory.read[f32]((void*)&points.bytes()[(count - 1) * 12 + 4]) == -119999.5)
+    var out = Growing[u8]()
+    defer out.close()
+    try write_usda(&layer, &out)
+    assert((str)out.view() == (str)text.view())
+
+func put(out: Growing[u8]*, value: str) -> !:
+    for byte in value.bytes: try out.push(byte)

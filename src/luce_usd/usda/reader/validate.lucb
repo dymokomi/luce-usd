@@ -1,0 +1,68 @@
+## The checks Sdf's schema makes while parsing (pxr/usd/sdf/schema.cpp's
+## validators): variant names, arc and target paths, relocates, display
+## units, and duplicate list op items.
+
+## Display unit names (SdfGetUnitFromName over _SDF_UNITS).
+let unit_names: str[13] = ["mm", "cm", "dm", "m", "km", "in", "ft", "yd", "mi", "deg", "rad", "%", "default"]
+
+extend Reader:
+    ## A variant name: an optional '.', then identifier continue
+    ## characters, '|' and '-' (SdfSchema::IsValidVariantIdentifier).
+    func check_variant_name(text: str) -> !:
+        var index: usize = 0
+        let bytes = text.bytes
+        if index < bytes.length and bytes[index] == '.': index += 1
+        while index < bytes.length:
+            let byte = bytes[index]
+            if byte == '|' or byte == '-':
+                index += 1
+                continue
+            let width = wide_continue(bytes, index) if byte >= 128 else (1 if (byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or (byte >= '0' and byte <= '9') or byte == '_' else 0)
+            if width == 0: error(errors.invalid, self.where("not a valid variant name"))
+            index += width
+
+    ## A reference or payload prim path: empty, or an absolute prim path
+    ## without variant selections.
+    func check_arc_path(path: u32) -> !:
+        if path == empty_path: return
+        if self.names.has_variant_selection(path): error(errors.invalid, self.where("reference and payload paths cannot contain variant selections"))
+        if not (self.names.is_absolute(path) and self.names.is_prim(path)):
+            error(errors.invalid, self.where("a reference or payload path must be empty or an absolute prim path"))
+
+    ## An inherits or specializes path: an absolute prim path without
+    ## variant selections.
+    func check_class_path(path: u32) -> !:
+        if self.names.has_variant_selection(path): error(errors.invalid, self.where("inherit and specialize paths cannot contain variant selections"))
+        if not (self.names.is_absolute(path) and self.names.is_prim(path)):
+            error(errors.invalid, self.where("not a valid prim path"))
+
+    ## A relationship target or connection: a prim or property path
+    ## without variant selections.
+    func check_target_path(path: u32) -> !:
+        if self.names.has_variant_selection(path): error(errors.invalid, self.where("target paths cannot contain variant selections"))
+        if not (self.names.is_prim(path) or self.names.is_property(path)):
+            error(errors.invalid, self.where("not a valid prim or property scene path"))
+
+    ## A relocates source: a prim path (not the root, not empty).
+    func check_relocates_source(path: u32) -> !:
+        if path == empty_path or path == absolute_root or path == relative_root or not self.names.is_prim(path):
+            error(errors.invalid, self.where("not a valid relocates source path"))
+
+    ## A relocates target: empty or a prim path.
+    func check_relocates_target(path: u32) -> !:
+        if path != empty_path and not self.names.is_prim(path):
+            error(errors.invalid, self.where("not a valid relocates target path"))
+
+    func check_display_unit(name: str) -> !:
+        for known in unit_names:
+            if known == name: return
+        error(errors.invalid, self.where("not a valid display unit"))
+
+    ## No item may appear twice in a list op part.
+    func check_unique(items: const ListItem[]) -> !:
+        for index in 0..<items.length:
+            for other in 0..<index:
+                if same_item(items[index], items[other]): error(errors.invalid, self.where("duplicate items in a list op"))
+
+func same_item(left: ListItem, right: ListItem) -> bool:
+    return left.a == right.a and left.b == right.b and left.offset == right.offset and left.scale == right.scale

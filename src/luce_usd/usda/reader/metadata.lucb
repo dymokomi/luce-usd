@@ -1,0 +1,355 @@
+## Metadata blocks: `( item; item ... )` after a layer header, a prim, a
+## variant, an attribute or a relationship. Items with their own syntax are
+## read here; `key = value` looks the key up in the schema (sdf/schema.lucb)
+## and reads a known field as its type, or keeps an unknown field's text as
+## an unregistered value (textParserHelpers.cpp, _KeyValueMetadataEnd).
+
+extend Reader:
+    ## The metadata block at the cursor (after its `(`) for spec `spec` of
+    ## kind `applies`; `anchor` is the prim path relative paths expand from.
+    mutating func metadata(spec: usize, applies: u8, anchor: u32) -> !:
+        try self.expect('(', "expected '(' to start metadata")
+        try self.skip_all()
+        while self.peek() != ')':
+            try self.metadata_item(spec, applies, anchor)
+            try self.statement_end(')')
+            try self.skip_all()
+        self.at += 1
+
+    mutating func metadata_item(spec: usize, applies: u8, anchor: u32) -> !:
+        if self.sees_string():
+            let text = try self.string()
+            try self.set_field(spec, self.keys.comment, Value.scalar(ValueKind.string, (u64)try self.names.token(text)))
+            return
+        if self.keyword("doc"):
+            try self.assignment()
+            let text = try self.string()
+            try self.set_field(spec, self.keys.documentation, Value.scalar(ValueKind.string, (u64)try self.names.token(text)))
+            return
+        if applies != applies_layer and self.keyword("permission"):
+            try self.assignment()
+            let word = try self.identifier()
+            var level = permission_public
+            if word == "private": level = permission_private
+            elif word != "public": error(errors.invalid, self.where("expected 'public' or 'private'"))
+            try self.set_field(spec, self.keys.permission, Value.scalar(ValueKind.permission, level))
+            return
+        if applies != applies_layer and self.keyword("symmetryFunction"):
+            try self.assignment()
+            var token: u32 = 0
+            if self.sees_identifier(): token = try self.names.token(try self.identifier())
+            try self.set_field(spec, self.keys.symmetry_function, Value.scalar(ValueKind.token, (u64)token))
+            return
+        if applies == applies_attribute and self.keyword("displayUnit"):
+            try self.assignment()
+            let word = try self.identifier()
+            try self.check_display_unit(word)
+            try self.set_field(spec, try self.names.token("displayUnit"), Value.scalar(ValueKind.token, (u64)try self.names.token(word)))
+            return
+        if applies == applies_prim:
+            if try self.prim_metadata_item(spec, anchor): return
+        if applies == applies_layer:
+            if self.keyword("subLayers"):
+                try self.assignment()
+                try self.sublayers(spec)
+                return
+            if self.keyword("relocates"):
+                try self.assignment()
+                try self.relocates(spec, empty_path)
+                return
+        # A list op edit: `add|delete|append|prepend|reorder key = list`.
+        let part = self.list_op_keyword()
+        if let edit = part:
+            try self.skip_inline()
+            let key = try self.identifier()
+            try self.assignment()
+            try self.keyed_list_op(spec, applies, key, edit)
+            return
+        # `key = value`.
+        var key = ""
+        if self.keyword("customData"): key = "customData"
+        elif self.keyword("symmetryArguments"): key = "symmetryArguments"
+        else: key = try self.identifier()
+        try self.assignment()
+        try self.keyed_value(spec, applies, key)
+
+    ## A list op keyword at the cursor, consumed.
+    mutating func list_op_keyword() -> ListPart?:
+        if self.keyword("add"): return ListPart.added
+        if self.keyword("delete"): return ListPart.deleted
+        if self.keyword("append"): return ListPart.appended
+        if self.keyword("prepend"): return ListPart.prepended
+        if self.keyword("reorder"): return ListPart.ordered
+        return none
+
+    ## Prim-only items; whether one was read.
+    mutating func prim_metadata_item(spec: usize, anchor: u32) -> bool!:
+        if self.keyword("kind"):
+            try self.assignment()
+            let text = try self.string()
+            try self.set_field(spec, self.keys.kind, Value.scalar(ValueKind.token, (u64)try self.names.token(text)))
+            return true
+        if self.keyword("references"):
+            try self.assignment()
+            try self.reference_list(spec, ListPart.explicit, false)
+            return true
+        if self.keyword("payload"):
+            try self.assignment()
+            try self.reference_list(spec, ListPart.explicit, true)
+            return true
+        if self.keyword("inherits"):
+            try self.assignment()
+            try self.class_paths(spec, self.keys.inherit_paths, ListPart.explicit, anchor)
+            return true
+        if self.keyword("specializes"):
+            try self.assignment()
+            try self.class_paths(spec, self.keys.specializes, ListPart.explicit, anchor)
+            return true
+        if self.keyword("variantSets"):
+            try self.assignment()
+            try self.variant_set_names(spec, ListPart.explicit, anchor)
+            return true
+        if self.keyword("variants"):
+            try self.assignment()
+            try self.variant_selections(spec)
+            return true
+        if self.keyword("relocates"):
+            try self.assignment()
+            try self.relocates(spec, anchor)
+            return true
+        if self.keyword("prefixSubstitutions"):
+            try self.assignment()
+            try self.set_field(spec, self.keys.prefix_substitutions, try self.string_dictionary())
+            return true
+        if self.keyword("suffixSubstitutions"):
+            try self.assignment()
+            try self.set_field(spec, self.keys.suffix_substitutions, try self.string_dictionary())
+            return true
+        # A list op edit of a prim-only arc.
+        let start = self.at
+        let part = self.list_op_keyword() else return false
+        try self.skip_inline()
+        if self.keyword("references"):
+            try self.assignment()
+            try self.reference_list(spec, part, false)
+            return true
+        if self.keyword("payload"):
+            try self.assignment()
+            try self.reference_list(spec, part, true)
+            return true
+        if self.keyword("inherits"):
+            try self.assignment()
+            try self.class_paths(spec, self.keys.inherit_paths, part, anchor)
+            return true
+        if self.keyword("specializes"):
+            try self.assignment()
+            try self.class_paths(spec, self.keys.specializes, part, anchor)
+            return true
+        if self.keyword("variantSets"):
+            try self.assignment()
+            try self.variant_set_names(spec, part, anchor)
+            return true
+        self.at = start
+        return false
+
+    ## `key = None | dictionary | value` for a schema or unregistered key.
+    mutating func keyed_value(spec: usize, applies: u8, key: str) -> !:
+        let name = try self.names.token(key)
+        if let field = find_field(key):
+            if field.applies & applies != 0:
+                match field.form:
+                    .dictionary:
+                        if self.peek() != '{': error(errors.invalid, self.where("a dictionary field needs a dictionary value"))
+                        try self.set_field(spec, name, try self.dictionary_value())
+                    .plain:
+                        if self.keyword("None"): error(errors.invalid, self.where("invalid value for a metadata field"))
+                        try self.set_field(spec, name, try self.typed_value(field.kind, field.array))
+                    _:
+                        try self.keyed_list_op(spec, applies, key, ListPart.explicit)
+                return
+            if field.applies == 0: error(errors.invalid, self.where("a field that is not metadata"))
+        # Unregistered: a dictionary keeps its value, anything else its text.
+        if self.peek() == '{':
+            var parsed = try self.dictionary_value()
+            let object = parsed.object else trap("a dictionary value without contents")
+            parsed.object = none
+            parsed.release()
+            try self.set_field(spec, name, Value.of_object(ValueKind.unregistered_value, object))
+            return
+        self.scratch.clear()
+        var recorded = Growing[u8]()
+        defer recorded.close()
+        try self.recorded_value(&recorded)
+        try self.set_field(spec, name, Value.scalar(ValueKind.unregistered_value, (u64)try self.names.token((str)recorded.view())))
+
+    ## `op key = None | [items]` for a list-op field (or unregistered key).
+    mutating func keyed_list_op(spec: usize, applies: u8, key: str, part: ListPart) -> !:
+        let name = try self.names.token(key)
+        var kind = ValueKind.unregistered_value_list_op
+        var item_kind = ValueKind.empty
+        if let field = find_field(key):
+            if field.applies & applies != 0:
+                match field.form:
+                    .token_list_op:
+                        kind = ValueKind.token_list_op
+                        item_kind = ValueKind.token
+                    .string_list_op:
+                        kind = ValueKind.string_list_op
+                        item_kind = ValueKind.string
+                    .int64_list_op:
+                        kind = ValueKind.int64_list_op
+                        item_kind = ValueKind.int64
+                    _: error(errors.invalid, self.where("list editing a field that is not a list op"))
+            elif field.applies == 0:
+                error(errors.invalid, self.where("a field that is not metadata"))
+        var items = Growing[ListItem]()
+        defer items.close()
+        if item_kind == ValueKind.empty:
+            # Unregistered: the list's text without its brackets, one item.
+            if part == ListPart.explicit:
+                var recorded = Growing[u8]()
+                defer recorded.close()
+                try self.recorded_value(&recorded)
+                try self.set_field(spec, name, Value.scalar(ValueKind.unregistered_value, (u64)try self.names.token((str)recorded.view())))
+                return
+            if not self.keyword("None"):
+                var recorded = Growing[u8]()
+                defer recorded.close()
+                try self.recorded_value(&recorded)
+                var text = (str)recorded.view()
+                if text.length > 0 and text.bytes[0] == '[': text = (str)text.bytes[1..]
+                if text.length > 0 and text.bytes[text.length - 1] == ']': text = (str)text.bytes[..<text.length - 1]
+                try items.push(ListItem(a = (u64)try self.names.token(text), b = 0, offset = 0.0, scale = 1.0, custom = none))
+            try self.set_list_items(spec, name, kind, part, items.view())
+            return
+        if not self.keyword("None"):
+            var array = try self.array_value(item_kind)
+            defer array.release()
+            let bytes = array.bytes()
+            for index in 0..<array.count:
+                var a: u64 = 0
+                if item_kind == ValueKind.int64: a = memory.read[u64]((void*)&bytes[index * 8])
+                else: a = (u64)memory.read[u32]((void*)&bytes[index * 4])
+                try items.push(ListItem(a = a, b = 0, offset = 0.0, scale = 1.0, custom = none))
+        try self.set_list_items(spec, name, kind, part, items.view())
+
+    ## Set one part of the list op in field `name` (made when absent) to
+    ## `items`; an explicit part makes the list op explicit.
+    mutating func set_list_items(spec: usize, name: u32, kind: ValueKind, part: ListPart, items: const ListItem[]) -> !:
+        var list: ListOp*? = none
+        if let existing = self.layer.get(spec, name):
+            if existing.kind == kind:
+                if let object = existing.object: list = (ListOp*)object
+        if list == none:
+            let made = try ListOp.create()
+            try self.set_field(spec, name, Value.of_object(kind, (void*)made))
+            list = made
+        let target = list else trap("a list op")
+        if part == ListPart.explicit:
+            target.explicit = true
+            for other: usize in 1..<6: clear_part(target, other)
+        clear_part(target, (usize)(u8)part)
+        for item in items: try target.push(part, item)
+
+    ## Set field `name` of `spec` to `value` (taken).
+    mutating func set_field(spec: usize, name: u32, value: Value) -> !:
+        try self.layer.set(spec, name, value)
+
+    ## The text of a value of unknown type, as Sdf records it: atoms
+    ## re-printed (numbers as TfStringify gives them, strings quoted), lists
+    ## and tuples with ", " between items.
+    mutating func recorded_value(out: Growing[u8]*) -> !:
+        if self.keyword("None"):
+            try put_text(out, "None")
+            return
+        try self.recorded_item(out)
+
+    mutating func recorded_item(out: Growing[u8]*) -> !:
+        let byte = self.peek()
+        if byte == '[' or byte == '(':
+            let close: u8 = ']' if byte == '[' else ')'
+            self.at += 1
+            try out.push(byte)
+            try self.skip_all()
+            var first = true
+            while self.peek() != close:
+                if not first: try put_text(out, ", ")
+                first = false
+                try self.recorded_item(out)
+                if not (try self.list_end(close)): break
+            try self.expect(close, "expected the end of a list or tuple")
+            try out.push(close)
+            return
+        if self.sees_number():
+            let number = try self.number()
+            match number.class:
+                .unsigned: try put_unsigned(out, number.unsigned)
+                .signed:
+                    if number.signed < 0:
+                        try out.push('-')
+                        try put_unsigned(out, (u64)(-%number.signed))
+                    else:
+                        try put_unsigned(out, (u64)number.signed)
+                _: try numbers.write_double(out, number.real)
+            return
+        if self.sees_string():
+            let text = try self.string()
+            try quote_into(out, text)
+            return
+        if byte == '@':
+            let text = try self.asset_path()
+            try out.push('@')
+            try put_text(out, text)
+            try out.push('@')
+            return
+        if byte == '<':
+            let start = self.at
+            discard(try self.path_ref())
+            try put_text(out, (str)self.data[start..<self.at])
+            return
+        let word = try self.identifier()
+        try put_text(out, word)
+
+    ## `{ "key": "value", ... }` into a dictionary of strings.
+    mutating func string_dictionary() -> Value!:
+        try self.expect('{', "expected '{'")
+        let dictionary = try Dictionary.create()
+        var value = Value.of_object(ValueKind.dictionary, (void*)dictionary)
+        errdefer value.release()
+        try self.skip_all()
+        if self.peek() != '}':
+            while true:
+                let key = try self.names.token(try self.string())
+                try self.skip_inline()
+                try self.expect(':', "expected ':' in a string dictionary")
+                try self.skip_inline()
+                let text = try self.names.token(try self.string())
+                try dictionary.put(key, Value.scalar(ValueKind.string, (u64)text))
+                if not (try self.list_end('}')): break
+        try self.expect('}', "expected '}'")
+        return value
+
+func put_text(out: Growing[u8]*, text: str) -> !:
+    try out.reserve(out.count + text.length)
+    for byte in text.bytes: try out.push(byte)
+
+## Empty a list op part, releasing its items' custom data.
+func clear_part(list: ListOp*, part: usize):
+    for index in 0..<list.parts[part].count:
+        if let custom = list.parts[part].items[index].custom:
+            var value = Value.of_object(ValueKind.dictionary, (void*)custom)
+            value.release()
+    list.parts[part].clear()
+
+func put_unsigned(out: Growing[u8]*, value: u64) -> !:
+    var digits: u8[20]
+    var count: usize = 0
+    var rest = value
+    while true:
+        digits[count] = (u8)(48 + rest % 10)
+        count += 1
+        rest = rest // 10
+        if rest == 0: break
+    while count > 0:
+        count -= 1
+        try out.push(digits[count])

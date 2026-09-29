@@ -1,0 +1,126 @@
+## The metadata fields the text format reads by key, with their value types
+## and the specs they apply to: OpenUSD's SdfSchema registrations
+## (pxr/usd/sdf/schema.cpp, _RegisterStandardFields) plus the fields the
+## standard plugins declare in their plugInfo.json "SdfMetadata" (usd,
+## usdGeom, usdShade, usdSkel, usdUI, usdPhysics, usdRender, usdImaging,
+## sdf, exec). A key found here parses as its type; any other key keeps its
+## text as an unregistered value, as Sdf does.
+##
+## Fields with their own syntax (references, payload, inherits, specializes,
+## variantSets, variants, relocates, kind, permission, symmetryFunction,
+## displayUnit, prefix/suffixSubstitutions, doc, subLayers) are not listed.
+from luce_usd.sdf.value_types import ValueKind
+
+## Which specs a field applies to.
+pub let applies_layer: u8 = 1
+pub let applies_prim: u8 = 2
+pub let applies_attribute: u8 = 4
+pub let applies_relationship: u8 = 8
+let applies_property: u8 = 12
+
+## How a field's value is spelled.
+pub enum FieldForm as u8:
+    ## One value of `kind`, an array when `array`.
+    plain = 0
+    dictionary = 1
+    token_list_op = 2
+    string_list_op = 3
+    int64_list_op = 4
+
+pub struct MetadataField:
+    pub let name: str
+    pub let form: FieldForm
+    pub let kind: ValueKind
+    pub let array: bool
+    pub let applies: u8
+
+let fields: MetadataField[74] = [
+    # Layers (the pseudo-root).
+    MetadataField("colorConfiguration", FieldForm.plain, ValueKind.asset, false, applies_layer),
+    MetadataField("colorManagementSystem", FieldForm.plain, ValueKind.token, false, applies_layer),
+    MetadataField("customLayerData", FieldForm.dictionary, ValueKind.dictionary, false, applies_layer),
+    MetadataField("defaultPrim", FieldForm.plain, ValueKind.token, false, applies_layer),
+    MetadataField("endTimeCode", FieldForm.plain, ValueKind.double, false, applies_layer),
+    MetadataField("expressionVariables", FieldForm.dictionary, ValueKind.dictionary, false, applies_layer),
+    MetadataField("framesPerSecond", FieldForm.plain, ValueKind.double, false, applies_layer),
+    MetadataField("framePrecision", FieldForm.plain, ValueKind.int, false, applies_layer),
+    MetadataField("hasOwnedSubLayers", FieldForm.plain, ValueKind.boolean, false, applies_layer),
+    MetadataField("owner", FieldForm.plain, ValueKind.string, false, applies_layer),
+    MetadataField("sessionOwner", FieldForm.plain, ValueKind.string, false, applies_layer),
+    MetadataField("startTimeCode", FieldForm.plain, ValueKind.double, false, applies_layer),
+    MetadataField("timeCodesPerSecond", FieldForm.plain, ValueKind.double, false, applies_layer),
+    MetadataField("endFrame", FieldForm.plain, ValueKind.double, false, applies_layer),
+    MetadataField("startFrame", FieldForm.plain, ValueKind.double, false, applies_layer),
+    MetadataField("fallbackPrimTypes", FieldForm.dictionary, ValueKind.dictionary, false, applies_layer),
+    MetadataField("metersPerUnit", FieldForm.plain, ValueKind.double, false, applies_layer),
+    MetadataField("upAxis", FieldForm.plain, ValueKind.token, false, applies_layer),
+    MetadataField("kilogramsPerUnit", FieldForm.plain, ValueKind.double, false, applies_layer),
+    MetadataField("renderSettingsPrimPath", FieldForm.plain, ValueKind.string, false, applies_layer),
+    # Documentation applies everywhere; `doc = "..."` is its own syntax too.
+    MetadataField("documentation", FieldForm.plain, ValueKind.string, false, applies_layer | applies_prim | applies_property),
+    # Prims.
+    MetadataField("active", FieldForm.plain, ValueKind.boolean, false, applies_prim),
+    MetadataField("clips", FieldForm.dictionary, ValueKind.dictionary, false, applies_prim),
+    MetadataField("clipSets", FieldForm.string_list_op, ValueKind.string_list_op, false, applies_prim),
+    MetadataField("displayGroupOrder", FieldForm.plain, ValueKind.string, true, applies_prim),
+    MetadataField("instanceable", FieldForm.plain, ValueKind.boolean, false, applies_prim),
+    MetadataField("typeName", FieldForm.plain, ValueKind.token, false, applies_prim),
+    MetadataField("payloadAssetDependencies", FieldForm.plain, ValueKind.asset, true, applies_prim),
+    MetadataField("apiSchemas", FieldForm.token_list_op, ValueKind.token_list_op, false, applies_prim),
+    MetadataField("inactiveIds", FieldForm.int64_list_op, ValueKind.int64_list_op, false, applies_prim),
+    # Prims and properties.
+    MetadataField("assetInfo", FieldForm.dictionary, ValueKind.dictionary, false, applies_prim | applies_property),
+    MetadataField("customData", FieldForm.dictionary, ValueKind.dictionary, false, applies_prim | applies_property),
+    MetadataField("displayName", FieldForm.plain, ValueKind.string, false, applies_prim | applies_property),
+    MetadataField("hidden", FieldForm.plain, ValueKind.boolean, false, applies_prim | applies_property),
+    MetadataField("prefix", FieldForm.plain, ValueKind.string, false, applies_prim | applies_property),
+    MetadataField("suffix", FieldForm.plain, ValueKind.string, false, applies_prim | applies_property),
+    MetadataField("symmetricPeer", FieldForm.plain, ValueKind.string, false, applies_prim | applies_property),
+    MetadataField("symmetryArguments", FieldForm.dictionary, ValueKind.dictionary, false, applies_prim | applies_property),
+    MetadataField("sdrMetadata", FieldForm.dictionary, ValueKind.dictionary, false, applies_prim | applies_attribute),
+    MetadataField("uiHints", FieldForm.dictionary, ValueKind.dictionary, false, applies_prim | applies_property),
+    # Properties.
+    MetadataField("displayGroup", FieldForm.plain, ValueKind.string, false, applies_property),
+    MetadataField("renderType", FieldForm.plain, ValueKind.token, false, applies_property),
+    # Attributes.
+    MetadataField("allowedTokens", FieldForm.plain, ValueKind.token, true, applies_attribute),
+    MetadataField("arraySizeConstraint", FieldForm.plain, ValueKind.int64, false, applies_attribute),
+    MetadataField("colorSpace", FieldForm.plain, ValueKind.token, false, applies_attribute),
+    MetadataField("limits", FieldForm.dictionary, ValueKind.dictionary, false, applies_attribute),
+    MetadataField("irIsInvertible", FieldForm.plain, ValueKind.boolean, false, applies_attribute),
+    MetadataField("irRole", FieldForm.plain, ValueKind.token, false, applies_attribute),
+    MetadataField("constraintTargetIdentifier", FieldForm.plain, ValueKind.token, false, applies_attribute),
+    MetadataField("elementSize", FieldForm.plain, ValueKind.int, false, applies_attribute),
+    MetadataField("interpolation", FieldForm.plain, ValueKind.token, false, applies_attribute),
+    MetadataField("unauthoredValuesIndex", FieldForm.plain, ValueKind.int, false, applies_attribute),
+    MetadataField("connectability", FieldForm.plain, ValueKind.token, false, applies_attribute),
+    MetadataField("weight", FieldForm.plain, ValueKind.float, false, applies_attribute),
+    MetadataField("faceIndexPrimvar", FieldForm.plain, ValueKind.token, false, applies_attribute),
+    MetadataField("faceOffsetPrimvar", FieldForm.plain, ValueKind.token, false, applies_attribute),
+    MetadataField("uvPrimvar", FieldForm.plain, ValueKind.token, false, applies_attribute),
+    # Relationships.
+    MetadataField("noLoadHint", FieldForm.plain, ValueKind.boolean, false, applies_relationship),
+    MetadataField("bindMaterialAs", FieldForm.plain, ValueKind.token, false, applies_relationship),
+    MetadataField("outputName", FieldForm.plain, ValueKind.token, false, applies_relationship),
+    # Non-metadata fields a key must not overwrite (applies nowhere).
+    MetadataField("comment", FieldForm.plain, ValueKind.string, false, 0),
+    MetadataField("specifier", FieldForm.plain, ValueKind.specifier, false, 0),
+    MetadataField("custom", FieldForm.plain, ValueKind.boolean, false, 0),
+    MetadataField("variability", FieldForm.plain, ValueKind.variability, false, 0),
+    MetadataField("default", FieldForm.plain, ValueKind.empty, false, 0),
+    MetadataField("timeSamples", FieldForm.plain, ValueKind.time_samples, false, 0),
+    MetadataField("targetPaths", FieldForm.plain, ValueKind.path_list_op, false, 0),
+    MetadataField("connectionPaths", FieldForm.plain, ValueKind.path_list_op, false, 0),
+    MetadataField("primChildren", FieldForm.plain, ValueKind.token_vector, false, 0),
+    MetadataField("properties", FieldForm.plain, ValueKind.token_vector, false, 0),
+    MetadataField("subLayerOffsets", FieldForm.plain, ValueKind.layer_offset_vector, false, 0),
+    MetadataField("primOrder", FieldForm.plain, ValueKind.token_vector, false, 0),
+    MetadataField("propertyOrder", FieldForm.plain, ValueKind.token_vector, false, 0),
+    MetadataField("spline", FieldForm.plain, ValueKind.spline, false, 0),
+]
+
+## The field `name`, when the schema knows it (for any spec).
+pub func find_field(name: str) -> MetadataField?:
+    for field in fields:
+        if field.name == name: return field
+    return none

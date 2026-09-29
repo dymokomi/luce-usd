@@ -1,0 +1,426 @@
+## Values as text (Sdf_FileIOUtility::StringFromVtValue, WriteDictionary,
+## WriteListOp, WriteTimeSamples, WriteRelocates, WriteLayerOffset): numbers
+## as TfStringify gives them (shortest doubles and floats, "%g" halves,
+## bools as 1 and 0), tuples `(a, b)`, matrices `( (a, b), (c, d) )`,
+## arrays `[a, b]` on one line, strings and tokens quoted, assets @...@.
+
+extend Writer:
+    ## A field in a metadata section: `name = value`, list ops per part.
+    mutating func simple_field(indent: usize, name: u32, value: const Value*) -> !:
+        match value.kind:
+            .int_list_op, .int64_list_op, .uint_list_op, .uint64_list_op, .string_list_op, .token_list_op, .unregistered_value_list_op:
+                try self.list_op(indent, self.text(name), value)
+                return
+            _: discard(0)
+        try self.indent(indent)
+        try self.token_text(name)
+        try self.put(" = ")
+        if value.kind == ValueKind.unregistered_value:
+            if value.object != none:
+                let dictionary = Value.of_object(ValueKind.dictionary, value.object else trap("dictionary"))
+                try self.dictionary(indent, &dictionary, false)
+                return
+            try self.token_text(value.as_token())
+            try self.put("\n")
+            return
+        if value.kind == ValueKind.dictionary:
+            try self.dictionary(indent, value, false)
+            return
+        if value.kind == ValueKind.boolean and not value.array:
+            try self.put("true\n" if value.as_bool() else "false\n")
+            return
+        try self.value(value)
+        try self.put("\n")
+
+    ## StringFromVtValue: an attribute value, a value block, an array.
+    mutating func value(value: const Value*) -> !:
+        match value.kind:
+            .value_block:
+                try self.put("None")
+                return
+            .unregistered_value:
+                try self.token_text(value.as_token())
+                return
+            .animation_block:
+                try self.put("AnimationBlock")
+                return
+            .token_vector, .string_vector:
+                try self.byte('[')
+                let ids = value.ids()
+                for index in 0..<ids.length:
+                    if index > 0: try self.put(", ")
+                    try self.quoted(self.text(ids[index]))
+                try self.byte(']')
+                return
+            .double_vector:
+                try self.byte('[')
+                let doubles = value.doubles()
+                for index in 0..<doubles.length:
+                    if index > 0: try self.put(", ")
+                    try numbers.write_double(self.out, doubles[index])
+                try self.byte(']')
+                return
+            _: discard(0)
+        let size = element_bytes(value.kind)
+        if size == 0: error(errors.unsupported, "a value this writer cannot print")
+        if value.array and numeric(value.kind):
+            try format_array(value.kind, value.bytes(), value.count, self.out)
+            return
+        if value.array:
+            let bytes = value.bytes()
+            try self.byte('[')
+            for index in 0..<value.count:
+                if index > 0: try self.put(", ")
+                try self.element(value.kind, &bytes[index * size])
+            try self.byte(']')
+            return
+        if components(value.kind) <= 1:
+            var bits = value.bits
+            try self.element(value.kind, (const u8*)&bits)
+            return
+        try self.element(value.kind, &value.bytes()[0])
+
+    ## One element of `kind` stored at `at`.
+    mutating func element(kind: ValueKind, at: const u8*) -> !:
+        match kind:
+            .string, .token, .path_expression:
+                try self.quoted(self.text(memory.read[u32]((void*)at)))
+            .asset:
+                try asset_into(self.out, self.text(memory.read[u32]((void*)at)))
+            .boolean:
+                try self.byte('1' if memory.read[u8]((void*)at) != 0 else '0')
+            .uchar:
+                try self.number(ValueKind.uchar, at)
+            .matrix2d, .matrix3d, .matrix4d:
+                let rows: usize = 2 if kind == ValueKind.matrix2d else (3 if kind == ValueKind.matrix3d else 4)
+                try self.put("( ")
+                for row in 0..<rows:
+                    if row > 0: try self.put(", ")
+                    try self.byte('(')
+                    for column in 0..<rows:
+                        if column > 0: try self.put(", ")
+                        try numbers.write_double(self.out, memory.read[f64]((void*)(at + (row * rows + column) * 8)))
+                    try self.byte(')')
+                try self.put(" )")
+            _:
+                let count = components(kind)
+                if count <= 1:
+                    try self.number(kind, at)
+                    return
+                let scalar = scalar_of(kind)
+                let size = element_bytes(scalar)
+                let quaternion = kind == ValueKind.quatd or kind == ValueKind.quatf or kind == ValueKind.quath
+                try self.byte('(')
+                for index in 0..<count:
+                    if index > 0: try self.put(", ")
+                    # Quaternions print (real, i, j, k); memory holds i, j, k, real.
+                    let source = (index + 3) % 4 if quaternion else index
+                    try self.number(scalar, at + source * size)
+                try self.byte(')')
+
+    ## One scalar number.
+    mutating func number(kind: ValueKind, at: const u8*) -> !:
+        match kind:
+            .double, .time_code: try numbers.write_double(self.out, memory.read[f64]((void*)at))
+            .float: try numbers.write_float(self.out, memory.read[f32]((void*)at))
+            .half: try numbers.write_half(self.out, memory.read[u16]((void*)at))
+            .int: try self.integer(memory.read[i32]((void*)at))
+            .uint: try self.unsigned((u64)memory.read[u32]((void*)at))
+            .uchar: try self.unsigned((u64)memory.read[u8]((void*)at))
+            .int64: try self.integer(memory.read[i64]((void*)at))
+            .uint64: try self.unsigned(memory.read[u64]((void*)at))
+            .boolean: try self.byte('1' if memory.read[u8]((void*)at) != 0 else '0')
+            _: error(errors.unsupported, "a number kind this writer cannot print")
+
+    mutating func integer(value: i64) -> !:
+        var digits: u8[20]
+        var count: usize = 0
+        var rest: u64 = (u64)value if value >= 0 else (u64)(-%value)
+        while true:
+            digits[count] = (u8)(48 + rest % 10)
+            count += 1
+            rest = rest // 10
+            if rest == 0: break
+        if value < 0: try self.byte('-')
+        while count > 0:
+            count -= 1
+            try self.byte(digits[count])
+
+    mutating func unsigned(value: u64) -> !:
+        var digits: u8[20]
+        var count: usize = 0
+        var rest = value
+        while true:
+            digits[count] = (u8)(48 + rest % 10)
+            count += 1
+            rest = rest // 10
+            if rest == 0: break
+        while count > 0:
+            count -= 1
+            try self.byte(digits[count])
+
+    ## `{\n ... }\n`: keys in byte order, `dictionary k = {...}` nested,
+    ## `type k = value` otherwise; `"k": "v"` pairs when `strings_only`.
+    mutating func dictionary(indent: usize, value: const Value*, strings_only: bool) -> !:
+        let dictionary = value.dictionary() else return
+        var order = Growing[usize]()
+        defer order.close()
+        for index in 0..<dictionary.count(): try order.push(index)
+        for index in 1..<order.count:
+            let current = order.items[index]
+            var at = index
+            while at > 0 and byte_less(self.text(dictionary.keys.items[current]), self.text(dictionary.keys.items[order.items[at - 1]])):
+                order.items[at] = order.items[at - 1]
+                at -= 1
+            order.items[at] = current
+        try self.put("{\n")
+        var remaining = order.count
+        for index in order.view():
+            remaining -= 1
+            let key = self.text(dictionary.keys.items[index])
+            let entry = &dictionary.values.items[index]
+            if strings_only:
+                if entry.kind != ValueKind.string: continue
+                try self.indent(indent + 1)
+                try self.quoted(key)
+                try self.put(": ")
+                try self.quoted(self.text(entry.as_token()))
+                if remaining > 0: try self.put(", ")
+                try self.put("\n")
+                continue
+            if entry.kind == ValueKind.dictionary:
+                try self.indent(indent + 1)
+                try self.put("dictionary ")
+                try self.key(key)
+                try self.put(" = ")
+                try self.dictionary(indent + 1, entry, false)
+                continue
+            try self.indent(indent + 1)
+            try self.value_type(entry)
+            try self.byte(' ')
+            try self.key(key)
+            try self.put(" = ")
+            try self.value(entry)
+            try self.put("\n")
+        try self.indent(indent)
+        try self.put("}\n")
+
+    ## A dictionary key: bare when it is an identifier, quoted otherwise.
+    mutating func key(text: str) -> !:
+        if is_identifier(text): try self.put(text)
+        else: try self.quoted(text)
+
+    ## The serialization type name of a dictionary value.
+    mutating func value_type(value: const Value*) -> !:
+        var name = ""
+        match value.kind:
+            .boolean: name = "bool"
+            .uchar: name = "uchar"
+            .int: name = "int"
+            .uint: name = "uint"
+            .int64: name = "int64"
+            .uint64: name = "uint64"
+            .half: name = "half"
+            .float: name = "float"
+            .double: name = "double"
+            .time_code: name = "timecode"
+            .string, .string_vector: name = "string"
+            .token, .token_vector: name = "token"
+            .asset: name = "asset"
+            .path_expression: name = "pathExpression"
+            .vec2d: name = "double2"
+            .vec3d: name = "double3"
+            .vec4d: name = "double4"
+            .vec2f: name = "float2"
+            .vec3f: name = "float3"
+            .vec4f: name = "float4"
+            .vec2h: name = "half2"
+            .vec3h: name = "half3"
+            .vec4h: name = "half4"
+            .vec2i: name = "int2"
+            .vec3i: name = "int3"
+            .vec4i: name = "int4"
+            .quatd: name = "quatd"
+            .quatf: name = "quatf"
+            .quath: name = "quath"
+            .matrix2d: name = "matrix2d"
+            .matrix3d: name = "matrix3d"
+            .matrix4d: name = "matrix4d"
+            .double_vector: name = "double"
+            _: error(errors.unsupported, "a dictionary value type this writer cannot name")
+        try self.put(name)
+        if value.array or value.kind == ValueKind.string_vector or value.kind == ValueKind.token_vector or value.kind == ValueKind.double_vector:
+            try self.put("[]")
+
+    ## A list op field, explicit or one line per part: `op name = items`.
+    mutating func list_op(indent: usize, name: str, value: const Value*) -> !:
+        let list = value.list_op() else return
+        if list.explicit:
+            try self.list_part(indent, name, "", value.kind, list.items(ListPart.explicit))
+            return
+        if list.items(ListPart.deleted).length > 0: try self.list_part(indent, name, "delete", value.kind, list.items(ListPart.deleted))
+        if list.items(ListPart.added).length > 0: try self.list_part(indent, name, "add", value.kind, list.items(ListPart.added))
+        if list.items(ListPart.prepended).length > 0: try self.list_part(indent, name, "prepend", value.kind, list.items(ListPart.prepended))
+        if list.items(ListPart.appended).length > 0: try self.list_part(indent, name, "append", value.kind, list.items(ListPart.appended))
+        if list.items(ListPart.ordered).length > 0: try self.list_part(indent, name, "reorder", value.kind, list.items(ListPart.ordered))
+
+    ## One list op part (_WriteListOpList): paths, references and payloads
+    ## one per line, a single path or payload without brackets; tokens,
+    ## strings and numbers on one line in brackets.
+    mutating func list_part(indent: usize, name: str, op: str, kind: ValueKind, items: const ListItem[]) -> !:
+        try self.indent(indent)
+        if op.length > 0:
+            try self.put(op)
+            try self.byte(' ')
+        try self.put(name)
+        try self.put(" = ")
+        if items.length == 0:
+            try self.put("None\n")
+            return
+        let per_line = kind == ValueKind.path_list_op or kind == ValueKind.reference_list_op or kind == ValueKind.payload_list_op
+        if items.length == 1 and not self.needs_brackets(kind, items[0]):
+            try self.list_item(0, kind, items[0])
+            try self.put("\n")
+            return
+        try self.put("[\n" if per_line else "[")
+        for index in 0..<items.length:
+            try self.list_item(indent + 1 if per_line else 0, kind, items[index])
+            if index + 1 < items.length: try self.put(",\n" if per_line else ", ")
+            elif per_line: try self.put("\n")
+        if per_line: try self.indent(indent)
+        try self.put("]\n")
+
+    func needs_brackets(kind: ValueKind, item: ListItem) -> bool:
+        match kind:
+            .path_list_op, .payload_list_op: return false
+            .reference_list_op:
+                let custom = item.custom else return false
+                return custom.count() > 0
+            _: return true
+
+    mutating func list_item(indent: usize, kind: ValueKind, item: ListItem) -> !:
+        match kind:
+            .token_list_op, .string_list_op:
+                try self.indent(indent)
+                try self.quoted(self.text((u32)item.a))
+            .unregistered_value_list_op:
+                try self.indent(indent)
+                try self.token_text((u32)item.a)
+            .path_list_op:
+                try self.indent(indent)
+                try self.path_ref((u32)item.a)
+            .int_list_op, .int64_list_op:
+                try self.indent(indent)
+                try self.integer((i64)item.a)
+            .uint_list_op, .uint64_list_op:
+                try self.indent(indent)
+                try self.unsigned(item.a)
+            .reference_list_op, .payload_list_op:
+                try self.reference(indent, kind == ValueKind.reference_list_op, item)
+            _: error(errors.unsupported, "a list op this writer cannot print")
+
+    ## A reference or payload: `@asset@<path>` or `<path>`, its layer
+    ## offset, and a reference's custom data in a multi-line block.
+    mutating func reference(indent: usize, is_reference: bool, item: ListItem) -> !:
+        var custom: const Dictionary*? = none
+        if is_reference:
+            if let found = item.custom:
+                if found.count() > 0: custom = found
+        let multiline = custom != none
+        try self.indent(indent)
+        if item.a != 0 and self.text((u32)item.a).length > 0:
+            try asset_into(self.out, self.text((u32)item.a))
+            if (u32)item.b != empty_path: try self.path_ref((u32)item.b)
+        else:
+            try self.path_ref((u32)item.b)
+        if multiline: try self.put(" (\n")
+        try self.layer_offset(indent + 1, multiline, item.offset, item.scale)
+        if let data = custom:
+            try self.indent(indent + 1)
+            try self.put("customData = ")
+            let value = Value.of_object(ValueKind.dictionary, (void*)data)
+            try self.dictionary(indent + 1, &value, false)
+        if multiline:
+            try self.indent(indent)
+            try self.put(")")
+
+    ## ` (offset = o; scale = s)` or offset/scale lines, when not identity.
+    mutating func layer_offset(indent: usize, multiline: bool, offset: f64, scale: f64) -> !:
+        if offset == 0.0 and scale == 1.0: return
+        if not multiline: try self.put(" (")
+        if offset != 0.0:
+            if multiline: try self.indent(indent)
+            try self.put("offset = ")
+            try numbers.write_double(self.out, offset)
+            if multiline: try self.put("\n")
+        if scale != 1.0:
+            if not multiline and offset != 0.0: try self.put("; ")
+            if multiline: try self.indent(indent)
+            try self.put("scale = ")
+            try numbers.write_double(self.out, scale)
+            if multiline: try self.put("\n")
+        if not multiline: try self.byte(')')
+
+    ## Time samples, one `time: value,` line each.
+    mutating func time_samples(indent: usize, value: const Value*) -> !:
+        let samples = value.time_samples() else return
+        for index in 0..<samples.count():
+            try self.indent(indent + 1)
+            try numbers.write_double(self.out, samples.times.items[index])
+            try self.put(": ")
+            try self.value(&samples.values.items[index])
+            try self.put(",\n")
+
+    ## `relocates = { <a>: <b>, ... }`.
+    mutating func relocates(indent: usize, multiline: bool, value: const Value*) -> !:
+        try self.indent(indent)
+        try self.put("relocates = {\n" if multiline else "relocates = { ")
+        let pairs = value.ids()
+        let count = pairs.length // 2
+        for index in 0..<count:
+            if multiline: try self.indent(indent + 1)
+            try self.path_ref(pairs[index * 2])
+            try self.put(": ")
+            try self.path_ref(pairs[index * 2 + 1])
+            if index + 1 < count: try self.put(", ")
+            if multiline: try self.put("\n")
+        if multiline:
+            try self.indent(indent)
+            try self.put("}\n")
+        else:
+            try self.put(" }")
+
+    ## `variants = { string set = "selection" ... }`.
+    mutating func variant_selections(indent: usize, value: const Value*) -> !:
+        let pairs = value.ids()
+        let count = pairs.length // 2
+        var order = Growing[usize]()
+        defer order.close()
+        for index in 0..<count: try order.push(index)
+        for index in 1..<order.count:
+            let current = order.items[index]
+            var at = index
+            while at > 0 and byte_less(self.text(pairs[current * 2]), self.text(pairs[order.items[at - 1] * 2])):
+                order.items[at] = order.items[at - 1]
+                at -= 1
+            order.items[at] = current
+        try self.put("{\n")
+        for index in order.view():
+            try self.indent(indent + 1)
+            try self.put("string ")
+            try self.key(self.text(pairs[index * 2]))
+            try self.put(" = ")
+            try self.quoted(self.text(pairs[index * 2 + 1]))
+            try self.put("\n")
+        try self.indent(indent)
+        try self.put("}\n")
+
+## Whether `text` is a valid identifier (TfIsValidIdentifier: ASCII letters,
+## digits and underscores, not starting with a digit).
+func is_identifier(text: str) -> bool:
+    if text.length == 0: return false
+    let first = text.bytes[0]
+    if not ((first >= 'a' and first <= 'z') or (first >= 'A' and first <= 'Z') or first == '_'): return false
+    for byte in text.bytes:
+        if not ((byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or (byte >= '0' and byte <= '9') or byte == '_'): return false
+    return true

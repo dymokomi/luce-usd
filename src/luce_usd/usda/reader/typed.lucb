@@ -1,0 +1,225 @@
+## Values of a known type, as parserHelpers.cpp builds them: a scalar is one
+## atom, a vector or quaternion a tuple of atoms, a matrix a tuple of row
+## tuples; an array is a list of those. Numbers convert as its _GetImpl
+## does: integers range-checked, doubles narrowed to float and half, bools
+## from numbers (non-zero) or true/false/yes/no/1/0 text. Quaternions are
+## written (real, i, j, k) and stored imaginary first.
+
+## The most atoms one element holds (a matrix4d).
+let most_atoms: usize = 16
+
+extend Reader:
+    ## A value of `kind`, an array when `array` (the TypedValue rule).
+    mutating func typed_value(kind: ValueKind, array: bool) -> Value!:
+        if array: return try self.array_value(kind)
+        return try self.scalar_value(kind)
+
+    mutating func scalar_value(kind: ValueKind) -> Value!:
+        let size = element_bytes(kind)
+        if size == 0: error(errors.invalid, self.where("not a value type"))
+        var bytes: u8[128]
+        try self.element(kind, &bytes[0])
+        if components(kind) <= 1:
+            var bits: u64 = 0
+            memory.copy(u8[]((u8*)&bits, 8), bytes[..<size], size)
+            # Sign-extend signed integers so as_int reads them.
+            if kind == ValueKind.int: bits = (u64)(i64)(i32)(u32)bits
+            return Value.scalar(kind, bits)
+        return try Value.of_bytes(kind, bytes[..<size])
+
+    ## `[` elements `]` (or `[]`), into one column.
+    mutating func array_value(kind: ValueKind) -> Value!:
+        let size = element_bytes(kind)
+        if size == 0: error(errors.invalid, self.where("not a value type"))
+        if self.peek() == '[':
+            if let fast = try self.fast_array(kind): return fast
+        try self.expect('[', "expected '[' to start an array")
+        try self.skip_all()
+        var bytes = Growing[u8]()
+        defer bytes.close()
+        var count: usize = 0
+        if self.peek() != ']':
+            while true:
+                try bytes.reserve(bytes.count + size)
+                try self.element(kind, &bytes.items[bytes.count])
+                bytes.count += size
+                count += 1
+                if not (try self.list_end(']')): break
+        try self.expect(']', "expected ']' to end an array")
+        var column = try Column[u8].allocate(bytes.count)
+        if bytes.count > 0: memory.copy(column.span(), bytes.view(), bytes.count)
+        return Value.of_array(kind, count, column)
+
+    ## One element of `kind` written to `out` (element_bytes(kind) bytes).
+    mutating func element(kind: ValueKind, out: u8*) -> !:
+        match kind:
+            .string, .token, .path_expression:
+                if not self.sees_string(): error(errors.invalid, self.where("expected a quoted string"))
+                let text = try self.string()
+                memory.write[u32]((void*)out, try self.names.token(text))
+            .asset:
+                var text = ""
+                if self.peek() == '@': text = try self.asset_path()
+                elif self.sees_string(): text = try self.string()
+                else: error(errors.invalid, self.where("expected an asset path"))
+                memory.write[u32]((void*)out, try self.names.token(text))
+            _:
+                let count = components(kind)
+                if count == 0: error(errors.invalid, self.where("not a value type"))
+                if count == 1:
+                    try self.scalar_atom(kind, out)
+                    return
+                try self.tuple(kind, out)
+
+    ## One numeric atom of a scalar kind.
+    mutating func scalar_atom(kind: ValueKind, out: u8*) -> !:
+        if kind == ValueKind.boolean:
+            memory.write[u8]((void*)out, 1 if (try self.bool_atom()) else 0)
+            return
+        let number = try self.number_atom()
+        try self.store(kind, number, out)
+
+    ## A bool: a number (non-zero is true) or true/false/yes/no/1/0 as an
+    ## identifier or a string (Sdf_BoolFromString, case-insensitive).
+    mutating func bool_atom() -> bool!:
+        if self.sees_number():
+            let number = try self.number()
+            match number.class:
+                .unsigned: return number.unsigned != 0
+                .signed: return number.signed != 0
+                _: return number.real != 0.0
+        var word = ""
+        if self.sees_string(): word = try self.string()
+        else: word = self.base_identifier()
+        if lower_equals(word, "true") or lower_equals(word, "yes") or word == "1": return true
+        if lower_equals(word, "false") or lower_equals(word, "no") or word == "0": return false
+        error(errors.invalid, self.where("expected a bool"))
+
+    ## A number atom; "inf", "-inf" and "nan" may also be strings.
+    mutating func number_atom() -> Number!:
+        if self.sees_number(): return try self.number()
+        if self.sees_string():
+            let text = try self.string()
+            if text == "inf": return Number(class = NumberClass.real, unsigned = 0, signed = 0, real = f64.bits(0x7FF0000000000000))
+            if text == "-inf": return Number(class = NumberClass.real, unsigned = 0, signed = 0, real = -f64.bits(0x7FF0000000000000))
+            if text == "nan": return Number(class = NumberClass.real, unsigned = 0, signed = 0, real = f64.bits(0x7FF8000000000000))
+        error(errors.invalid, self.where("expected a number"))
+
+    ## A tuple of `components(kind)` atoms: flat for vectors and
+    ## quaternions, rows of tuples for matrices.
+    mutating func tuple(kind: ValueKind, out: u8*) -> !:
+        let count = components(kind)
+        let matrix = kind == ValueKind.matrix2d or kind == ValueKind.matrix3d or kind == ValueKind.matrix4d
+        let scalar = scalar_of(kind)
+        let size = element_bytes(scalar)
+        var atoms: Number[16] = ---
+        var taken: usize = 0
+        try self.expect('(', "expected '(' to start a tuple")
+        try self.skip_all()
+        if matrix:
+            let rows: usize = 2 if kind == ValueKind.matrix2d else (3 if kind == ValueKind.matrix3d else 4)
+            for row in 0..<rows:
+                try self.expect('(', "expected '(' to start a matrix row")
+                try self.skip_all()
+                for column in 0..<rows:
+                    atoms[taken] = try self.number_atom()
+                    taken += 1
+                    let more = try self.list_end(')')
+                    if more != (column + 1 < rows): error(errors.invalid, self.where("a matrix row has the wrong size"))
+                try self.expect(')', "expected ')' to end a matrix row")
+                let more = try self.list_end(')')
+                if more != (row + 1 < rows): error(errors.invalid, self.where("a matrix has the wrong number of rows"))
+        else:
+            while true:
+                if taken == count: error(errors.invalid, self.where("a tuple has too many values"))
+                atoms[taken] = try self.number_atom()
+                taken += 1
+                if not (try self.list_end(')')): break
+            if taken != count: error(errors.invalid, self.where("a tuple has too few values"))
+        try self.expect(')', "expected ')' to end a tuple")
+        # Quaternions are (real, i, j, k) in text, imaginary first in memory.
+        let quaternion = kind == ValueKind.quatd or kind == ValueKind.quatf or kind == ValueKind.quath
+        for index in 0..<count:
+            let source = (index + 1) % 4 if quaternion else index
+            try self.store(scalar, atoms[source], out + index * size)
+
+    ## Store `number` as a scalar of `kind`.
+    func store(kind: ValueKind, number: Number, out: u8*) -> !:
+        match kind:
+            .double, .time_code: memory.write[f64]((void*)out, number.as_double())
+            .float: memory.write[f32]((void*)out, (f32)number.as_double())
+            .half: memory.write[u16]((void*)out, ((f16)(f32)number.as_double()).bits())
+            .int: memory.write[i32]((void*)out, (i32)(try self.integer(number, -2147483648, 2147483647)))
+            .uint: memory.write[u32]((void*)out, (u32)(try self.integer(number, 0, 4294967295)))
+            .uchar: memory.write[u8]((void*)out, (u8)(try self.integer(number, 0, 255)))
+            .int64: memory.write[i64]((void*)out, try self.integer(number, -9223372036854775807 - 1, 9223372036854775807))
+            .uint64:
+                if number.class == NumberClass.unsigned:
+                    memory.write[u64]((void*)out, number.unsigned)
+                    return
+                memory.write[u64]((void*)out, (u64)(try self.integer(number, 0, 9223372036854775807)))
+            _: error(errors.invalid, self.where("not a numeric type"))
+
+    ## An integer in `low..=high` from a number (finite doubles truncate).
+    func integer(number: Number, low: i64, high: i64) -> i64!:
+        var value: i64 = 0
+        match number.class:
+            .unsigned:
+                if number.unsigned > 9223372036854775807: error(errors.invalid, self.where("an integer out of range"))
+                value = (i64)number.unsigned
+            .signed: value = number.signed
+            _:
+                let real = number.real
+                if not (real == real) or real >= 9223372036854775808.0 or real < -9223372036854775808.0: error(errors.invalid, self.where("an integer out of range"))
+                value = (i64)real
+        if value < low or value > high: error(errors.invalid, self.where("an integer out of range"))
+        return value
+
+    ## `{ type key = value ... }`: a dictionary, nested with `dictionary key = {...}`.
+    mutating func dictionary_value() -> Value!:
+        try self.expect('{', "expected '{' to start a dictionary")
+        let dictionary = try Dictionary.create()
+        var value = Value.of_object(ValueKind.dictionary, (void*)dictionary)
+        errdefer value.release()
+        try self.skip_all()
+        while self.peek() != '}':
+            if self.keyword("dictionary"):
+                try self.skip_inline()
+                let key = try self.dictionary_key()
+                try self.assignment()
+                try dictionary.put(key, try self.dictionary_value())
+            else:
+                let type_text = try self.identifier()
+                let array = try self.array_brackets()
+                let found = find_type(type_text) else error(errors.invalid, self.where("an unknown value type in a dictionary"))
+                let (entry, _) = found
+                if entry.kind == ValueKind.empty: error(errors.invalid, self.where("a value type a dictionary cannot hold"))
+                try self.skip_inline()
+                let key = try self.dictionary_key()
+                try self.assignment()
+                try dictionary.put(key, try self.typed_value(entry.kind, array))
+            try self.statement_end('}')
+            try self.skip_all()
+        self.at += 1
+        return value
+
+    ## A dictionary key: a quoted string or an identifier (keywords too).
+    mutating func dictionary_key() -> u32!:
+        if self.sees_string(): return try self.names.token(try self.string())
+        let word = self.base_identifier()
+        if word.length == 0: error(errors.invalid, self.where("expected a dictionary key"))
+        return try self.names.token(word)
+
+    ## `=` with inline padding around it.
+    mutating func assignment() -> !:
+        try self.skip_inline()
+        try self.expect('=', "expected '='")
+        try self.skip_inline()
+
+func lower_equals(word: str, lower: str) -> bool:
+    if word.length != lower.length: return false
+    for index in 0..<word.length:
+        var byte = word.bytes[index]
+        if byte >= 'A' and byte <= 'Z': byte += 32
+        if byte != lower.bytes[index]: return false
+    return true

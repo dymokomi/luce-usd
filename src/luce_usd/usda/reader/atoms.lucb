@@ -1,0 +1,220 @@
+## Atoms: numbers (as the parser classifies them), quoted strings with
+## Sdf_EvalQuotedString's escapes, asset paths and path references.
+
+## What a number literal is: textParserHelpers' _GetNumericValueFromString
+## keeps integers as u64 (or i64 when negative) unless they overflow, and
+## reads anything with '.', 'e' or 'E' (and inf, -inf, nan, -0) as double.
+enum NumberClass as u8:
+    unsigned = 0
+    signed = 1
+    real = 2
+
+struct Number:
+    var class: NumberClass
+    var unsigned: u64
+    var signed: i64
+    var real: f64
+
+    ## As a double (integers convert).
+    func as_double() -> f64:
+        match self.class:
+            .unsigned: return (f64)self.unsigned
+            .signed: return (f64)self.signed
+            _: return self.real
+
+extend Reader:
+    ## Whether a number starts at the cursor.
+    func sees_number() -> bool:
+        let byte = self.peek()
+        if byte >= '0' and byte <= '9': return true
+        if byte == '.' and self.peek_at(1) >= '0' and self.peek_at(1) <= '9': return true
+        if byte == '-':
+            let next = self.peek_at(1)
+            if (next >= '0' and next <= '9') or next == '.': return true
+            return self.peek_at(1) == 'i' and self.peek_at(2) == 'n' and self.peek_at(3) == 'f'
+        return self.sees("inf") or self.sees("nan")
+
+    ## The Number grammar rule at the cursor, consumed and classified.
+    mutating func number() -> Number!:
+        let start = self.at
+        if self.keyword("nan"): return Number(class = NumberClass.real, unsigned = 0, signed = 0, real = f64.bits(0x7FF8000000000000))
+        let negative = self.peek() == '-'
+        if negative: self.at += 1
+        if self.keyword("inf"):
+            return Number(class = NumberClass.real, unsigned = 0, signed = 0, real = -f64.bits(0x7FF0000000000000) if negative else f64.bits(0x7FF0000000000000))
+        var real = false
+        let digits_start = self.at
+        while self.peek() >= '0' and self.peek() <= '9': self.at += 1
+        let whole = self.at - digits_start
+        if self.peek() == '.':
+            if whole == 0 and not (self.peek_at(1) >= '0' and self.peek_at(1) <= '9'):
+                error(errors.invalid, self.where("expected a number"))
+            real = true
+            self.at += 1
+            while self.peek() >= '0' and self.peek() <= '9': self.at += 1
+        elif whole == 0:
+            self.at = start
+            error(errors.invalid, self.where("expected a number"))
+        if self.peek() == 'e' or self.peek() == 'E':
+            real = true
+            self.at += 1
+            if self.peek() == '+' or self.peek() == '-': self.at += 1
+            if not (self.peek() >= '0' and self.peek() <= '9'): error(errors.invalid, self.where("expected exponent digits"))
+            while self.peek() >= '0' and self.peek() <= '9': self.at += 1
+        let text = self.data[start..<self.at]
+        if text.length == 2 and negative and text[1] == '0':
+            return Number(class = NumberClass.real, unsigned = 0, signed = 0, real = -0.0)
+        if real:
+            return Number(class = NumberClass.real, unsigned = 0, signed = 0, real = try numbers.parse_f64(text))
+        # An integer: u64, or i64 when negative; out of range reads as double.
+        var magnitude: u64 = 0
+        var overflow = false
+        for byte in text[(1 if negative else 0)..]:
+            let digit = (u64)(byte - '0')
+            if magnitude > (18446744073709551615 - digit) // 10: overflow = true
+            else: magnitude = magnitude * 10 + digit
+        if negative and magnitude > 9223372036854775808: overflow = true
+        if overflow:
+            return Number(class = NumberClass.real, unsigned = 0, signed = 0, real = try numbers.parse_f64(text))
+        if negative:
+            let signed = -9223372036854775807 - 1 if magnitude == 9223372036854775808 else -(i64)magnitude
+            return Number(class = NumberClass.signed, unsigned = 0, signed = signed, real = 0.0)
+        return Number(class = NumberClass.unsigned, unsigned = magnitude, signed = 0, real = 0.0)
+
+    ## Whether a quoted string starts at the cursor.
+    func sees_string() -> bool:
+        return self.peek() == '"' or self.peek() == '\''
+
+    ## The quoted string at the cursor with its escapes evaluated; a view of
+    ## the scratch buffer, valid until the next string.
+    mutating func string() -> str!:
+        let quote = self.peek()
+        if quote != '"' and quote != '\'': error(errors.invalid, self.where("expected a quoted string"))
+        let triple = self.peek_at(1) == quote and self.peek_at(2) == quote
+        let width: usize = 3 if triple else 1
+        self.at += width
+        let start = self.at
+        while true:
+            if self.at_end(): error(errors.invalid, self.where("unterminated string"))
+            let byte = self.peek()
+            if byte == '\\':
+                self.at += 2
+                continue
+            if not triple and (byte == '\n' or byte == '\r'): error(errors.invalid, self.where("a line end inside a string"))
+            if byte == quote and (not triple or (self.peek_at(1) == quote and self.peek_at(2) == quote)): break
+            self.at += 1
+        let raw = self.data[start..<self.at]
+        self.at += width
+        return try self.unescape(raw)
+
+    ## Sdf_EvalQuotedString's escapes: \\ \a \b \f \n \r \t \v, \x with up
+    ## to two hex digits, up to three octal digits; any other escaped byte is
+    ## itself.
+    mutating func unescape(raw: const u8[]) -> str!:
+        var plain = true
+        for byte in raw:
+            if byte == '\\':
+                plain = false
+                break
+        if plain: return (str)raw
+        self.scratch.clear()
+        try self.scratch.reserve(raw.length)
+        var index: usize = 0
+        while index < raw.length:
+            let byte = raw[index]
+            if byte != '\\' or index + 1 >= raw.length:
+                try self.scratch.push(byte)
+                index += 1
+                continue
+            index += 1
+            let code = raw[index]
+            match code:
+                'a': try self.scratch.push(7)
+                'b': try self.scratch.push(8)
+                'f': try self.scratch.push(12)
+                'n': try self.scratch.push(10)
+                'r': try self.scratch.push(13)
+                't': try self.scratch.push(9)
+                'v': try self.scratch.push(11)
+                'x':
+                    var value: u32 = 0
+                    var count: usize = 0
+                    while count < 2 and index + 1 < raw.length and hex_digit(raw[index + 1]) >= 0:
+                        index += 1
+                        value = value * 16 + (u32)hex_digit(raw[index])
+                        count += 1
+                    try self.scratch.push((u8)value)
+                '0', '1', '2', '3', '4', '5', '6', '7':
+                    var value: u32 = 0
+                    var count: usize = 0
+                    index -= 1
+                    while count < 3 and index + 1 < raw.length and raw[index + 1] >= '0' and raw[index + 1] <= '7':
+                        index += 1
+                        value = value * 8 + (u32)(raw[index] - '0')
+                        count += 1
+                    try self.scratch.push((u8)value)
+                _: try self.scratch.push(code)
+            index += 1
+        return (str)self.scratch.view()
+
+    ## The asset path at the cursor: @path@, or @@@path@@@ (closed by three
+    ## to five @, the last three closing) with \@@@ unescaped.
+    mutating func asset_path() -> str!:
+        if self.peek() != '@': error(errors.invalid, self.where("expected an asset path"))
+        if self.peek_at(1) == '@' and self.peek_at(2) == '@':
+            self.at += 3
+            let start = self.at
+            var escaped = false
+            while true:
+                if self.at_end() or self.peek() == '\n' or self.peek() == '\r': error(errors.invalid, self.where("unterminated asset path"))
+                if self.peek() == '\\' and self.peek_at(1) == '@' and self.peek_at(2) == '@' and self.peek_at(3) == '@':
+                    escaped = true
+                    self.at += 4
+                    continue
+                if self.peek() == '@' and self.peek_at(1) == '@' and self.peek_at(2) == '@':
+                    # Up to two more @ belong to the path.
+                    var extra: usize = 0
+                    while extra < 2 and self.peek_at(3 + extra) == '@': extra += 1
+                    self.at += extra
+                    break
+                self.at += 1
+            let raw = self.data[start..<self.at]
+            self.at += 3
+            if not escaped: return (str)raw
+            self.scratch.clear()
+            var index: usize = 0
+            while index < raw.length:
+                if raw[index] == '\\' and index + 3 < raw.length and raw[index + 1] == '@' and raw[index + 2] == '@' and raw[index + 3] == '@':
+                    index += 1
+                    continue
+                try self.scratch.push(raw[index])
+                index += 1
+            return (str)self.scratch.view()
+        self.at += 1
+        let start = self.at
+        while self.peek() != '@':
+            if self.at_end() or self.peek() == '\n' or self.peek() == '\r': error(errors.invalid, self.where("unterminated asset path"))
+            self.at += 1
+        let raw = self.data[start..<self.at]
+        self.at += 1
+        return (str)raw
+
+    ## The path reference `<path>` at the cursor; the empty path for `<>`.
+    mutating func path_ref() -> u32!:
+        if self.peek() != '<': error(errors.invalid, self.where("expected a path reference"))
+        self.at += 1
+        let start = self.at
+        while self.peek() != '>':
+            if self.at_end() or self.peek() == '\n': error(errors.invalid, self.where("unterminated path reference"))
+            self.at += 1
+        let raw = self.data[start..<self.at]
+        self.at += 1
+        let text = try self.unescape(raw)
+        return self.names.parse_path(text) catch failure:
+            error(errors.invalid, self.where("not a valid path"))
+
+func hex_digit(byte: u8) -> i32:
+    if byte >= '0' and byte <= '9': return (i32)(byte - '0')
+    if byte >= 'a' and byte <= 'f': return (i32)(byte - 'a') + 10
+    if byte >= 'A' and byte <= 'F': return (i32)(byte - 'A') + 10
+    return -1

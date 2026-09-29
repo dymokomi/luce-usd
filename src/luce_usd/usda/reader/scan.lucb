@@ -1,0 +1,201 @@
+## Lexical helpers: the grammar's padding rules (inline, single-line and
+## multi-line, with #, // and /* */ comments), statement and list
+## separators, keywords and identifiers.
+
+## The grammar's reserved words: an identifier may not be one of them.
+let reserved: str[56] = [
+    "add", "AnimationBlock", "append", "bezier", "class", "config", "connect", "curve", "custom",
+    "customData", "default", "def", "delete", "dictionary", "displayUnit", "doc", "held", "hermite",
+    "inherits", "kind", "linear", "loop", "nameChildren", "None", "none", "offset", "oscillate",
+    "over", "payload", "permission", "post", "pre", "prefixSubstitutions", "prepend", "properties",
+    "references", "relocates", "rel", "reorder", "rootPrims", "repeat", "reset", "scale", "sloped",
+    "subLayers", "suffixSubstitutions", "specializes", "spline", "symmetryArguments",
+    "symmetryFunction", "timeSamples", "uniform", "variantSet", "variantSets", "variants", "varying",
+]
+
+extend Reader:
+    ## The byte at the cursor, 0 at the end.
+    func peek() -> u8:
+        return self.data[self.at] if self.at < self.data.length else 0
+
+    func peek_at(offset: usize) -> u8:
+        return self.data[self.at + offset] if self.at + offset < self.data.length else 0
+
+    func at_end() -> bool:
+        return self.at >= self.data.length
+
+    ## Skip a comment at the cursor (`single` allows # and //); whether one was.
+    mutating func comment(single: bool) -> bool!:
+        let byte = self.peek()
+        if byte == '/' and self.peek_at(1) == '*':
+            self.at += 2
+            while true:
+                if self.at_end(): error(errors.invalid, self.where("unterminated /* comment"))
+                if self.peek() == '*' and self.peek_at(1) == '/':
+                    self.at += 2
+                    return true
+                self.at += 1
+        if single and (byte == '#' or (byte == '/' and self.peek_at(1) == '/')):
+            while not self.at_end() and self.peek() != '\n' and self.peek() != '\r': self.at += 1
+            return true
+        return false
+
+    ## Spaces, tabs and /* */ comments.
+    mutating func skip_inline() -> !:
+        while true:
+            let byte = self.peek()
+            if byte == ' ' or byte == '\t': self.at += 1
+            elif not (try self.comment(false)): return
+
+    ## Spaces, tabs and every comment, up to a line end.
+    mutating func skip_line() -> !:
+        while true:
+            let byte = self.peek()
+            if byte == ' ' or byte == '\t': self.at += 1
+            elif not (try self.comment(true)): return
+
+    ## Spaces, tabs, line ends and comments.
+    mutating func skip_all() -> !:
+        while true:
+            let byte = self.peek()
+            if byte == ' ' or byte == '\t' or byte == '\n' or byte == '\r': self.at += 1
+            elif not (try self.comment(true)): return
+
+    ## Consume `byte`, or fail saying what was expected.
+    mutating func expect(byte: u8, what: str) -> !:
+        if self.peek() != byte: error(errors.invalid, self.where(what))
+        self.at += 1
+
+    ## After a statement in a block closed by `close`: a `;` or a line end
+    ## separates it from the next; the close may follow directly.
+    mutating func statement_end(close: u8) -> !:
+        try self.skip_line()
+        let byte = self.peek()
+        if byte == ';' or byte == '\n' or byte == '\r':
+            self.at += 1
+            return
+        if byte == close: return
+        error(errors.invalid, self.where("expected a line end or ';' after a statement"))
+
+    ## After a list item closed by `close`: a comma, or the close.
+    mutating func list_end(close: u8) -> bool!:
+        try self.skip_inline()
+        if self.peek() == ',':
+            self.at += 1
+            try self.skip_all()
+            return self.peek() != close
+        try self.skip_all()
+        if self.peek() == close: return false
+        error(errors.invalid, self.where("expected ',' between list items"))
+
+    ## Consume `word` when it is next and not followed by a name character.
+    mutating func keyword(word: str) -> bool:
+        if self.data.length - self.at < word.length: return false
+        for index in 0..<word.length:
+            if self.data[self.at + index] != word.bytes[index]: return false
+        let next = self.peek_at(word.length)
+        if (next >= 'a' and next <= 'z') or (next >= 'A' and next <= 'Z') or (next >= '0' and next <= '9') or next == '_': return false
+        self.at += word.length
+        return true
+
+    ## Whether `word` is next (a keyword), without consuming it.
+    func sees(word: str) -> bool:
+        if self.data.length - self.at < word.length: return false
+        for index in 0..<word.length:
+            if self.data[self.at + index] != word.bytes[index]: return false
+        let next = self.peek_at(word.length)
+        return not ((next >= 'a' and next <= 'z') or (next >= 'A' and next <= 'Z') or (next >= '0' and next <= '9') or next == '_')
+
+    ## The identifier (keywords included) at the cursor, consumed; "" if none.
+    mutating func base_identifier() -> str:
+        let width = identifier_at(self.data, self.at)
+        let start = self.at
+        self.at += width
+        return (str)self.data[start..<self.at]
+
+    ## An Identifier: identifiers that are not keywords, joined by `::`.
+    mutating func identifier() -> str!:
+        let start = self.at
+        while true:
+            let width = identifier_at(self.data, self.at)
+            if width == 0 or is_reserved((str)self.data[self.at..<self.at + width]):
+                self.at = start
+                error(errors.invalid, self.where("expected an identifier"))
+            self.at += width
+            if self.peek() == ':' and self.peek_at(1) == ':':
+                self.at += 2
+                continue
+            return (str)self.data[start..<self.at]
+
+    ## Whether an Identifier (not a keyword) starts at the cursor.
+    func sees_identifier() -> bool:
+        let width = identifier_at(self.data, self.at)
+        return width > 0 and not is_reserved((str)self.data[self.at..<self.at + width])
+
+    ## A property name: identifiers joined by ':', or a keyword.
+    mutating func namespaced_name() -> str!:
+        let start = self.at
+        let first = identifier_at(self.data, self.at)
+        if first == 0: error(errors.invalid, self.where("expected a property name"))
+        self.at += first
+        while self.peek() == ':':
+            let next = identifier_at(self.data, self.at + 1)
+            if next == 0: break
+            self.at += 1 + next
+        return (str)self.data[start..<self.at]
+
+    ## `[]` after a type name (inline padding inside), consumed; whether seen.
+    mutating func array_brackets() -> bool!:
+        let start = self.at
+        try self.skip_inline()
+        if self.peek() != '[':
+            self.at = start
+            return false
+        self.at += 1
+        try self.skip_inline()
+        if self.peek() != ']':
+            self.at = start
+            return false
+        self.at += 1
+        return true
+
+func is_reserved(word: str) -> bool:
+    for entry in reserved:
+        if entry == word: return true
+    return false
+
+## The byte width of the UTF-8 identifier at `at` (identifiers.lucb), or 0.
+func identifier_at(data: const u8[], at: usize) -> usize:
+    if at >= data.length: return 0
+    let first = data[at]
+    if first < 128:
+        if not ((first >= 'a' and first <= 'z') or (first >= 'A' and first <= 'Z') or first == '_'): return 0
+        var end = at + 1
+        while end < data.length:
+            let byte = data[end]
+            if (byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or (byte >= '0' and byte <= '9') or byte == '_':
+                end += 1
+            elif byte >= 128:
+                let width = wide_continue(data, end)
+                if width == 0: break
+                end += width
+            else:
+                break
+        return end - at
+    let decoded = utf8.decode(data, at) else return 0
+    if not identifiers.is_start((u32)decoded.scalar): return 0
+    var end = at + decoded.width
+    while end < data.length:
+        let byte = data[end]
+        if byte < 128:
+            if (byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or (byte >= '0' and byte <= '9') or byte == '_': end += 1
+            else: break
+        else:
+            let width = wide_continue(data, end)
+            if width == 0: break
+            end += width
+    return end - at
+
+func wide_continue(data: const u8[], at: usize) -> usize:
+    let decoded = utf8.decode(data, at) else return 0
+    return decoded.width if identifiers.is_continue((u32)decoded.scalar) else 0

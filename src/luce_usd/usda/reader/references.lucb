@@ -1,0 +1,225 @@
+## Composition arcs and layer structure in metadata: references and
+## payloads (with layer offsets and, for references, custom data), inherits
+## and specializes paths, variant set names and selections, relocates, and
+## the layer's subLayers.
+
+extend Reader:
+    ## `None | item | [items]` of references (or payloads) into part `part`.
+    mutating func reference_list(spec: usize, part: ListPart, payload: bool) -> !:
+        var items = Growing[ListItem]()
+        defer items.close()
+        errdefer release_items(&items)
+        if not self.keyword("None"):
+            if self.peek() == '[':
+                self.at += 1
+                try self.skip_all()
+                if self.peek() != ']':
+                    while true:
+                        try items.push(try self.reference_item(payload))
+                        if not (try self.list_end(']')): break
+                try self.expect(']', "expected ']' after references")
+            else:
+                try items.push(try self.reference_item(payload))
+        if items.count == 0 and part != ListPart.explicit:
+            error(errors.invalid, self.where("None or an empty list is only allowed for explicit references and payloads"))
+        try self.check_unique(items.view())
+        let field = self.keys.payload if payload else self.keys.references
+        let kind = ValueKind.payload_list_op if payload else ValueKind.reference_list_op
+        try self.set_list_items(spec, field, kind, part, items.view())
+
+    ## `@asset@[<prim>] [( params )]` or `<prim> [( params )]`.
+    mutating func reference_item(payload: bool) -> ListItem!:
+        var item = ListItem(a = 0, b = (u64)empty_path, offset = 0.0, scale = 1.0, custom = none)
+        errdefer release_item(&item)
+        if self.peek() == '<':
+            item.b = (u64)try self.path_ref()
+        else:
+            let asset = try self.asset_path()
+            if asset.length == 0: error(errors.invalid, self.where("a reference or payload asset path must not be empty"))
+            item.a = (u64)try self.names.token(asset)
+            try self.skip_inline()
+            if self.peek() == '<': item.b = (u64)try self.path_ref()
+        try self.check_arc_path((u32)item.b)
+        try self.skip_inline()
+        if self.peek() != '(': return item
+        self.at += 1
+        try self.skip_all()
+        while self.peek() != ')':
+            if not payload and self.keyword("customData"):
+                try self.assignment()
+                var value = try self.dictionary_value()
+                if let old = item.custom:
+                    var previous = Value.of_object(ValueKind.dictionary, (void*)old)
+                    previous.release()
+                item.custom = (Dictionary*)(value.object else trap("dictionary"))
+                value.object = none
+                value.release()
+            elif self.keyword("offset"):
+                try self.assignment()
+                item.offset = (try self.number()).as_double()
+            elif self.keyword("scale"):
+                try self.assignment()
+                item.scale = (try self.number()).as_double()
+            else:
+                error(errors.invalid, self.where("expected offset, scale or customData"))
+            try self.statement_end(')')
+            try self.skip_all()
+        self.at += 1
+        return item
+
+    ## `None | <path> | [<path>, ...]` of inherits or specializes, anchored
+    ## at the prim, into part `part` of field `field`.
+    mutating func class_paths(spec: usize, field: u32, part: ListPart, anchor: u32) -> !:
+        var items = Growing[ListItem]()
+        defer items.close()
+        try self.path_list(&items, anchor)
+        if items.count == 0 and part != ListPart.explicit:
+            error(errors.invalid, self.where("None or an empty list is only allowed for explicit inherits and specializes"))
+        for item in items.view(): try self.check_class_path((u32)item.a)
+        try self.check_unique(items.view())
+        try self.set_list_items(spec, field, ValueKind.path_list_op, part, items.view())
+
+    ## `None | <path> | [<path>, ...]`, relative paths made absolute at
+    ## `anchor` with its variant selections stripped.
+    mutating func path_list(items: Growing[ListItem]*, anchor: u32) -> !:
+        if self.keyword("None"): return
+        let base = try self.names.strip_variants(anchor)
+        if self.peek() == '[':
+            self.at += 1
+            try self.skip_all()
+            if self.peek() != ']':
+                while true:
+                    let path = try self.names.make_absolute(try self.path_ref(), base)
+                    try items.push(ListItem(a = (u64)path, b = 0, offset = 0.0, scale = 1.0, custom = none))
+                    if not (try self.list_end(']')): break
+            try self.expect(']', "expected ']' after paths")
+            return
+        let path = try self.names.make_absolute(try self.path_ref(), base)
+        try items.push(ListItem(a = (u64)path, b = 0, offset = 0.0, scale = 1.0, custom = none))
+
+    ## `variantSets = "name" | ["a", "b"]`: the string list op, and for
+    ## explicit and added names the variant set specs and children.
+    mutating func variant_set_names(spec: usize, part: ListPart, anchor: u32) -> !:
+        var items = Growing[ListItem]()
+        defer items.close()
+        if self.peek() == '[':
+            self.at += 1
+            try self.skip_all()
+            while true:
+                try items.push(ListItem(a = (u64)try self.names.token(try self.string()), b = 0, offset = 0.0, scale = 1.0, custom = none))
+                if not (try self.list_end(']')): break
+            try self.expect(']', "expected ']' after variant set names")
+        else:
+            try items.push(ListItem(a = (u64)try self.names.token(try self.string()), b = 0, offset = 0.0, scale = 1.0, custom = none))
+        try self.set_list_items(spec, self.keys.variant_set_names, ValueKind.string_list_op, part, items.view())
+        if part == ListPart.explicit or part == ListPart.added:
+            let prim = self.layer.spec(spec).path
+            var column = try Column[u8].allocate(items.count * 4)
+            let ids = column.span()
+            for index in 0..<items.count:
+                let name = (u32)items.items[index].a
+                memory.write[u32]((void*)&ids[index * 4], name)
+                let set_path = try self.names.variant(prim, name, 0)
+                if self.layer.find(set_path) == none: discard(try self.layer.create_spec(set_path, SpecType.variant_set))
+            try self.set_field(spec, self.keys.variant_set_children, Value.of_records(ValueKind.token_vector, items.count, column))
+
+    ## `variants = { string set = "selection" ... }` into the selection map.
+    mutating func variant_selections(spec: usize) -> !:
+        var parsed = try self.dictionary_value()
+        defer parsed.release()
+        let dictionary = parsed.dictionary() else trap("dictionary")
+        var column = try Column[u8].allocate(dictionary.count() * 8)
+        let pairs = column.span()
+        for index in 0..<dictionary.count():
+            let value = &dictionary.values.items[index]
+            if value.kind != ValueKind.string or value.array:
+                column.release()
+                error(errors.invalid, self.where("variant selections must be strings"))
+            # A selection may be a variable expression, `...`.
+            let selection = self.names.text_of(value.as_token())
+            let expression = selection.length >= 2 and selection.bytes[0] == '`' and selection.bytes[selection.length - 1] == '`'
+            if not expression: self.check_variant_name(selection) catch failure:
+                column.release()
+                error(failure.code, failure.message)
+            memory.write[u32]((void*)&pairs[index * 8], dictionary.keys.items[index])
+            memory.write[u32]((void*)&pairs[index * 8 + 4], value.as_token())
+        try self.set_field(spec, self.keys.variant_selection, Value.of_records(ValueKind.variant_selection_map, dictionary.count(), column))
+
+    ## `relocates = { <source>: <target>, ... }`. On a prim (a non-empty
+    ## `anchor`) the paths are made absolute there; on the layer they are kept.
+    mutating func relocates(spec: usize, anchor: u32) -> !:
+        try self.expect('{', "expected '{' after relocates")
+        try self.skip_all()
+        var pairs = Growing[u32]()
+        defer pairs.close()
+        if self.peek() != '}':
+            while true:
+                var source = try self.path_ref()
+                try self.skip_inline()
+                try self.expect(':', "expected ':' between relocates paths")
+                try self.skip_inline()
+                var target = try self.path_ref()
+                try self.check_relocates_source(source)
+                try self.check_relocates_target(target)
+                var base = absolute_root
+                if anchor != empty_path: base = try self.names.strip_variants(anchor)
+                source = try self.names.make_absolute(source, base)
+                if target != empty_path: target = try self.names.make_absolute(target, base)
+                try pairs.push(source)
+                try pairs.push(target)
+                if not (try self.list_end('}')): break
+        try self.expect('}', "expected '}' after relocates")
+        var column = try Column[u8].allocate(pairs.count * 4)
+        if pairs.count > 0: memory.copy(column.span(), u8[]((u8*)pairs.items.data, pairs.count * 4), pairs.count * 4)
+        let field = self.keys.relocates if anchor != empty_path else self.keys.layer_relocates
+        try self.set_field(spec, field, Value.of_records(ValueKind.relocates, pairs.count // 2, column))
+
+    ## `subLayers = [ @path@ (offset = o; scale = s), ... ]`.
+    mutating func sublayers(spec: usize) -> !:
+        try self.expect('[', "expected '[' after subLayers")
+        try self.skip_all()
+        var assets = Growing[u32]()
+        defer assets.close()
+        var offsets = Growing[f64]()
+        defer offsets.close()
+        if self.peek() != ']':
+            while true:
+                try assets.push(try self.names.token(try self.asset_path()))
+                var offset: f64 = 0.0
+                var scale: f64 = 1.0
+                try self.skip_inline()
+                if self.peek() == '(':
+                    self.at += 1
+                    try self.skip_all()
+                    while self.peek() != ')':
+                        if self.keyword("offset"):
+                            try self.assignment()
+                            offset = (try self.number()).as_double()
+                        elif self.keyword("scale"):
+                            try self.assignment()
+                            scale = (try self.number()).as_double()
+                        else:
+                            error(errors.invalid, self.where("expected offset or scale"))
+                        try self.statement_end(')')
+                        try self.skip_all()
+                    self.at += 1
+                try offsets.push(offset)
+                try offsets.push(scale)
+                if not (try self.list_end(']')): break
+        try self.expect(']', "expected ']' after subLayers")
+        if assets.count == 0: return
+        var names_column = try Column[u8].allocate(assets.count * 4)
+        if assets.count > 0: memory.copy(names_column.span(), u8[]((u8*)assets.items.data, assets.count * 4), assets.count * 4)
+        try self.set_field(spec, self.keys.sub_layers, Value.of_records(ValueKind.string_vector, assets.count, names_column))
+        var offsets_column = try Column[u8].allocate(offsets.count * 8)
+        if offsets.count > 0: memory.copy(offsets_column.span(), u8[]((u8*)offsets.items.data, offsets.count * 8), offsets.count * 8)
+        try self.set_field(spec, self.keys.sub_layer_offsets, Value.of_records(ValueKind.layer_offset_vector, assets.count, offsets_column))
+
+func release_item(item: ListItem*):
+    if let custom = item.custom:
+        var value = Value.of_object(ValueKind.dictionary, (void*)custom)
+        value.release()
+        item.custom = none
+
+func release_items(items: Growing[ListItem]*):
+    for index in 0..<items.count: release_item(&items.items[index])

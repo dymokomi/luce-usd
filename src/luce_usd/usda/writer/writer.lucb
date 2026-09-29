@@ -1,0 +1,61 @@
+## The usda writer: LayerData to text exactly as OpenUSD's usda file format
+## writes it (pxr/usd/sdf/usdaFileFormat.cpp _WriteLayer and the
+## Sdf_Write* functions of fileIO_Common.h/.cpp), so a layer usdcat prints
+## and a layer luce-usd prints are the same bytes.
+##
+## Fragments, in ORDER:
+##
+## writer.lucb      the Writer state, the entry point, indentation
+## order.lucb       TfDictionaryLessThan and which fields are metadata
+## layer.lucb       the header, layer metadata and root prims
+## prims.lucb       prims, their metadata and bodies, variant sets, variants
+## properties.lucb  attributes, relationships, connections and targets
+## values.lucb      values: scalars, tuples, arrays, dictionaries, list ops
+import memory
+import luce_usd.errors as errors
+import luce_usd.usda.numbers as numbers
+from luce_usd.usda.quote import quote_into, asset_into
+from luce_usd.sdf.names import Names, PathKind, absolute_root, relative_root, empty_path
+from luce_usd.sdf.layer_data import LayerData, Spec, SpecType, FieldKeys, Field
+from luce_usd.sdf.values import Value, Dictionary, ListOp, ListItem, ListPart, TimeSamples, specifier_def, specifier_over, specifier_class, variability_varying, variability_uniform, permission_public, permission_private
+from luce_usd.sdf.value_types import ValueKind, Role, TypeName, find_type, serialization_name, element_bytes, components, scalar_of
+from geocore_shared import Column
+from geocore_growing import Growing
+
+## Append `layer` as usda text to `out`.
+pub func write_usda(layer: const LayerData*, out: Growing[u8]*) -> !:
+    var writer = Writer(layer = layer, names = layer.names, keys = layer.keys, out = out)
+    try writer.write_layer()
+
+struct Writer:
+    var layer: const LayerData*
+    var names: Names*
+    var keys: FieldKeys
+    var out: Growing[u8]*
+
+    mutating func put(text: str) -> !:
+        try self.out.reserve(self.out.count + text.length)
+        memory.copy(self.out.items[self.out.count..], text.bytes, text.length)
+        self.out.count += text.length
+
+    mutating func byte(value: u8) -> !:
+        try self.out.push(value)
+
+    ## Four spaces per level.
+    mutating func indent(levels: usize) -> !:
+        for _ in 0..<levels: try self.put("    ")
+
+    mutating func token_text(token: u32) -> !:
+        try self.put(self.names.text_of(token))
+
+    mutating func quoted(text: str) -> !:
+        try quote_into(self.out, text)
+
+    ## `<path>`.
+    mutating func path_ref(path: u32) -> !:
+        try self.byte('<')
+        try self.names.write_path(path, self.out)
+        try self.byte('>')
+
+    func text(token: u32) -> str:
+        return self.names.text_of(token)
