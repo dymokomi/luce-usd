@@ -14,7 +14,7 @@ record; statuses change as milestones land.
 | M4 | `sdf/crateFile.cpp` (packing, _Write, path tree), `crateValueInliners.h` | `usdc/writer/` | done: 2,020 of 2,056 corpus layers written by us read back identically by usdcat |
 | M5 | `sdf/zipFile.cpp`, `usdUtils/usdzPackage.cpp` (zip writing: luce-compress) | `usdz/` | done: all 51 testenv packages usdcat opens read identically; 2,020 layers written as usdz read back identically, none failing usdchecker's package validators |
 | M6 | `usdGeom/` (xformOp, mesh, subset, curves, points, pointInstancer, primvar, gprims), stage metadata | `stage/`, `usd_geom/`, `convert/` | done: every testenv layer luce-usd reads imports and exports without failing, and usdcat reads every exported layer (2,105 of 2,105) |
-| M7 | (luced-3d: File rows, Export node) | | planned |
+| M7 | (luced-3d: File rows, Export node) | luced-3d `usd_nodes.luc` | done: the File node reads USD with its options, the Export node writes USD, OBJ or prism by extension, `luced-3d --import` smoke checks installed builds |
 | M8 | `pcp/layerStack.cpp`, `mapFunction.cpp`, `primIndex.cpp` (references, payloads), `ar/` (filesystem, packages) | `pcp/` | planned |
 | M9 | `pcp/primIndex.cpp` (variants, inherits, specializes), `instanceKey.cpp`, `usd/stage.cpp`, `usd/resolveInfo`, time samples | `pcp/`, `stage/` | planned |
 | M10 | (luced-3d composition rows) | | planned |
