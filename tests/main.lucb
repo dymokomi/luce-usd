@@ -146,4 +146,6 @@ pub func main(arguments: str[]) -> i32!:
     try pcp_checks.flattened()
     settle(&tracker, "flattened")
     inject(&tracker, every, pcp_checks.flattened)
+    try pcp_checks.builtins()
+    inject(&tracker, every, pcp_checks.builtins)
     return 0

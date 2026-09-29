@@ -1,0 +1,29 @@
+#usda 1.0
+(
+    doc = "Built-in properties flatten with their schema's type and variability."
+)
+
+def Xform "Root" (
+    prepend apiSchemas = ["MaterialBindingAPI", "CollectionAPI:lights"]
+)
+{
+    custom token[] xformOpOrder = ["xformOp:translate"]
+    double3 xformOp:translate = (1, 2, 3)
+    custom rel material:binding = </Root/Look>
+    rel collection:lights:includes = </Root/Tri>
+    uniform token visibility = "inherited"
+
+    def Mesh "Tri"
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        float3[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        token interpolateBoundary = "edgeOnly"
+        bool doubleSided = 1
+        float3[] myPoints = [(0, 0, 0)]
+    }
+
+    def Material "Look"
+    {
+    }
+}

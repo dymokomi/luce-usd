@@ -79,9 +79,16 @@ pub func flattened() -> !:
 
 func check_flattened(name: str) -> !:
     var root: u8[256]
-    let root_path = try format(root, f"tests/fixtures/openusd/museum/{name}/root.usda")
     var expected_buffer: u8[256]
-    let expected = try read_file(try format(expected_buffer, f"tests/fixtures/openusd/museum/{name}/flattened.usda"), most_bytes)
+    try compare_flattened(try format(root, f"tests/fixtures/openusd/museum/{name}/root.usda"), try format(expected_buffer, f"tests/fixtures/openusd/museum/{name}/flattened.usda"), name)
+
+## Built-in properties take their schema's type and variability, and are
+## not custom (UsdPrimDefinition), as usdcat --flatten writes them.
+pub func builtins() -> !:
+    try compare_flattened("tests/fixtures/flatten/builtins.usda", "tests/fixtures/flatten/builtins.flattened.usda", "builtins")
+
+func compare_flattened(root_path: str, expected_path: str, name: str) -> !:
+    let expected = try read_file(expected_path, most_bytes)
     defer free(expected) in memory.heap
     var names = try Names()
     defer names.close()

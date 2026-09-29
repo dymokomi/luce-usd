@@ -22,7 +22,12 @@ extend Flattener:
         for opinion in opinions.view():
             if composer.layers.layer(opinion.layer).spec(opinion.spec).kind == kind: try kept.push(opinion)
         let attribute = kind == SpecType.attribute
-        if attribute and self.type_name(kept.view()) == 0: return
+        # A built-in property (UsdPrimDefinition) takes its type and
+        # variability from its schema, and is not custom.
+        var builtin = self.builtin(name)
+        if let found = builtin:
+            if found.relationship == attribute: builtin = none
+        if attribute and builtin == none and self.type_name(kept.view()) == 0: return
         let property_path = try self.names.property(path, name)
         let spec = try self.out.create_spec(property_path, kind)
         try self.grow(prim)
@@ -34,17 +39,26 @@ extend Flattener:
                 if not self.private_field(field.name, kind): try add_unique(&fields, field.name)
         try add_unique(&fields, keys.custom)
         try add_unique(&fields, keys.variability)
+        if attribute and builtin != none: try add_unique(&fields, keys.type_name)
         for key in fields.view():
             if key == keys.custom:
+                # Custom and variability come from the weakest spec of any
+                # kind (_GetPropCustomImpl, _GetAttrVariabilityImpl).
                 var custom: u64 = 0
-                if let found = self.weakest(kept.view(), key): custom = found.bits
+                if let found = self.weakest(opinions.view(), key): custom = found.bits
+                if builtin != none: custom = 0
                 try self.out.set(spec, key, Value.scalar(ValueKind.boolean, custom))
                 continue
             if key == keys.variability and attribute:
                 var variability = variability_varying
-                if let found = self.weakest(kept.view(), key): variability = found.bits
+                if let found = self.weakest(opinions.view(), key): variability = found.bits
+                if let found = builtin: variability = variability_uniform if found.uniform else variability_varying
                 try self.out.set(spec, key, Value.scalar(ValueKind.variability, variability))
                 continue
+            if key == keys.type_name and attribute:
+                if let found = builtin:
+                    try self.out.set(spec, key, Value.scalar(ValueKind.token, (u64)found.type_name))
+                    continue
             if let value = try self.composed_value(index, kept.view(), key): try self.out.set(spec, key, value)
         var targets = Growing[u32]()
         defer targets.close()
