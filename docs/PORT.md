@@ -12,7 +12,7 @@ record; statuses change as milestones land.
 | M2 | `sdf/textFileFormatParser*`, `textParserHelpers.cpp`, `parserHelpers.cpp`, `parserValueContext.cpp`, `fileIO_Common.*`, `usdaFileFormat.cpp`, `schema.cpp` (metadata fields, validators), `tf/stringUtils.cpp` (TfDictionaryLessThan, double text) | `usda/`, `sdf/schema.lucb` | done: 2,017 of 2,056 testenv layers byte-identical to usdcat |
 | M3 | `sdf/crateFile.cpp` (reading), `crateValueInliners.h`, `integerCoding.cpp`, `tf/fastCompression.cpp` (LZ4: luce-compress `lz4`) | `usdc/reader/`, `usdc/compression.lucb` | done: all 30 testenv `.usdc` and 2,005 of 2,040 usdcat-written crates read byte-identical |
 | M4 | `sdf/crateFile.cpp` (packing, _Write, path tree), `crateValueInliners.h` | `usdc/writer/` | done: 2,020 of 2,056 corpus layers written by us read back identically by usdcat |
-| M5 | `sdf/zipFile.cpp`, `usdUtils/usdzPackage.cpp` (zip writing: luce-compress) | `usdz/` | planned |
+| M5 | `sdf/zipFile.cpp`, `usdUtils/usdzPackage.cpp` (zip writing: luce-compress) | `usdz/` | done: all 51 testenv packages usdcat opens read identically; 2,020 layers written as usdz read back identically, none failing usdchecker's package validators |
 | M6 | `usdGeom/` (xformOp, mesh, subset, curves, points, pointInstancer, primvar), stage metadata | `stage/`, `usd_geom/`, `convert/` | planned |
 | M7 | (luced-3d: File rows, Export node) | | planned |
 | M8 | `pcp/layerStack.cpp`, `mapFunction.cpp`, `primIndex.cpp` (references, payloads), `ar/` (filesystem, packages) | `pcp/` | planned |
