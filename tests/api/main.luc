@@ -1,6 +1,8 @@
 # luce-usd's Luce API tests: what luced-3d calls.
 from format_tests import format_tests
+from geometry_tests import geometry_tests
 
 pub func main(arguments: list[str]) -> int!:
     format_tests()
+    geometry_tests()
     return 0

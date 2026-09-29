@@ -43,11 +43,15 @@ pub struct Gathered:
     pub var inherited: Growing[u32]
     ## Prims skipped for a type this port does not convert, by type name.
     pub var skipped_types: Growing[u32]
+    ## Element paths are written relative to this prim (a prototype's
+    ## parent), or absolute from absolute_root.
+    pub var anchor: u32
 
     pub func init():
         self.gprims = Growing[Gprim]()
         self.inherited = Growing[u32]()
         self.skipped_types = Growing[u32]()
+        self.anchor = absolute_root
 
     pub mutating func close():
         self.gprims.close()
@@ -66,6 +70,9 @@ pub func gather(stage: Stage*, root: u32, purposes: u8, base: const Matrix4d*, o
     var excluded = Growing[u32]()
     defer excluded.close()
     try collect_prototypes(stage, absolute_root, &excluded)
+    # A prototype's own walk starts at it.
+    for at in 0..<excluded.count:
+        if excluded.items[at] == root: excluded.items[at] = empty_path
     var inherited = Growing[u32]()
     defer inherited.close()
     let top = Level(world = *base, purpose = stage.tokens.default_purpose, material = empty_path)

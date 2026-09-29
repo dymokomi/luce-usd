@@ -31,11 +31,23 @@ pub func import_layer(layer: const LayerData*, options: const ImportOptions*, wa
         for byte in "Skipped prims of a type this import does not convert: ".bytes: try line.push(byte)
         for byte in stage.names.text_of(type_name).bytes: try line.push(byte)
         try warnings.add((str)line.view())
+    let set = try import_gathered(&stage, &gathered, options, warnings, 0)
+    errdefer dispose_set(set)
+    try put_stage_details(set, &stage, up, meters, at_time, options)
+    return set
+
+## The set of gathered gprims: meshes, points, curves and instances (or,
+## flattening everything, the instances' gprims among the others).
+func import_gathered(stage: Stage*, gathered: Gathered*, options: const ImportOptions*, warnings: Warnings*, depth: usize) -> GeometrySet*!:
+    if options.realize: try expand_instancers(stage, gathered, options, warnings)
     let set = try empty_set()
     errdefer dispose_set(set)
     # set_put takes the component, closing it when it fails.
-    if let mesh = try import_meshes(&stage, &gathered, options, warnings): try set_put(set, mesh_component(), (void*)mesh)
-    try put_stage_details(set, &stage, up, meters, at_time, options)
+    if let mesh = try import_meshes(stage, gathered, options, warnings): try set_put(set, mesh_component(), (void*)mesh)
+    if let cloud = try import_points(stage, gathered, warnings): try set_put(set, points_component(), (void*)cloud)
+    if let curves = try import_curves(stage, gathered, warnings): try set_put(set, curves_type(), (void*)curves)
+    if not options.realize:
+        if let instances = try import_instances(stage, gathered, options, warnings, depth): try set_put(set, instances_component(), (void*)instances)
     return set
 
 ## The stage's up axis token (Y when unauthored, as UsdGeom's fallback).
@@ -63,7 +75,7 @@ func import_meshes(stage: Stage*, gathered: const Gathered*, options: const Impo
     defer build.close()
     try collect_meshes(stage, gathered, warnings, &build)
     if build.sources.count == 0: return none
-    try place_points(&build, none)
+    try place_points(&build)
     try build_faces(&build, stage, warnings)
     if build.faces == 0: return none
     var empty_precise: Column[Vector3]

@@ -1,0 +1,25 @@
+## Usd.load, save, convert, info and warnings as luced-3d calls them.
+from usd import Usd
+from geocore import invalid
+
+pub func geometry_tests() -> unit!:
+    let loaded = Usd.load("tests/fixtures/geom/meshes.usda")
+    let mesh = loaded.mesh() else error(invalid, "no mesh")
+    assert(mesh.face_count() == 3)
+    assert(Usd.warnings().contains("faces with fewer than 3 corners"))
+    assert(loaded.detail_value("usd.time") == 1.0)
+    let later = Usd.load("tests/fixtures/geom/meshes.usda", time = 2.0)
+    assert((later.mesh() else error(invalid, "no mesh")).point(6).x == 2.0)
+    for name in ["saved.usda", "saved.usdc", "saved.usdz"]:
+        Usd.save(loaded, name)
+        let again = Usd.load(name)
+        assert((again.mesh() else error(invalid, "no mesh")).face_count() == 3)
+    assert(Usd.serialization("saved.usdz") == "usdz")
+    Usd.convert("saved.usdc", "converted.usda")
+    assert(Usd.serialization("converted.usda") == "usda")
+    let info = Usd.info("tests/fixtures/geom/meshes.usda")
+    assert(info.contains("upAxis: Z") and info.contains("type Mesh: 2") and info.contains("prims: "))
+    let flat = Usd.load("tests/fixtures/geom/instancer.usda", flatten = true)
+    assert((flat.mesh() else error(invalid, "no mesh")).face_count() == 7)
+    let placed = Usd.load("tests/fixtures/geom/instancer.usda")
+    assert(placed.instance_count() == 3)

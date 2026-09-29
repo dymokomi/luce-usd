@@ -73,16 +73,6 @@ pub struct MeshBuild:
         self.face_source.release()
         self.corner_source.release()
 
-    ## The source whose output faces hold `face`.
-    func source_of_face(face: usize) -> usize:
-        var low: usize = 0
-        var high = self.sources.count
-        while high - low > 1:
-            let middle = (low + high) // 2
-            if self.sources.items[middle].face_base <= face: low = middle
-            else: high = middle
-        return low
-
 ## Collect the mesh gprims' topology; `build.sources` is empty when there
 ## is nothing to draw.
 func collect_meshes(stage: Stage*, gathered: const Gathered*, warnings: Warnings*, build: MeshBuild*) -> !:
@@ -164,7 +154,7 @@ func check_source(context: void*?, index: usize):
 
 ## Place every prim's points: bounds first for the origin, then the f32
 ## positions measured from it.
-func place_points(build: MeshBuild*, origin_hint: Vector3?) -> !:
+func place_points(build: MeshBuild*) -> !:
     var total: usize = 0
     var counts = Growing[usize]()
     defer counts.close()
@@ -185,7 +175,7 @@ func place_points(build: MeshBuild*, origin_hint: Vector3?) -> !:
     for box in boxes.view():
         low = Vector3(math.min(low.x, box.low.x), math.min(low.y, box.low.y), math.min(low.z, box.low.z))
         high = Vector3(math.max(high.x, box.high.x), math.max(high.y, box.high.y), math.max(high.z, box.high.z))
-    build.origin = origin_hint else origin_for(low, high)
+    build.origin = origin_for(low, high)
     build.positions = try Column[Float3].allocate(total)
     var work = PlaceWork(sources = build.sources.items[..<build.sources.count], chunks = chunks.view(), out = build.positions.span(), origin = build.origin)
     pool.run(chunks.count, place_chunk, (void*)&work)

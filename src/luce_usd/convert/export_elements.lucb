@@ -1,0 +1,100 @@
+## A set's points and curves written as Points, BasisCurves and NurbsCurves
+## prims, split by their `path` text like meshes: each prim holds its
+## elements' positions and attributes (point attributes vertex, curve
+## attributes uniform; `width` and `id` as widths and ids). Curves go by
+## kind: poly as linear, Bezier as cubic bezier with its handles between the
+## points (automatic handles made as geocore makes them), uniform order-4
+## NURBS as bspline, other NURBS as NurbsCurves with explicit knots,
+## Catmull-Rom as pinned catmullRom.
+
+## Elements of one output prim.
+struct ElementPart:
+    var path: u32
+    var elements: Growing[i32]
+
+    mutating func close():
+        self.elements.close()
+
+func close_element_parts(parts: Growing[ElementPart]*):
+    for at in 0..<parts.count: parts.items[at].close()
+    parts.close()
+
+## `count` elements grouped by the text attribute `path` on `domain` of
+## `store` (in order of first appearance), or all at `fallback`.
+func split_elements(store: const AttributeStore*, domain: Domain, count: usize, names: Names*, base: u32, fallback: u32, split: bool, parts: Growing[ElementPart]*) -> !:
+    let found = store.find("path", (i64)(u8)domain) if split else -1
+    for element in 0..<count:
+        var path = fallback
+        if found >= 0:
+            let named = try prim_path_of(names, base, store.entry((usize)found).text_at(element))
+            if named != empty_path: path = named
+        var part: usize = parts.count
+        for at in 0..<parts.count:
+            if parts.items[at].path == path: part = at
+        if part == parts.count: try parts.push(ElementPart(path = path, elements = Growing[i32]()))
+        try parts.items[part].elements.push((i32)element)
+
+## The set's point cloud as Points prims.
+func export_points(cloud: const PointCloud*, author: Author*, base: u32, fallback: u32, options: const ExportOptions*, warnings: Warnings*) -> !:
+    let store = cloud_store(cloud)
+    var parts = Growing[ElementPart]()
+    defer close_element_parts(&parts)
+    try split_elements(store, Domain.point, cloud.count(), author.names, base, fallback, options.split, &parts)
+    let tokens = try GeomTokens.of(author.names)
+    for part in parts.view():
+        let spec = try author.define(part.path, tokens.points_type, tokens.xform)
+        try write_positions(author, part.path, spec, cloud_positions(cloud), cloud_origin(cloud), part.elements.view(), options.precise)
+        try write_element_attributes(author, part.path, spec, store, Domain.point, part.elements.view(), "vertex", warnings)
+
+## Positions of `points` (indices into `positions`) placed back at the
+## origin, with their extent.
+func write_positions(author: Author*, path: u32, spec: usize, positions: const Float3[], origin: Vector3, points: const i32[], precise: bool) -> !:
+    var low: f64[3] = [math.infinity, math.infinity, math.infinity]
+    var high: f64[3] = [-math.infinity, -math.infinity, -math.infinity]
+    var column = try Column[u8].allocate(points.length * (24 if precise else 12))
+    errdefer column.release()
+    let out = column.span()
+    for at in 0..<points.length:
+        let p = positions[(usize)points[at]]
+        let xyz: f64[3] = [(f64)p.x + origin.x, (f64)p.y + origin.y, (f64)p.z + origin.z]
+        for axis in 0..<(usize)3:
+            low[axis] = math.min(low[axis], xyz[axis])
+            high[axis] = math.max(high[axis], xyz[axis])
+            if precise: memory.write[f64]((void*)&out[(at * 3 + axis) * 8], xyz[axis])
+            else: memory.write[f32]((void*)&out[(at * 3 + axis) * 4], (f32)xyz[axis])
+    let taken = column.take()
+    discard(try author.attribute(path, spec, "points", "point3d[]" if precise else "point3f[]", false, Value.of_array(ValueKind.vec3d if precise else ValueKind.vec3f, points.length, taken)))
+    let extent: f32[6] = [(f32)low[0], (f32)low[1], (f32)low[2], (f32)high[0], (f32)high[1], (f32)high[2]]
+    discard(try author.attribute(path, spec, "extent", "float3[]", false, try array_of(ValueKind.vec3f, 2, u8[]((u8*)&extent[0], 24))))
+
+## The attributes of `store` on `domain` over `elements` as the prim's
+## primvars with interpolation `interpolation`.
+func write_element_attributes(author: Author*, path: u32, spec: usize, store: const AttributeStore*, domain: Domain, elements: const i32[], interpolation: str, warnings: Warnings*) -> !:
+    var name = Growing[u8]()
+    defer name.close()
+    let key = try author.names.token("interpolation")
+    for index in 0..<store.count():
+        let entry = store.entry(index)
+        if entry.domain != domain or skipped_attribute(entry) or builtin_curve_attribute(entry.name()): continue
+        let typed = usd_type(entry)
+        if typed == none:
+            try warnings.add("Some attributes have no USD value type (int64 tuples); they were left out")
+            continue
+        let usd = typed else continue
+        let own = entry.name()
+        var plain = ""
+        if own == "width" and entry.width == 1: plain = "widths"
+        elif own == "id" and entry.kind == DataType.int64 and domain == Domain.point: plain = "ids"
+        if plain.length > 0: try name.assign(plain.bytes)
+        else: try primvar_name(entry, &name)
+        # The attribute takes the value, releasing it when it fails.
+        var value = try gathered_value(author.names, entry, usd.1, elements)
+        if all_zero(&value) and entry.kind != DataType.text:
+            value.release()
+            continue
+        let attribute = try author.attribute(path, spec, (str)name.view(), usd.0, false, value)
+        if plain != "ids": try author.token_field(attribute, key, interpolation)
+
+## Curve attributes the curve kinds themselves write.
+func builtin_curve_attribute(name: str) -> bool:
+    return name == "curve_type" or name == "cyclic" or name == "resolution" or name == "order" or name == "knot_mode" or name == "w" or name == "handle_l" or name == "handle_r"

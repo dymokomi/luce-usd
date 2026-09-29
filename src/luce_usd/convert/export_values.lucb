@@ -1,0 +1,108 @@
+## Attribute values as USD arrays: the value type an attribute's scalar
+## type, tuple width and role make (float32 x3 with the color role is
+## color3f[], and so on), its elements gathered for one prim, and its
+## primvar name.
+
+## The USD array type name and value kind of an attribute, or none when USD
+## has no type for it.
+func usd_type(entry: const Attribute*) -> (str, ValueKind)?:
+    let w = entry.width
+    let role = entry.role
+    match entry.kind:
+        .float32:
+            if w == 1: return ("float[]", ValueKind.float)
+            if w == 2: return ("texCoord2f[]" if role == Role.uv else "float2[]", ValueKind.vec2f)
+            if w == 3: return (vector_name(role, "color3f[]", "point3f[]", "normal3f[]", "vector3f[]", "float3[]"), ValueKind.vec3f)
+            return ("color4f[]" if role == Role.color else "float4[]", ValueKind.vec4f)
+        .float64:
+            if w == 1: return ("double[]", ValueKind.double)
+            if w == 2: return ("texCoord2d[]" if role == Role.uv else "double2[]", ValueKind.vec2d)
+            if w == 3: return (vector_name(role, "color3d[]", "point3d[]", "normal3d[]", "vector3d[]", "double3[]"), ValueKind.vec3d)
+            return ("color4d[]" if role == Role.color else "double4[]", ValueKind.vec4d)
+        .int8, .int32:
+            if w == 1: return ("int[]", ValueKind.int)
+            if w == 2: return ("int2[]", ValueKind.vec2i)
+            if w == 3: return ("int3[]", ValueKind.vec3i)
+            return ("int4[]", ValueKind.vec4i)
+        .int64:
+            if w == 1: return ("int64[]", ValueKind.int64)
+            return none
+        .boolean: return ("bool[]", ValueKind.boolean)
+        .text: return ("string[]", ValueKind.string)
+        _: return none
+
+func vector_name(role: Role, color: str, point: str, normal: str, vector: str, plain: str) -> str:
+    match role:
+        .color: return color
+        .position: return point
+        .normal: return normal
+        .vector: return vector
+        _: return plain
+
+## The attribute's elements `elements` (global indices) as a USD array of
+## `kind`.
+func gathered_value(names: Names*, entry: const Attribute*, kind: ValueKind, elements: const i32[]) -> Value!:
+    let size = element_bytes(kind)
+    var column = try Column[u8].allocate(elements.length * size)
+    errdefer column.release()
+    let out = column.span()
+    let data = entry.data.view()
+    let single = (u8)entry.storage == 1
+    let width = entry.width
+    for at in 0..<elements.length:
+        let element = 0 if single else (usize)elements[at]
+        match entry.kind:
+            .int8:
+                for k in 0..<width: memory.write[i32]((void*)&out[(at * width + k) * 4], (i32)(i8)data[element * width + k])
+            .boolean:
+                out[at] = (u8)(data[element // 8] >> (u8)(element % 8)) & 1
+            .text:
+                let token = try names.token(entry.text_at(element))
+                memory.write[u32]((void*)&out[at * 4], token)
+            _: memory.copy(out[at * size..<at * size + size], data[element * size..<element * size + size], size)
+    return Value.of_array(kind, elements.length, column.take())
+
+## Every element of an attribute as a USD array of `kind`: its own column
+## shared when the layouts agree, else converted.
+func whole_value(names: Names*, entry: const Attribute*, kind: ValueKind) -> Value!:
+    let same = (entry.kind == DataType.float32 or entry.kind == DataType.float64 or entry.kind == DataType.int32 or entry.kind == DataType.int64) and (u8)entry.storage == 0
+    if same: return Value.of_array(kind, entry.elements, entry.data.share())
+    var all = Growing[i32]()
+    defer all.close()
+    for at in 0..<entry.elements: try all.push((i32)at)
+    return try gathered_value(names, entry, kind, all.view())
+
+## The primvar an attribute becomes: displayColor, displayOpacity, st,
+## normals, or primvars:<name> with each namespace part a valid identifier.
+func primvar_name(entry: const Attribute*, out: Growing[u8]*) -> !:
+    out.clear()
+    let name = entry.name()
+    let floating = entry.kind == DataType.float32 or entry.kind == DataType.float64
+    var known = ""
+    if floating and name == "Cd" and entry.width == 3: known = "primvars:displayColor"
+    elif floating and name == "Alpha" and entry.width == 1: known = "primvars:displayOpacity"
+    elif floating and name == "uv" and entry.width == 2: known = "primvars:st"
+    elif floating and name == "N" and entry.width == 3 and (entry.domain == Domain.point or entry.domain == Domain.corner): known = "normals"
+    if known.length > 0:
+        try out.assign(known.bytes)
+        return
+    try out.assign("primvars:".bytes)
+    var part = Growing[u8]()
+    defer part.close()
+    var start: usize = 0
+    while start <= name.length:
+        var end = start
+        while end < name.length and name.bytes[end] != ':': end += 1
+        if end > start:
+            try valid_name((str)name.bytes[start..<end], &part)
+            if out.count > 9: try out.push(':')
+            for byte in part.view(): try out.push(byte)
+        start = end + 1
+
+## Whether an array value holds only zero bytes: what a merged attribute
+## holds on the elements of prims that did not have it, so a prim whose
+## share is all zero is written without it.
+func all_zero(value: const Value*) -> bool:
+    for byte in value.bytes():
+        if byte != 0: return false
+    return true

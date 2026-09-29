@@ -1,6 +1,7 @@
-## Reading layer bytes from disk: whole files in one allocation sized from
-## the file's metadata (as luce-obj reads OBJ text), and short prefixes for
-## sniffing a file's format.
+## Layer bytes on disk: whole files read in one allocation sized from the
+## file's metadata (as luce-obj reads OBJ text), short prefixes for sniffing
+## a file's format, and files written whole, replacing the old one
+## atomically.
 import c
 import memory
 import strings
@@ -75,3 +76,9 @@ pub func read_prefix(path: str, buffer: u8[]) -> usize!:
         used += count
     try file.close()
     return used
+
+## Write `data` to `path`, replacing any file there atomically.
+pub func write(path: str, data: const u8[]) -> !:
+    let native = try native_path(path)
+    defer strings.release(native)
+    try files.write_atomic((c.str)native, data)

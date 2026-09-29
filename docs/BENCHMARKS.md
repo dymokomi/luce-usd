@@ -15,6 +15,9 @@ corner `uv`, as luce-geocore's benchmark saves it.
 | usda: read the grid layer (bytes) | 111 ms | 156,993,389 |
 | usda: write the grid layer (bytes) | 124 ms | 108,574,613 |
 | usdc: read the grid layer (bytes) | 18 ms | 30,863,379 |
+| import: the grid layer as a GeometrySet (faces) | 15 ms | 700,569 |
+| export: that GeometrySet as a layer (specs) | 21 ms | 8 |
+| export: that layer written as a crate (bytes) | 38 ms | 30,863,460 |
 | usdc: write the grid layer (bytes) | 37 ms | 30,863,379 |
 | usdz: write the grid layer as a package (bytes) | 56 ms | 30,863,545 |
 | usdz: read that package (bytes) | 18.5 ms | 30,863,545 |
@@ -27,7 +30,13 @@ The usdc grid is the same layer written as a crate by luce-usd (0.8.0,
 integer arrays compressed; OpenUSD's usdcat writes the same layer 3 bytes
 longer). Crate arrays decode in parallel, each straight into its column, and
 compressible arrays are compressed in parallel before packing (times exclude
-file I/O). The usdz rows hold that crate as the package's root layer: reading
+file I/O). The import rows turn the read crate
+layer into the mesh luced-3d draws (points placed in parallel, faces
+checked and wound, normals and quad triangles made in the same passes,
+the faceVarying st gathered into `uv`): a whole `Usd.load` of the grid
+crate is the read plus the import, 33 ms, against 16 ms for prism. The
+export rows write that set back (one Mesh prim sharing the mesh's columns)
+and serialize it. The usdz rows hold that crate as the package's root layer: reading
 opens the ZIP directory and reads the crate in place; writing is the crate
 write plus a CRC-32 and one copy into the stored, 64-byte aligned entry.
 

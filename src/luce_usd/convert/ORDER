@@ -6,4 +6,15 @@ primvars.lucb
 primvar_fill.lucb
 mesh_extras.lucb
 subdivision.lucb
+elements.lucb
+points.lucb
+curves.lucb
+instancer.lucb
+author.lucb
+export_mesh.lucb
+export_values.lucb
+export_extras.lucb
+export_elements.lucb
+export_curves.lucb
+export_set.lucb
 load.lucb

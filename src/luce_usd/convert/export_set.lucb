@@ -1,0 +1,132 @@
+## A GeometrySet written as a layer (design §2.9): each component's prims
+## under the paths its elements name, else under the root prim; instances
+## as a PointInstancer whose prototypes are its children under Prototypes;
+## the stage's up axis and units from the set's usd.* detail (Y and meters
+## when absent), and the first root prim as the default prim.
+
+## Instances nest at most this deep in an export.
+let most_export_depth: usize = 16
+
+## Write `set` into the empty layer `layer`, unpathed elements under the
+## root prim `root`.
+pub func export_set(set: const GeometrySet*, layer: LayerData*, root: str, options: const ExportOptions*, warnings: Warnings*) -> !:
+    var author = Author(layer)
+    defer author.close()
+    try author.grow(0)
+    var name = Growing[u8]()
+    defer name.close()
+    try valid_name(root, &name)
+    let root_path = try author.names.child(absolute_root, try author.names.token((str)name.view()))
+    try export_into(set, &author, absolute_root, root_path, options, warnings, 0)
+    try author.finish()
+    try write_stage_metadata(set, &author)
+
+## `set`'s components under `base`; elements without paths under `home`.
+func export_into(set: const GeometrySet*, author: Author*, base: u32, home: u32, options: const ExportOptions*, warnings: Warnings*, depth: usize) -> !:
+    let names = author.names
+    for index in 0..<set_component_count(set):
+        let component = set_component(set, index)
+        let kind = component.kind
+        if kind == mesh_component():
+            try export_mesh((const Mesh*)component.data, author, base, try names.child(home, try names.token("mesh")), options, warnings)
+        elif kind == points_component():
+            try export_points((const PointCloud*)component.data, author, base, try names.child(home, try names.token("points")), options, warnings)
+        elif kind == curves_type():
+            try export_curves((const Curves*)component.data, author, base, try names.child(home, try names.token("curves")), options, warnings)
+        elif kind == instances_component():
+            if depth >= most_export_depth:
+                try warnings.add("Instances nested more than 16 deep were left out")
+                continue
+            try export_instances((const Instances*)component.data, author, try names.child(home, try names.token("instances")), options, warnings, depth)
+        else:
+            var line = Growing[u8]()
+            defer line.close()
+            try line.assign("Left out the component USD has no form for (tessellate CAD before exporting): ".bytes)
+            for byte in kind.name.bytes: try line.push(byte)
+            try warnings.add((str)line.view())
+
+## Instances as a PointInstancer at `path`: prototypes as children of
+## `path`/Prototypes, one row per instance.
+func export_instances(instances: const Instances*, author: Author*, path: u32, options: const ExportOptions*, warnings: Warnings*, depth: usize) -> !:
+    let names = author.names
+    let tokens = try GeomTokens.of(names)
+    let spec = try author.define(path, tokens.point_instancer, tokens.xform)
+    let holder = try names.child(path, try names.token("Prototypes"))
+    discard(try author.define(holder, tokens.scope, tokens.xform))
+    var prototypes = Growing[u32]()
+    defer prototypes.close()
+    var name = Growing[u8]()
+    defer name.close()
+    for at in 0..<instances.prototype_count():
+        name.clear()
+        try name.assign("proto_".bytes)
+        try append_count(&name, at)
+        let prototype = try names.child(holder, try names.token((str)name.view()))
+        discard(try author.define(prototype, tokens.xform, tokens.xform))
+        try prototypes.push(prototype)
+        try export_into(instances.prototype(at), author, prototype, prototype, options, warnings, depth + 1)
+    let count = instances.count()
+    var indices = Growing[i32]()
+    defer indices.close()
+    var positions = Growing[f32]()
+    defer positions.close()
+    var orientations = Growing[u16]()
+    defer orientations.close()
+    var scales = Growing[f32]()
+    defer scales.close()
+    var invisible_rows = Growing[i64]()
+    defer invisible_rows.close()
+    for at in 0..<count:
+        let row = instances.row(at)
+        try indices.push(row.prototype)
+        try push3(&positions, row.translation)
+        try push3(&scales, row.scale)
+        # quath, imaginary first then real: Rx(a) Ry(b) Rz(c) as qx qy qz.
+        let q = quaternion_of(row.rotation)
+        # + 0.0 turns -0 into 0.
+        for k in 0..<(usize)4: try orientations.push(((f16)(q[k] + 0.0)).bits())
+        if not row.visible: try invisible_rows.push((i64)at)
+    try author.relationship(path, spec, "prototypes", prototypes.view())
+    discard(try author.attribute(path, spec, "protoIndices", "int[]", false, try array_of(ValueKind.int, count, u8[]((u8*)indices.items.data, count * 4))))
+    discard(try author.attribute(path, spec, "positions", "point3f[]", false, try array_of(ValueKind.vec3f, count, u8[]((u8*)positions.items.data, count * 12))))
+    discard(try author.attribute(path, spec, "orientations", "quath[]", false, try array_of(ValueKind.quath, count, u8[]((u8*)orientations.items.data, count * 8))))
+    discard(try author.attribute(path, spec, "scales", "float3[]", false, try array_of(ValueKind.vec3f, count, u8[]((u8*)scales.items.data, count * 12))))
+    if invisible_rows.count > 0:
+        discard(try author.attribute(path, spec, "invisibleIds", "int64[]", false, try array_of(ValueKind.int64, invisible_rows.count, u8[]((u8*)invisible_rows.items.data, invisible_rows.count * 8))))
+
+func push3(out: Growing[f32]*, value: Vector3) -> !:
+    try out.push((f32)value.x)
+    try out.push((f32)value.y)
+    try out.push((f32)value.z)
+
+## The quaternion (i, j, k, real) of geocore's XYZ rotation (Rx Ry Rz).
+func quaternion_of(angles: Vector3) -> f64[4]:
+    let cx = math.cos(angles.x * 0.5)
+    let sx = math.sin(angles.x * 0.5)
+    let cy = math.cos(angles.y * 0.5)
+    let sy = math.sin(angles.y * 0.5)
+    let cz = math.cos(angles.z * 0.5)
+    let sz = math.sin(angles.z * 0.5)
+    # qx * qy, then * qz (Hamilton products).
+    let w1 = cx * cy
+    let x1 = sx * cy
+    let y1 = cx * sy
+    let z1 = sx * sy
+    return [x1 * cz + y1 * sz, y1 * cz - x1 * sz, z1 * cz + w1 * sz, w1 * cz - z1 * sz]
+
+## upAxis, metersPerUnit and defaultPrim on the layer.
+func write_stage_metadata(set: const GeometrySet*, author: Author*) -> !:
+    let names = author.names
+    let detail = set_detail(set)
+    var up = "Y"
+    let axis = detail.find("usd.upAxis", (i64)(u8)Domain.detail)
+    if axis >= 0 and detail.entry((usize)axis).kind == DataType.text and detail.entry((usize)axis).text_at(0) == "Z": up = "Z"
+    var meters: f64 = 1.0
+    let units_at = detail.find("usd.metersPerUnit", (i64)(u8)Domain.detail)
+    if units_at >= 0 and detail.entry((usize)units_at).number(0, 0) > 0.0: meters = detail.entry((usize)units_at).number(0, 0)
+    let layer = author.layer
+    try layer.set(0, try names.token("upAxis"), Value.scalar(ValueKind.token, (u64)(try names.token(up))))
+    try layer.set(0, try names.token("metersPerUnit"), Value.scalar(ValueKind.double, meters.bits()))
+    if let children = layer.get(0, layer.keys.prim_children):
+        let ids = children.ids()
+        if ids.length > 0: try layer.set(0, layer.keys.default_prim, Value.scalar(ValueKind.token, (u64)ids[0]))

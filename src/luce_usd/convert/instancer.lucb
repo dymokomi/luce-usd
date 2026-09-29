@@ -1,0 +1,183 @@
+## Point instancers (UsdGeomPointInstancer, pxr/usd/usdGeom/pointInstancer.cpp)
+## as the instances component: each prototype converted once as its own set,
+## each instance a row placing it by scale, orientation and position, then
+## the instancer's world transform (design §2.4). geocore rows are
+## translation, XYZ rotation and scale; a sheared placement takes the
+## nearest one, with a warning. "Flatten everything" instead places the
+## prototypes' gprims once per instance among the other gprims.
+
+## Instancers nest at most this deep (a prototype holding its instancer).
+let most_depth: usize = 16
+
+## One instancer's rows at the stage's time.
+struct Rows:
+    var prototypes: Growing[u32]
+    var proto: Growing[i32]
+    var matrices: Growing[Matrix4d]
+    var visible: Growing[bool]
+
+    func init():
+        self.prototypes = Growing[u32]()
+        self.proto = Growing[i32]()
+        self.matrices = Growing[Matrix4d]()
+        self.visible = Growing[bool]()
+
+    mutating func close():
+        self.prototypes.close()
+        self.proto.close()
+        self.matrices.close()
+        self.visible.close()
+
+## The instancer `gprim`'s prototypes and rows; each matrix places a
+## prototype in world space.
+func read_rows(stage: Stage*, gprim: const Gprim*, rows: Rows*, warnings: Warnings*) -> !:
+    let t = stage.tokens
+    let path = gprim.path
+    try stage.targets(path, t.prototypes, &rows.prototypes)
+    var indices = try stage.value(path, t.proto_indices)
+    defer indices.release()
+    var positions = try stage.value(path, t.positions)
+    defer positions.release()
+    var orientations = try stage.value(path, t.orientations)
+    defer orientations.release()
+    if orientations.kind == ValueKind.empty:
+        orientations = try stage.value(path, t.orientationsf)
+    var scales = try stage.value(path, t.scales)
+    defer scales.release()
+    var ids = try stage.value(path, t.ids)
+    defer ids.release()
+    var invisible = try stage.value(path, t.invisible_ids)
+    defer invisible.release()
+    if indices.kind != ValueKind.int or not indices.array: return
+    let count = indices.count
+    if positions.count != count or not positions.array:
+        try warnings.add_path("Skipped a point instancer whose positions do not match its protoIndices: ", stage.names, path)
+        return
+    let use_orientations = orientations.array and orientations.count == count and components(orientations.kind) == 4
+    let use_scales = scales.array and scales.count == count and components(scales.kind) == 3
+    let prototype_indices = ints_of(&indices)
+    for at in 0..<count:
+        var q: f64[4] = [0.0, 0.0, 0.0, 1.0]
+        if use_orientations:
+            for k in 0..<(usize)4: q[k] = component_at(orientations.bytes(), scalar_of(orientations.kind), at * 4 + k)
+        var s: f64[3] = [1.0, 1.0, 1.0]
+        if use_scales:
+            for k in 0..<(usize)3: s[k] = component_at(scales.bytes(), scalar_of(scales.kind), at * 3 + k)
+        let p = positions.bytes()
+        let scalar = scalar_of(positions.kind)
+        # Scale, then orient, then move, then the instancer's own transform.
+        var matrix = Matrix4d.scaling(s[0], s[1], s[2])
+        let spin = Matrix4d.quaternion(q[3], q[0], q[1], q[2])
+        matrix = matrix.times(&spin)
+        let move = Matrix4d.translation(component_at(p, scalar, at * 3), component_at(p, scalar, at * 3 + 1), component_at(p, scalar, at * 3 + 2))
+        matrix = matrix.times(&move)
+        matrix = matrix.times(&gprim.world)
+        try rows.proto.push(prototype_indices[at])
+        try rows.matrices.push(matrix)
+        try rows.visible.push(not hidden(&ids, &invisible, at))
+
+## Whether instance `at` is listed in invisibleIds (by its id, else index).
+func hidden(ids: const Value*, invisible: const Value*, at: usize) -> bool:
+    if not invisible.array or invisible.count == 0: return false
+    let id = read_number(ids.bytes(), scalar_of(ids.kind), at) if ids.array and at < ids.count else (f64)at
+    for k in 0..<invisible.count:
+        if read_number(invisible.bytes(), scalar_of(invisible.kind), k) == id: return true
+    return false
+
+## The instances component of `gathered`'s instancers, or none.
+func import_instances(stage: Stage*, gathered: const Gathered*, options: const ImportOptions*, warnings: Warnings*, depth: usize) -> Instances*?!:
+    var any = false
+    for gprim in gathered.gprims.view(): any = any or gprim.kind == GprimKind.instancer
+    if not any: return none
+    let instances = try new_instances()
+    errdefer close_instances(instances)
+    for index in 0..<gathered.gprims.count:
+        let gprim = gathered.gprims.items[index]
+        if gprim.kind != GprimKind.instancer: continue
+        if depth >= most_depth:
+            try warnings.add_path("Skipped point instancers nested too deep: ", stage.names, gprim.path)
+            continue
+        var rows = Rows()
+        defer rows.close()
+        try read_rows(stage, &gprim, &rows, warnings)
+        if rows.proto.count == 0: continue
+        let base = instances.prototype_count()
+        for prototype in rows.prototypes.view():
+            discard(try instances.add_prototype(try import_root(stage, prototype, options, warnings, depth + 1)))
+        var sheared = false
+        for at in 0..<rows.proto.count:
+            let proto = rows.proto.items[at]
+            if proto < 0 or (usize)proto >= rows.prototypes.count: continue
+            let placement = placement_of(&rows.matrices.items[at], &sheared)
+            try instances.add_instance(base + (usize)proto, &placement, rows.visible.items[at])
+        if sheared: try warnings.add_path("Some instances are sheared; they take the nearest translation, rotation and scale: ", stage.names, gprim.path)
+    if instances.count() == 0:
+        close_instances(instances)
+        return none
+    return instances
+
+func close_instances(instances: Instances*):
+    let close = instances_component().close
+    close((void*)instances)
+
+## The set of the subtree at `root` (a prototype), in its own space.
+func import_root(stage: Stage*, root: u32, options: const ImportOptions*, warnings: Warnings*, depth: usize) -> GeometrySet*!:
+    var gathered = Gathered()
+    defer gathered.close()
+    gathered.anchor = stage.names.parent(root)
+    let identity = Matrix4d.identity()
+    try gather(stage, root, options.purposes, &identity, &gathered)
+    return try import_gathered(stage, &gathered, options, warnings, depth)
+
+## Flatten everything: every instance's prototype gprims appended to
+## `gathered`, placed; nested instancers expand as the loop reaches them.
+func expand_instancers(stage: Stage*, gathered: Gathered*, options: const ImportOptions*, warnings: Warnings*) -> !:
+    var index: usize = 0
+    var expansions: usize = 0
+    while index < gathered.gprims.count:
+        let gprim = gathered.gprims.items[index]
+        index += 1
+        if gprim.kind != GprimKind.instancer: continue
+        expansions += 1
+        if expansions > 4096:
+            try warnings.add("Stopped expanding point instancers after 4096 of them")
+            return
+        var rows = Rows()
+        defer rows.close()
+        try read_rows(stage, &gprim, &rows, warnings)
+        for prototype in 0..<rows.prototypes.count:
+            var inner = Gathered()
+            defer inner.close()
+            let identity = Matrix4d.identity()
+            try gather(stage, rows.prototypes.items[prototype], options.purposes, &identity, &inner)
+            for at in 0..<rows.proto.count:
+                if rows.proto.items[at] != (i32)prototype or not rows.visible.items[at]: continue
+                for placed in inner.gprims.view():
+                    let first = gathered.inherited.count
+                    for held in inner.inherited.items[placed.first..<placed.end]: try gathered.inherited.push(held)
+                    try gathered.gprims.push(Gprim(path = placed.path, kind = placed.kind, world = placed.world.times(&rows.matrices.items[at]), material = placed.material, first = first, end = gathered.inherited.count))
+
+## The nearest geocore placement of a row-vector matrix.
+func placement_of(matrix: const Matrix4d*, sheared: bool*) -> Placement:
+    let m = matrix.m
+    var columns: Vector3[3] = [Vector3(m[0], m[1], m[2]), Vector3(m[4], m[5], m[6]), Vector3(m[8], m[9], m[10])]
+    var scale: f64[3] = [columns[0].length(), columns[1].length(), columns[2].length()]
+    if matrix.determinant3() < 0.0: scale[0] = -scale[0]
+    for k in 0..<(usize)3:
+        if scale[k] != 0.0: columns[k] = columns[k].multiply_scalar(1.0 / scale[k])
+    if math.abs(columns[0].dot(columns[1])) > 1e-6 or math.abs(columns[0].dot(columns[2])) > 1e-6 or math.abs(columns[1].dot(columns[2])) > 1e-6:
+        *sheared = true
+        columns[0] = columns[0].normalized() catch failure: recover Vector3(1.0, 0.0, 0.0)
+        columns[1] = columns[1].subtract(columns[0].multiply_scalar(columns[0].dot(columns[1]))).normalized() catch failure: recover Vector3(0.0, 1.0, 0.0)
+        columns[2] = columns[0].cross(columns[1])
+    # R = Rx(a) Ry(b) Rz(c), geocore's rotation order; columns are R's.
+    let r02 = math.max(-1.0, math.min(1.0, columns[2].x))
+    let b = math.asin(r02)
+    var a: f64 = 0.0
+    var c: f64 = 0.0
+    if math.abs(r02) < 0.9999999:
+        a = math.atan2(-columns[2].y, columns[2].z)
+        c = math.atan2(-columns[1].x, columns[0].x)
+    else:
+        a = math.atan2(columns[1].z, columns[1].y)
+    return Placement.compose(Vector3(m[12], m[13], m[14]), Vector3(a, b, c), Vector3(scale[0], scale[1], scale[2]))

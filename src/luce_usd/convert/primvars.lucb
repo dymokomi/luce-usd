@@ -23,12 +23,22 @@ struct PrimvarSource:
         self.value.release()
         self.indices.release()
 
+## A prim whose primvars are read: its path, gprim and element counts.
+struct PrimSlot:
+    var path: u32
+    var gprim: usize
+    var points: usize
+    var faces: usize
+    var corners: usize
+
 ## Put every primvar of the merged mesh's prims on `mesh`.
 func put_primvars(stage: Stage*, gathered: const Gathered*, build: const MeshBuild*, mesh: Mesh*, warnings: Warnings*) -> !:
     var found = Growing[PrimvarSource]()
     defer release_all(&found)
     for index in 0..<build.sources.count:
-        try collect_primvars(stage, gathered, build, index, &found, warnings)
+        let source = &build.sources.items[index]
+        let slot = PrimSlot(path = source.path, gprim = source.gprim, points = source.point_count, faces = source.face_count, corners = source.corner_count)
+        try collect_primvars(stage, gathered, &slot, index, &found, warnings)
     # One attribute per output name, in first-seen order.
     var done = Growing[u32]()
     defer done.close()
@@ -44,20 +54,21 @@ func release_all(found: Growing[PrimvarSource]*):
     for at in 0..<found.count: found.items[at].release()
     found.close()
 
-## The primvars of mesh source `index`: its own, then the constant ones it
-## inherits and does not author itself.
-func collect_primvars(stage: Stage*, gathered: const Gathered*, build: const MeshBuild*, index: usize, out: Growing[PrimvarSource]*, warnings: Warnings*) -> !:
-    let source = &build.sources.items[index]
-    let spec = stage.spec(source.path) else return
+## The primvars of the prim in `slot` (source `index`): its own, then the
+## constant ones it inherits and does not author itself.
+func collect_primvars(stage: Stage*, gathered: const Gathered*, slot: const PrimSlot*, index: usize, out: Growing[PrimvarSource]*, warnings: Warnings*) -> !:
+    let spec = stage.spec(slot.path) else return
     let start = out.count
     var has_uv = false
     var has_normals = false
     if let properties = spec.get(stage.keys.properties):
         for name in properties.ids():
             let text = stage.names.text_of(name)
-            if text == "normals" or (starts_with(text, "primvars:") and not ends_with(text, ":indices")):
-                let attribute_path = try stage.names.property(source.path, name)
-                if let found = try read_primvar(stage, build, index, attribute_path, text == "normals", warnings):
+            # Schema attributes that behave as vertex primvars.
+            let plain = text == "normals" or text == "widths" or text == "ids"
+            if plain or (starts_with(text, "primvars:") and not ends_with(text, ":indices")):
+                let attribute_path = try stage.names.property(slot.path, name)
+                if let found = try read_primvar(stage, slot, index, attribute_path, plain, warnings):
                     out.push(found) catch failure:
                         var dropped = found
                         dropped.release()
@@ -81,6 +92,8 @@ func collect_primvars(stage: Stage*, gathered: const Gathered*, build: const Mes
                 continue
             rename = "N"
         elif text == "primvars:normals": rename = "N"
+        elif text == "widths": rename = "width"
+        elif text == "ids": rename = "id"
         elif text == "primvars:displayColor": rename = "Cd"
         elif text == "primvars:displayOpacity": rename = "Alpha"
         elif text == "primvars:st": rename = "uv"
@@ -90,12 +103,12 @@ func collect_primvars(stage: Stage*, gathered: const Gathered*, build: const Mes
         out.items[at].name = try stage.names.token(rename if rename.length > 0 else (str)text.bytes[9..])
         at += 1
     # Inherited constants the prim does not author.
-    let gprim = gathered.gprims.items[source.gprim]
+    let gprim = gathered.gprims.items[slot.gprim]
     for inherited in gathered.inherited.items[gprim.first..<gprim.end]:
         let text = stage.names.name_text(inherited)
-        let own = try stage.names.property(source.path, stage.names.name(inherited))
+        let own = try stage.names.property(slot.path, stage.names.name(inherited))
         if stage.spec(own) != none: continue
-        if let found = try read_primvar(stage, build, index, inherited, false, warnings):
+        if let found = try read_primvar(stage, slot, index, inherited, false, warnings):
             var named = found
             named.name = try stage.names.token(output_name(text))
             out.push(named) catch failure:
@@ -111,8 +124,9 @@ func output_name(text: str) -> str:
 
 ## A primvar attribute read at the stage's time, checked against the prim's
 ## element counts; none (with a warning) when it cannot be used.
-func read_primvar(stage: Stage*, build: const MeshBuild*, index: usize, attribute_path: u32, plain_normals: bool, warnings: Warnings*) -> PrimvarSource?!:
-    let source = &build.sources.items[index]
+## `plain`: a schema attribute (normals, widths, ids), vertex unless it
+## says otherwise and never indexed.
+func read_primvar(stage: Stage*, slot: const PrimSlot*, index: usize, attribute_path: u32, plain: bool, warnings: Warnings*) -> PrimvarSource?!:
     let attribute = stage.spec(attribute_path) else return none
     if attribute.kind != SpecType.attribute: return none
     var value = try stage.resolve(attribute)
@@ -124,7 +138,7 @@ func read_primvar(stage: Stage*, build: const MeshBuild*, index: usize, attribut
         value.release()
         return none
     let kind = typed else return none
-    var interpolation = stage.tokens.vertex if plain_normals else stage.tokens.constant
+    var interpolation = stage.tokens.vertex if plain else stage.tokens.constant
     if let field = attribute.get(stage.tokens.interpolation): interpolation = field.as_token()
     var element_size: usize = 1
     if let field = attribute.get(stage.tokens.element_size):
@@ -137,10 +151,10 @@ func read_primvar(stage: Stage*, build: const MeshBuild*, index: usize, attribut
         return none
     var indices = Value.marker(ValueKind.empty)
     errdefer indices.release()
-    if not plain_normals:
+    if not plain:
         let indices_name = try indices_token(stage, attribute_path)
-        indices = try stage.value(source.path, indices_name)
-    let expected = expected_count(source, domain)
+        indices = try stage.value(slot.path, indices_name)
+    let expected = expected_count(slot, domain)
     let stored = (value.count if value.array else 1)
     let elements = stored // element_size
     var usable = stored % element_size == 0
@@ -178,12 +192,12 @@ func domain_of(stage: const Stage*, interpolation: u32) -> Domain:
     if interpolation == t.uniform: return Domain.face
     return Domain.detail
 
-## Elements a primvar of `domain` has on a prim (source counts).
-func expected_count(source: const MeshSource*, domain: Domain) -> usize:
+## Elements a primvar of `domain` has on a prim (its own counts).
+func expected_count(slot: const PrimSlot*, domain: Domain) -> usize:
     match domain:
-        .point: return source.point_count
-        .corner: return source.corner_count
-        .face: return source.face_count
+        .point: return slot.points
+        .corner: return slot.corners
+        .face: return slot.faces
         _: return 1
 
 ## The attribute type a USD value type becomes: floating point to f32

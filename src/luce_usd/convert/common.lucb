@@ -12,13 +12,15 @@ import geocore_parallel as pool
 import luce_usd.errors as errors
 from luce_usd.sdf.names import Names, absolute_root, empty_path
 from luce_usd.sdf.layer_data import LayerData, Spec, SpecType
-from luce_usd.sdf.values import Value
+from luce_usd.sdf.values import Value, ListOp, ListItem, ListPart, specifier_def, variability_uniform, variability_varying
 import luce_usd.sdf.value_types as usd_types
 from luce_usd.sdf.value_types import ValueKind, scalar_of, components, element_bytes, find_type
 from luce_usd.stage import Stage, earliest, scalar_number
+from luce_usd.geom_tokens import GeomTokens
 from luce_usd.usd_geom import Matrix4d, Gprim, GprimKind, Gathered, gather, component_at
 from geocore import Vector3, Mesh
-from geocore_kernel import Float3, Attribute, AttributeStore, Domain, DataType, Role, TableBuilder, GeometrySet, assembled, put_attribute, mesh_dispose, set_put, set_put_detail, empty_set, dispose_set, mesh_component, BitsBuilder, edge_bits_from_pairs
+from geocore_kernel import Float3, Attribute, AttributeStore, Domain, DataType, Role, TableBuilder, GeometrySet, assembled, put_attribute, mesh_dispose, set_put, set_put_detail, empty_set, dispose_set, mesh_component, BitsBuilder, edge_bits_from_pairs, PointCloud, cloud_assembled, points_component, Curves, curves_assembled, curves_type, Instances, new_instances, instances_component, Placement
+from geocore_kernel import set_component_count, set_component, set_detail, cloud_store, cloud_positions, cloud_origin, curves_origin, CurveSettings, KnotMode, Bits, edge_span, point_span, offset_span, corner_span, mesh_origin, attribute_entry
 from geocore_growing import Growing
 from geocore_shared import Column
 
@@ -91,17 +93,21 @@ func ints_of(value: const Value*) -> const i32[]:
     let bytes = value.bytes()
     return i32[]((i32*)bytes.data, bytes.length // 4)
 
-## Failures a parallel pass records: running out of memory wins over bad
-## data when both happen.
-struct Failures:
-    var exhausted: @bool
-    var invalid: @bool
-
-    mutating func note(code: ErrorCode):
-        if code == memory.exhausted: self.exhausted.store(true)
-        else: self.invalid.store(true)
-
-    ## Fail as recorded, with `message` for bad data.
-    func check(message: str) -> !:
-        if self.exhausted.load(): error(memory.exhausted, "out of memory")
-        if self.invalid.load(): error(errors.invalid, message)
+## The text of `path` as element `path` attributes hold it: absolute, or
+## from `anchor` down ("/Tree/Leaf" for a prototype /Forest/Protos/Tree).
+func write_element_path(names: Names*, path: u32, anchor: u32, out: Growing[u8]*) -> !:
+    out.clear()
+    if anchor == absolute_root:
+        try names.write_path(path, out)
+        return
+    var parts = Growing[u32]()
+    defer parts.close()
+    var at = path
+    while at != anchor and at != absolute_root and at != empty_path:
+        try parts.push(names.name(at))
+        at = names.parent(at)
+    var index = parts.count
+    while index > 0:
+        index -= 1
+        try out.push('/')
+        for byte in names.text_of(parts.items[index]).bytes: try out.push(byte)

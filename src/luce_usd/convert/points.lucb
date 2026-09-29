@@ -1,0 +1,34 @@
+## Points prims (UsdGeomPoints) merged into the points component: every
+## prim's points placed, widths as `width`, ids as `id`, primvars as point
+## attributes and each point's prim path as `path`.
+
+## The Points gprims as one cloud, or none when there are none.
+func import_points(stage: Stage*, gathered: const Gathered*, warnings: Warnings*) -> PointCloud*?!:
+    var sources = Growing[ElementSource]()
+    defer release_sources(&sources)
+    for index in 0..<gathered.gprims.count:
+        let gprim = gathered.gprims.items[index]
+        if gprim.kind != GprimKind.points: continue
+        var vertices = try stage.value(gprim.path, stage.tokens.points)
+        if not vertices.array or components(vertices.kind) != 3 or scalar_of(vertices.kind) == ValueKind.int or vertices.count == 0:
+            vertices.release()
+            continue
+        let count = vertices.count
+        sources.push(ElementSource(slot = PrimSlot(path = gprim.path, gprim = index, points = count, faces = 0, corners = 0), world = gprim.world, vertices = vertices, map = Growing[i32](), point_base = 0, point_count = count, face_base = 0, face_count = 0)) catch failure:
+            vertices.release()
+            error(failure.code, failure.message)
+    if sources.count == 0: return none
+    var origin = Vector3()
+    var positions = try place_elements(sources.items[..<sources.count], &origin)
+    let total = positions.count()
+    var store = AttributeStore()
+    fill_point_store(stage, gathered, sources.items[..<sources.count], total, &store, warnings) catch failure:
+        positions.release()
+        store.close()
+        error(failure.code, failure.message)
+    # cloud_assembled takes the positions and the store, even on failure.
+    return try cloud_assembled(positions, origin, store)
+
+func fill_point_store(stage: Stage*, gathered: const Gathered*, sources: const ElementSource[], total: usize, store: AttributeStore*, warnings: Warnings*) -> !:
+    try put_element_primvars(stage, gathered, sources, total, 0, Domain.point, store, warnings)
+    try put_element_paths(stage, gathered.anchor, sources, Domain.point, total, store)

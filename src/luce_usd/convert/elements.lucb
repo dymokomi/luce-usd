@@ -1,0 +1,149 @@
+## Points and curves prims merged into one component: each prim's vertices
+## become output points (through a map when a curve basis keeps only some
+## of them), placed by its world transform over one f64 origin, and its
+## primvars become point attributes (vertex, varying) or, for curves,
+## curve attributes (uniform); constants go to every element of the prim.
+
+## One prim's part of a merged points or curves component.
+struct ElementSource:
+    var slot: PrimSlot
+    var world: Matrix4d
+    var vertices: Value
+    ## Output point → prim vertex; empty for all vertices in order.
+    var map: Growing[i32]
+    var point_base: usize
+    var point_count: usize
+    var face_base: usize
+    var face_count: usize
+
+    mutating func release():
+        self.vertices.release()
+        self.map.close()
+
+    ## The prim vertex output point `point` (prim-relative) comes from.
+    func vertex(point: usize) -> usize:
+        return (usize)self.map.items[point] if self.map.count > 0 else point
+
+func release_sources(sources: Growing[ElementSource]*):
+    for at in 0..<sources.count: sources.items[at].release()
+    sources.close()
+
+## Prim vertex `vertex` of `source`, placed and measured from `origin`.
+func placed_vertex(source: const ElementSource*, vertex: usize, origin: Vector3) -> Float3:
+    let bytes = source.vertices.bytes()
+    let scalar = scalar_of(source.vertices.kind)
+    let x = component_at(bytes, scalar, vertex * 3)
+    let y = component_at(bytes, scalar, vertex * 3 + 1)
+    let z = component_at(bytes, scalar, vertex * 3 + 2)
+    let placed = source.world.point(x, y, z)
+    return Float3((f32)(placed.0 - origin.x), (f32)(placed.1 - origin.y), (f32)(placed.2 - origin.z))
+
+## The sources' output points placed: bases set, the origin chosen by
+## geocore's rule, the positions column.
+func place_elements(sources: ElementSource[], origin: Vector3*) -> Column[Float3]!:
+    var total: usize = 0
+    var low = Vector3(math.infinity, math.infinity, math.infinity)
+    var high = Vector3(-math.infinity, -math.infinity, -math.infinity)
+    let zero = Vector3()
+    for at in 0..<sources.length:
+        let source = &sources[at]
+        source.point_base = total
+        total += source.point_count
+        for point in 0..<source.point_count:
+            let p = placed_vertex(source, source.vertex(point), zero)
+            low = Vector3(math.min(low.x, (f64)p.x), math.min(low.y, (f64)p.y), math.min(low.z, (f64)p.z))
+            high = Vector3(math.max(high.x, (f64)p.x), math.max(high.y, (f64)p.y), math.max(high.z, (f64)p.z))
+    *origin = origin_for(low, high)
+    var positions = try Column[Float3].allocate(total)
+    let out = positions.span()
+    var work = ElementPlaceWork(sources = sources, out = out, origin = *origin)
+    pool.run(sources.length, place_source, (void*)&work)
+    return positions
+
+struct ElementPlaceWork:
+    var sources: const ElementSource[]
+    var out: Float3[]
+    var origin: Vector3
+
+func place_source(context: void*?, index: usize):
+    let work = (ElementPlaceWork*)(context else return)
+    let source = &work.sources[index]
+    for point in 0..<source.point_count:
+        work.out[source.point_base + point] = placed_vertex(source, source.vertex(point), work.origin)
+
+## Every primvar of the sources as point or curve attributes in `store`;
+## constants take `constant_domain` (points: point; curves: face).
+func put_element_primvars(stage: Stage*, gathered: const Gathered*, sources: const ElementSource[], points: usize, faces: usize, constant_domain: Domain, store: AttributeStore*, warnings: Warnings*) -> !:
+    var found = Growing[PrimvarSource]()
+    defer release_all(&found)
+    for index in 0..<sources.length:
+        try collect_primvars(stage, gathered, &sources[index].slot, index, &found, warnings)
+    var done = Growing[u32]()
+    defer done.close()
+    for at in 0..<found.count:
+        let candidate = &found.items[at]
+        if candidate.domain == Domain.corner:
+            try warnings.add_path("Skipped a faceVarying primvar on a prim without faces: ", stage.names, sources[candidate.source].slot.path)
+            continue
+        var seen = false
+        for held in done.view(): seen = seen or held == candidate.name
+        if seen: continue
+        try done.push(candidate.name)
+        let text = stage.names.text_of(candidate.name)
+        if text.length == 0 or text.length > 64 or text == "P": continue
+        try store.put(try element_attribute(stage, sources, found.items[at..<found.count], candidate.name, points, faces, constant_domain))
+
+## One merged point or curve attribute.
+func element_attribute(stage: Stage*, sources: const ElementSource[], candidates: PrimvarSource[], name: u32, points: usize, faces: usize, constant_domain: Domain) -> Attribute!:
+    let first = &candidates[0]
+    var kind = first.kind
+    var domain = Domain.point if first.domain == Domain.point else constant_domain
+    if first.domain == Domain.face: domain = Domain.face if faces > 0 else Domain.point
+    for at in 0..<candidates.length:
+        if candidates[at].name == name and candidates[at].width == first.width: kind = wider(kind, candidates[at].kind)
+    var attribute = try Attribute.create(stage.names.text_of(name), domain, kind, first.width, points if domain == Domain.point else faces)
+    errdefer attribute.release()
+    let bytes = attribute.data.span()
+    if bytes.length > 0: memory.set(bytes, 0)
+    if let role = attribute_role(first.role): attribute.role = role
+    var table = TableBuilder()
+    defer table.close()
+    if kind == DataType.text: discard(try table.intern(""))
+    for at in 0..<candidates.length:
+        let candidate = &candidates[at]
+        if candidate.name != name or candidate.width != first.width or candidate.domain == Domain.corner: continue
+        let source = &sources[candidate.source]
+        var reader = try ElementReader.of(stage, candidate, &table)
+        defer reader.close()
+        var writer = ElementWriter(kind = kind, width = first.width, out = attribute.data.span())
+        if domain == Domain.point:
+            for point in 0..<source.point_count:
+                reader.copy(&writer, source.point_base + point, source.vertex(point) if candidate.domain == Domain.point else 0)
+        else:
+            for face in 0..<source.face_count:
+                reader.copy(&writer, source.face_base + face, face if candidate.domain == Domain.face else 0)
+    if kind == DataType.text:
+        attribute.table.release()
+        attribute.table = try table.finish()
+    return attribute
+
+## Each element's prim path as the text attribute `path` on `domain`.
+func put_element_paths(stage: Stage*, anchor: u32, sources: const ElementSource[], domain: Domain, elements: usize, store: AttributeStore*) -> !:
+    var values = try Column[i32].allocate(elements)
+    defer values.release()
+    let out = values.span()
+    var paths = TableBuilder()
+    defer paths.close()
+    var text = Growing[u8]()
+    defer text.close()
+    for index in 0..<sources.length:
+        let source = &sources[index]
+        try write_element_path(stage.names, source.slot.path, anchor, &text)
+        let at = try paths.intern((str)text.view())
+        if domain == Domain.point:
+            for point in 0..<source.point_count: out[source.point_base + point] = at
+        else:
+            for face in 0..<source.face_count: out[source.face_base + face] = at
+    var column = try paths.finish()
+    defer column.release()
+    try store.put(try Attribute.text("path", domain, elements, column, out))

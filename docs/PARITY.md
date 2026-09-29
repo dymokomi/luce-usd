@@ -34,6 +34,10 @@ python3 ~/Dev/luce_dev/.donors/oracles/luce-usd/parity.py [suite ...]
 | `usdz-write` | every testenv `.usda` written as a `.usdz` by us: read back by `usdcat` identically, and `usdchecker`'s package validators (stored, 64-byte aligned) pass |
 | `museum` | the 141 `testPcpMuseum_*` cases: our composition report equals `compositionResults_*.txt`, and our flatten equals `usdcat --flatten` |
 
+`geometry_sweep.py` (next to the driver) imports every testenv layer as a
+GeometrySet and exports it back through `ourcat --geometry`; nothing may
+crash, and `usdcat` must read every exported layer.
+
 The driver builds nothing in the repo: it runs `ourcat`, a small Base program
 next to it (`.donors/oracles/luce-usd/ourcat/`) that prints a layer through
 luce-usd as usda, and compares it with `usdcat`. usdcat's results are cached.

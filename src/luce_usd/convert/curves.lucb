@@ -1,0 +1,246 @@
+## BasisCurves and NurbsCurves prims (pxr/usd/usdGeom/basisCurves.h,
+## nurbsCurves.h) merged into the curves component (design §2.3):
+## - linear curves are poly curves;
+## - cubic Bezier vertices (P H H P ...) become control points with
+##   handle_l/handle_r, the open ends' outer handles mirrored;
+## - cubic B-splines are uniform order-4 NURBS;
+## - Catmull-Rom curves pass through every point in geocore, so a
+##   nonperiodic one drops its first and last vertex (USD's phantom ends);
+## - NURBS keep order, knots (narrowed to f32) and point weights `w`;
+## - periodic curves are cyclic.
+
+## One output curve's settings.
+struct CurveRow:
+    var kind: i8
+    var cyclic: bool
+    var order: i8
+    var knot_mode: i8
+
+## The curves gprims as one Curves, or none when there are none.
+func import_curves(stage: Stage*, gathered: const Gathered*, warnings: Warnings*) -> Curves*?!:
+    var sources = Growing[ElementSource]()
+    defer release_sources(&sources)
+    var rows = Growing[CurveRow]()
+    defer rows.close()
+    var counts = Growing[i32]()
+    defer counts.close()
+    var knots = Growing[f32]()
+    defer knots.close()
+    var knot_counts = Growing[i32]()
+    defer knot_counts.close()
+    ## Bezier handles per output point (relative vertex pairs: -1 when none).
+    var handles = Growing[i32]()
+    defer handles.close()
+    var weights = Growing[f32]()
+    defer weights.close()
+    var any_handles = false
+    var any_weights = false
+    var any_knots = false
+    for index in 0..<gathered.gprims.count:
+        let gprim = gathered.gprims.items[index]
+        if gprim.kind != GprimKind.basis_curves and gprim.kind != GprimKind.nurbs_curves: continue
+        var vertices = try stage.value(gprim.path, stage.tokens.points)
+        var vertex_counts = try stage.value(gprim.path, stage.tokens.curve_vertex_counts)
+        defer vertex_counts.release()
+        if not vertices.array or components(vertices.kind) != 3 or scalar_of(vertices.kind) == ValueKind.int or vertex_counts.kind != ValueKind.int or not vertex_counts.array:
+            vertices.release()
+            continue
+        var total: usize = 0
+        for count in ints_of(&vertex_counts): total += (usize)math.max(0.0, (f64)count)
+        if total != vertices.count:
+            try warnings.add_path("Skipped curves whose curveVertexCounts do not match their points: ", stage.names, gprim.path)
+            vertices.release()
+            continue
+        var source = ElementSource(slot = PrimSlot(path = gprim.path, gprim = index, points = vertices.count, faces = vertex_counts.count, corners = 0), world = gprim.world, vertices = vertices, map = Growing[i32](), point_base = 0, point_count = 0, face_base = rows.count, face_count = vertex_counts.count)
+        errdefer source.release()
+        let first_point = handles.count // 2
+        if gprim.kind == GprimKind.basis_curves:
+            try basis_rows(stage, &source, ints_of(&vertex_counts), &rows, &counts, &handles, warnings)
+        else:
+            try nurbs_rows(stage, &source, ints_of(&vertex_counts), &rows, &counts, &handles, &knots, &knot_counts, &weights, first_point, warnings)
+            any_knots = true
+        source.point_count = handles.count // 2 - first_point
+        for at in first_point..<handles.count // 2: any_handles = any_handles or handles.items[at * 2] >= 0
+        any_weights = any_weights or weights.count > 0
+        try sources.push(source)
+    if sources.count == 0: return none
+    var origin = Vector3()
+    var positions = try place_elements(sources.items[..<sources.count], &origin)
+    errdefer positions.release()
+    let points = positions.count()
+    var offsets = try Column[i32].allocate(rows.count + 1)
+    errdefer offsets.release()
+    let starts = offsets.span()
+    starts[0] = 0
+    for at in 0..<counts.count: starts[at + 1] = starts[at] + counts.items[at]
+    var knot_column = try Column[f32].copy_of(knots.view())
+    errdefer knot_column.release()
+    var knot_offsets = try Column[i32].allocate(rows.count + 1 if any_knots else 0)
+    errdefer knot_offsets.release()
+    if any_knots:
+        let out = knot_offsets.span()
+        out[0] = 0
+        for at in 0..<knot_counts.count: out[at + 1] = out[at] + knot_counts.items[at]
+    let store = try curve_store(stage, gathered, sources.items[..<sources.count], rows.view(), handles.view(), weights.view(), any_handles, any_weights, points, origin, warnings)
+    # curves_assembled takes every column and the store, even on failure.
+    return try curves_assembled(positions.take(), origin, offsets.take(), knot_column.take(), knot_offsets.take(), store, none)
+
+## The curves' attributes.
+func curve_store(stage: Stage*, gathered: const Gathered*, sources: const ElementSource[], rows: const CurveRow[], handles: const i32[], weights: const f32[], any_handles: bool, any_weights: bool, points: usize, origin: Vector3, warnings: Warnings*) -> AttributeStore!:
+    var store = AttributeStore()
+    errdefer store.close()
+    try put_rows(&store, rows)
+    if any_handles: try put_handles(&store, sources, handles, origin)
+    if any_weights: try put_weights(&store, weights, points)
+    try put_element_primvars(stage, gathered, sources, points, rows.length, Domain.face, &store, warnings)
+    try put_element_paths(stage, gathered.anchor, sources, Domain.face, rows.length, &store)
+    return store
+
+## A BasisCurves prim's curves: rows, output point counts, and each output
+## point's vertex (map) with its Bezier handle vertices.
+func basis_rows(stage: Stage*, source: ElementSource*, vertex_counts: const i32[], rows: Growing[CurveRow]*, counts: Growing[i32]*, handles: Growing[i32]*, warnings: Warnings*) -> !:
+    let t = stage.tokens
+    let path = source.slot.path
+    let linear = (try stage.token_value(path, t.type_name, t.cubic)) == t.linear
+    let basis = try stage.token_value(path, t.basis, t.bezier)
+    let wrap = try stage.token_value(path, t.wrap, t.nonperiodic)
+    let periodic = wrap == t.periodic
+    var first: i32 = 0
+    for count in vertex_counts:
+        let n = (usize)count
+        var kind: i8 = 0
+        var output: usize = 0
+        if linear or n < 2:
+            output = try keep_range(source, handles, first, n)
+        elif basis == t.bezier:
+            let fits = (n - (0 if periodic else 1)) % 3 == 0 and n >= (3 if periodic else 4)
+            if fits:
+                kind = 1
+                output = try bezier_points(source, handles, first, n, periodic)
+            else:
+                try warnings.add_path("Drew Bezier curves with a vertex count that is not 3n+1 (3n periodic) as polylines: ", stage.names, path)
+                output = try keep_range(source, handles, first, n)
+        elif basis == t.bspline:
+            kind = 2
+            output = try keep_range(source, handles, first, n)
+        else:
+            kind = 3
+            if periodic or wrap == t.pinned or n < 4: output = try keep_range(source, handles, first, n)
+            else: output = try keep_range(source, handles, first + 1, n - 2)
+        try rows.push(CurveRow(kind = kind, cyclic = periodic, order = 4, knot_mode = 0 if kind == 2 else 1))
+        try counts.push((i32)output)
+        first += count
+
+## Output points for vertices `first..<first + n` in order, no handles.
+func keep_range(source: ElementSource*, handles: Growing[i32]*, first: i32, n: usize) -> usize!:
+    for at in 0..<(i32)n:
+        try source.map.push(first + at)
+        try handles.push(-1)
+        try handles.push(-1)
+    return n
+
+## A Bezier curve's control points (every third vertex) with the handle
+## vertices around each; open ends take mirrored handles (marked -2 - the
+## vertex to mirror across).
+func bezier_points(source: ElementSource*, handles: Growing[i32]*, first: i32, n: usize, periodic: bool) -> usize!:
+    let controls = n // 3 if periodic else (n - 1) // 3 + 1
+    for control in 0..<controls:
+        let vertex = first + (i32)(control * 3)
+        try source.map.push(vertex)
+        let before = vertex - 1 if control > 0 else (first + (i32)n - 1 if periodic else -2 - (vertex + 1))
+        let after = vertex + 1 if control * 3 + 1 < n else (first if periodic else -2 - (vertex - 1))
+        try handles.push(before)
+        try handles.push(after)
+    return controls
+
+## A NurbsCurves prim's curves: order, knots (narrowed), weights.
+func nurbs_rows(stage: Stage*, source: ElementSource*, vertex_counts: const i32[], rows: Growing[CurveRow]*, counts: Growing[i32]*, handles: Growing[i32]*, knots: Growing[f32]*, knot_counts: Growing[i32]*, weights: Growing[f32]*, first_point: usize, warnings: Warnings*) -> !:
+    let t = stage.tokens
+    let path = source.slot.path
+    var orders = try stage.value(path, t.order)
+    defer orders.release()
+    var knot_values = try stage.value(path, t.knots)
+    defer knot_values.release()
+    var point_weights = try stage.value(path, t.point_weights)
+    defer point_weights.release()
+    var no_orders: i32[]
+    let order_list = ints_of(&orders) if orders.kind == ValueKind.int else no_orders
+    let knot_bytes = knot_values.bytes()
+    let knot_scalar = scalar_of(knot_values.kind)
+    var first: i32 = 0
+    var knot_at: usize = 0
+    for curve in 0..<vertex_counts.length:
+        let n = (usize)vertex_counts[curve]
+        let order = (usize)order_list[curve] if curve < order_list.length else 4
+        discard(try keep_range(source, handles, first, n))
+        let wanted = n + order
+        let custom = knot_values.array and knot_at + wanted <= knot_values.count
+        if custom:
+            for at in 0..<wanted: try knots.push((f32)read_number(knot_bytes, knot_scalar, knot_at + at))
+            knot_at += wanted
+        try knot_counts.push((i32)(wanted if custom else 0))
+        try rows.push(CurveRow(kind = 2, cyclic = false, order = (i8)math.min(8.0, (f64)order), knot_mode = 2 if custom else 1))
+        try counts.push((i32)n)
+        first += (i32)n
+    if point_weights.array and point_weights.count == source.slot.points:
+        # Weights of earlier prims' points default to 1.
+        while weights.count < first_point: try weights.push(1.0)
+        for at in 0..<point_weights.count: try weights.push((f32)read_number(point_weights.bytes(), scalar_of(point_weights.kind), at))
+    elif knots.count > 0 and point_weights.array:
+        try warnings.add_path("Skipped pointWeights that do not match the points: ", stage.names, path)
+
+## The per-curve settings as curve attributes.
+func put_rows(store: AttributeStore*, rows: const CurveRow[]) -> !:
+    var kinds = try Attribute.create("curve_type", Domain.face, DataType.int8, 1, rows.length)
+    for at in 0..<rows.length: kinds.data.span()[at] = (u8)rows[at].kind
+    try store.put(kinds)
+    var orders = try Attribute.create("order", Domain.face, DataType.int8, 1, rows.length)
+    for at in 0..<rows.length: orders.data.span()[at] = (u8)rows[at].order
+    try store.put(orders)
+    var modes = try Attribute.create("knot_mode", Domain.face, DataType.int8, 1, rows.length)
+    for at in 0..<rows.length: modes.data.span()[at] = (u8)rows[at].knot_mode
+    try store.put(modes)
+    var cyclic = try Attribute.create("cyclic", Domain.face, DataType.boolean, 1, rows.length)
+    let words = cyclic.data.span()
+    memory.set(words, 0)
+    for at in 0..<rows.length:
+        if rows[at].cyclic: words[at // 8] = words[at // 8] | (u8)(1 << (at % 8))
+    try store.put(cyclic)
+
+## Bezier handles as point attributes in the positions' frame.
+func put_handles(store: AttributeStore*, sources: const ElementSource[], handles: const i32[], origin: Vector3) -> !:
+    let points = handles.length // 2
+    var left = try Attribute.create("handle_l", Domain.point, DataType.float32, 3, points)
+    var right = Attribute.create("handle_r", Domain.point, DataType.float32, 3, points) catch failure:
+        left.release()
+        error(failure.code, failure.message)
+    left.role = Role.position
+    right.role = Role.position
+    let out_left = Float3[]((Float3*)left.data.span().data, points)
+    let out_right = Float3[]((Float3*)right.data.span().data, points)
+    for index in 0..<sources.length:
+        let source = &sources[index]
+        for point in 0..<source.point_count:
+            let at = source.point_base + point
+            let own = placed_vertex(source, source.vertex(point), origin)
+            out_left[at] = handle_of(source, handles[at * 2], own, origin)
+            out_right[at] = handle_of(source, handles[at * 2 + 1], own, origin)
+    # put takes the attribute, releasing it when it fails.
+    store.put(left) catch failure:
+        right.release()
+        error(failure.code, failure.message)
+    try store.put(right)
+
+## A handle: a vertex, or (-2 - v) for the mirror of vertex v across the
+## point, or -1 for the point itself.
+func handle_of(source: const ElementSource*, handle: i32, own: Float3, origin: Vector3) -> Float3:
+    if handle == -1: return own
+    if handle >= 0: return placed_vertex(source, (usize)handle, origin)
+    let mirrored = placed_vertex(source, (usize)(-2 - handle), origin)
+    return Float3(own.x * 2.0 - mirrored.x, own.y * 2.0 - mirrored.y, own.z * 2.0 - mirrored.z)
+
+func put_weights(store: AttributeStore*, weights: const f32[], points: usize) -> !:
+    var attribute = try Attribute.create("w", Domain.point, DataType.float32, 1, points)
+    let out = f32[]((f32*)attribute.data.span().data, points)
+    for at in 0..<points: out[at] = weights[at] if at < weights.length else 1.0
+    try store.put(attribute)

@@ -1,0 +1,192 @@
+## What a Mesh prim carries besides primvars, written back from the
+## attributes the import made: groups as GeomSubsets (the family from
+## usd.subset_family.<group>), subdivision (scheme, boundary rule, creases
+## as two-point chains, corners, holes) and material bindings (one
+## material: bound on the prim; several: one materialBind subset each).
+
+## The part's own number of mesh point `point`, or -1.
+func local_point(part: const MeshPart*, numbers: const i32[], point: usize) -> i32:
+    if part.whole: return (i32)point
+    let at = numbers[point]
+    if at < 0 or (usize)at >= part.points.count or part.points.items[(usize)at] != (i32)point: return -1
+    return at
+
+## Every face, point and edge group but `hole` as a GeomSubset of the part.
+func write_subsets(work: MeshExport*, part: const MeshPart*, spec: usize, numbers: const i32[]) -> !:
+    let mesh = work.mesh
+    var members = Growing[i32]()
+    defer members.close()
+    var name = Growing[u8]()
+    defer name.close()
+    for index in 0..<(usize)mesh.attribute_count():
+        let entry = try attribute_entry(mesh, (i64)index)
+        if not entry.is_group() or entry.name() == "hole": continue
+        let bits = Bits.of_bytes(entry.data.view(), entry.elements)
+        members.clear()
+        var element = "face"
+        match entry.domain:
+            .face:
+                for at in 0..<part.faces.count:
+                    if bits.get((usize)part.faces.items[at]): try members.push((i32)at)
+            .point:
+                element = "point"
+                for at in 0..<part.point_count():
+                    if bits.get(part.point_at(at)): try members.push((i32)at)
+            .edge:
+                element = "edge"
+                let pairs = try edge_span(mesh)
+                for edge in 0..<pairs.length // 2:
+                    if not bits.get(edge): continue
+                    let a = local_point(part, numbers, (usize)pairs[edge * 2])
+                    let b = local_point(part, numbers, (usize)pairs[edge * 2 + 1])
+                    if a < 0 or b < 0: continue
+                    try members.push(a)
+                    try members.push(b)
+            _: continue
+        if members.count == 0: continue
+        try valid_name(entry.name(), &name)
+        # Bindings are written from the material attribute (below); a group
+        # keeps its own materialBind family only when there is none.
+        var family = try subset_family(mesh, entry.name())
+        if family == "materialBind" and mesh.find_attribute("material", (i64)(u8)Domain.face) >= 0: family = ""
+        discard(try write_subset(work, part, (str)name.view(), element, members.view(), family))
+
+## A GeomSubset child of the part; its path.
+func write_subset(work: MeshExport*, part: const MeshPart*, name: str, element: str, members: const i32[], family: str) -> u32!:
+    let author = work.author
+    let path = try author.names.child(part.path, try author.names.token(name))
+    let spec = try author.define(path, work.tokens.geom_subset, work.tokens.xform)
+    discard(try author.attribute(path, spec, "elementType", "token", true, Value.scalar(ValueKind.token, (u64)(try author.names.token(element)))))
+    discard(try author.attribute(path, spec, "indices", "int[]", false, try array_of(ValueKind.int, members.length, u8[]((u8*)members.data, members.length * 4))))
+    if family.length > 0: discard(try author.attribute(path, spec, "familyName", "token", true, Value.scalar(ValueKind.token, (u64)(try author.names.token(family)))))
+    return path
+
+## The subset family the import recorded for group `name` ("" without one).
+func subset_family(mesh: const Mesh*, name: str) -> str!:
+    var label = Growing[u8]()
+    defer label.close()
+    try label.assign("usd.subset_family.".bytes)
+    for byte in name.bytes: try label.push(byte)
+    if label.count > 64: return ""
+    let found = mesh.find_attribute((str)label.view(), (i64)(u8)Domain.detail)
+    if found < 0: return ""
+    let entry = try attribute_entry(mesh, found)
+    if entry.kind != DataType.text: return ""
+    return entry.text_at(0)
+
+## The subdivision scheme (always authored: USD's default is Catmull-Clark)
+## and, when subdivided, the boundary rule, creases, corners and holes.
+func write_subdivision(work: MeshExport*, part: const MeshPart*, spec: usize, numbers: const i32[]) -> !:
+    let mesh = work.mesh
+    let author = work.author
+    let scheme = detail_number(mesh, "subd.scheme", 0.0)
+    let text = "catmullClark" if scheme == 1.0 else ("loop" if scheme == 2.0 else ("bilinear" if scheme == 3.0 else "none"))
+    discard(try author.attribute(part.path, spec, "subdivisionScheme", "token", true, Value.scalar(ValueKind.token, (u64)(try author.names.token(text)))))
+    if text == "none": return
+    if detail_number(mesh, "subd.boundary", 1.0) == 0.0:
+        discard(try author.attribute(part.path, spec, "interpolateBoundary", "token", false, Value.scalar(ValueKind.token, (u64)(try author.names.token("edgeOnly")))))
+    var indices = Growing[i32]()
+    defer indices.close()
+    var values = Growing[f32]()
+    defer values.close()
+    let crease = mesh.find_attribute("crease", (i64)(u8)Domain.edge)
+    if crease >= 0:
+        let pairs = try edge_span(mesh)
+        let entry = try attribute_entry(mesh, crease)
+        for edge in 0..<pairs.length // 2:
+            let sharpness = entry.number(edge, 0)
+            if sharpness <= 0.0: continue
+            let a = local_point(part, numbers, (usize)pairs[edge * 2])
+            let b = local_point(part, numbers, (usize)pairs[edge * 2 + 1])
+            if a < 0 or b < 0: continue
+            try indices.push(a)
+            try indices.push(b)
+            try values.push((f32)sharpness)
+    if values.count > 0:
+        var lengths = Growing[i32]()
+        defer lengths.close()
+        try lengths.fill(values.count, 2)
+        discard(try author.attribute(part.path, spec, "creaseIndices", "int[]", false, try array_of(ValueKind.int, indices.count, u8[]((u8*)indices.items.data, indices.count * 4))))
+        discard(try author.attribute(part.path, spec, "creaseLengths", "int[]", false, try array_of(ValueKind.int, lengths.count, u8[]((u8*)lengths.items.data, lengths.count * 4))))
+        discard(try author.attribute(part.path, spec, "creaseSharpnesses", "float[]", false, try array_of(ValueKind.float, values.count, u8[]((u8*)values.items.data, values.count * 4))))
+    indices.clear()
+    values.clear()
+    let corner = mesh.find_attribute("corner_sharpness", (i64)(u8)Domain.point)
+    if corner >= 0:
+        let entry = try attribute_entry(mesh, corner)
+        for at in 0..<part.point_count():
+            let sharpness = entry.number(part.point_at(at), 0)
+            if sharpness <= 0.0: continue
+            try indices.push((i32)at)
+            try values.push((f32)sharpness)
+    if values.count > 0:
+        discard(try author.attribute(part.path, spec, "cornerIndices", "int[]", false, try array_of(ValueKind.int, indices.count, u8[]((u8*)indices.items.data, indices.count * 4))))
+        discard(try author.attribute(part.path, spec, "cornerSharpnesses", "float[]", false, try array_of(ValueKind.float, values.count, u8[]((u8*)values.items.data, values.count * 4))))
+    indices.clear()
+    let hole = mesh.find_attribute("hole", (i64)(u8)Domain.face)
+    if hole >= 0:
+        let entry = try attribute_entry(mesh, hole)
+        let bits = Bits.of_bytes(entry.data.view(), entry.elements)
+        for at in 0..<part.faces.count:
+            if bits.get((usize)part.faces.items[at]): try indices.push((i32)at)
+    if indices.count > 0:
+        discard(try author.attribute(part.path, spec, "holeIndices", "int[]", false, try array_of(ValueKind.int, indices.count, u8[]((u8*)indices.items.data, indices.count * 4))))
+
+func detail_number(mesh: const Mesh*, name: str, fallback: f64) -> f64:
+    let found = mesh.find_attribute(name, (i64)(u8)Domain.detail)
+    if found < 0: return fallback
+    return mesh.attribute_value(found, 0, 0) catch failure: recover fallback
+
+## The part's `material` text as bindings.
+func write_binding(work: MeshExport*, part: const MeshPart*, spec: usize) -> !:
+    let mesh = work.mesh
+    let found = mesh.find_attribute("material", (i64)(u8)Domain.face)
+    if found < 0: return
+    let entry = try attribute_entry(mesh, found)
+    var materials = Growing[u32]()
+    defer materials.close()
+    var faces_of = Growing[i32]()
+    defer faces_of.close()
+    var bound_faces: usize = 0
+    for at in 0..<part.faces.count:
+        let text = entry.text_at((usize)part.faces.items[at])
+        var which: i32 = -1
+        if text.length > 0:
+            let path = work.author.names.parse_path(text) catch failure: recover empty_path
+            if path != empty_path and work.author.names.is_prim(path) and work.author.names.is_absolute(path):
+                for known in 0..<materials.count:
+                    if materials.items[known] == path: which = (i32)known
+                if which < 0:
+                    which = (i32)materials.count
+                    try materials.push(path)
+                bound_faces += 1
+        try faces_of.push(which)
+    if materials.count == 0: return
+    let author = work.author
+    if materials.count == 1 and bound_faces == part.faces.count:
+        try author.relationship(part.path, spec, "material:binding", materials.view())
+        try apply_binding_api(author, spec)
+        return
+    # The material subsets never overlap.
+    discard(try author.attribute(part.path, spec, "subsetFamily:materialBind:familyType", "token", true, Value.scalar(ValueKind.token, (u64)(try author.names.token("nonOverlapping")))))
+    var members = Growing[i32]()
+    defer members.close()
+    var name = Growing[u8]()
+    defer name.close()
+    for material in 0..<materials.count:
+        members.clear()
+        for at in 0..<faces_of.count:
+            if faces_of.items[at] == (i32)material: try members.push((i32)at)
+        name.clear()
+        try name.assign("material_".bytes)
+        try append_count(&name, material)
+        let subset = try write_subset(work, part, (str)name.view(), "face", members.view(), "materialBind")
+        let subset_spec = author.layer.find(subset) else continue
+        try author.relationship(subset, subset_spec, "material:binding", materials.items[material..<material + 1])
+        try apply_binding_api(author, subset_spec)
+
+## Prepend MaterialBindingAPI to a prim's apiSchemas.
+func apply_binding_api(author: Author*, spec: usize) -> !:
+    let list = try ListOp.create()
+    try author.layer.set(spec, author.layer.keys.api_schemas, Value.of_object(ValueKind.token_list_op, (void*)list))
+    try list.push(ListPart.prepended, ListItem(a = (u64)(try author.names.token("MaterialBindingAPI")), b = 0, offset = 0.0, scale = 1.0, custom = none))

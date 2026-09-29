@@ -101,3 +101,5 @@ import luce_usd.convert as convert
 pub type ImportOptions = convert.ImportOptions
 pub type Warnings = convert.Warnings
 pub let import_layer = convert.import_layer
+pub type ExportOptions = convert.ExportOptions
+pub let export_set = convert.export_set

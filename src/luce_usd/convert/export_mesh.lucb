@@ -1,0 +1,244 @@
+## A GeometrySet's mesh written as Mesh prims (design §2.9): split by the
+## face text attribute `path` into one prim per path (the hierarchy made of
+## Xforms), each with its own points in first-use order, its faces, extent
+## and its share of every attribute as a primvar: point attributes vertex,
+## corner faceVarying, face uniform, detail constant. Cd, Alpha, uv and N
+## go back to displayColor, displayOpacity, st and normals.
+
+## What an export does.
+pub struct ExportOptions:
+    ## One prim per `path` value (else one Mesh prim at the fallback path).
+    pub var split: bool
+    ## Points as point3d, keeping the f64 origin exactly.
+    pub var precise: bool
+
+## One Mesh prim's share of the mesh.
+struct MeshPart:
+    var path: u32
+    var faces: Growing[i32]
+    ## Global points in first-use order, and the global corners in order;
+    ## empty for a part holding the whole mesh, which keeps its numbering.
+    var points: Growing[i32]
+    var corners: Growing[i32]
+    var whole: bool
+    var all_points: usize
+    var all_corners: usize
+
+    mutating func close():
+        self.faces.close()
+        self.points.close()
+        self.corners.close()
+
+    func point_count() -> usize:
+        return self.all_points if self.whole else self.points.count
+
+    ## The mesh point the part's point `at` is.
+    func point_at(at: usize) -> usize:
+        return at if self.whole else (usize)self.points.items[at]
+
+    func corner_count() -> usize:
+        return self.all_corners if self.whole else self.corners.count
+
+    func corner_at(at: usize) -> usize:
+        return at if self.whole else (usize)self.corners.items[at]
+
+## What mesh export works with.
+struct MeshExport:
+    var mesh: const Mesh*
+    var author: Author*
+    var tokens: GeomTokens
+    var options: const ExportOptions*
+    var warnings: Warnings*
+
+## Write `mesh` into the author's layer: prims at its `path` texts under
+## `base` (absolute_root, or a prototype's prim), else at `fallback`.
+func export_mesh(mesh: const Mesh*, author: Author*, base: u32, fallback: u32, options: const ExportOptions*, warnings: Warnings*) -> !:
+    var parts = Growing[MeshPart]()
+    defer close_parts(&parts)
+    try split_faces(mesh, author, base, fallback, options.split, &parts)
+    var work = MeshExport(mesh = mesh, author = author, tokens = try GeomTokens.of(author.names), options = options, warnings = warnings)
+    # Each part's numbers point numbers, stamped per part.
+    var numbers = try Column[i32].filled((usize)mesh.point_count(), -1)
+    defer numbers.release()
+    var stamp = try Column[i32].filled((usize)mesh.point_count(), -1)
+    defer stamp.release()
+    for at in 0..<parts.count:
+        let part = &parts.items[at]
+        if parts.count == 1 and part.faces.count == (usize)mesh.face_count():
+            # The whole mesh: its own point and corner numbering.
+            part.whole = true
+            part.all_points = (usize)mesh.point_count()
+            part.all_corners = corner_span(mesh).length
+        else:
+            try number_points(mesh, part, (i32)at, numbers.span(), stamp.span())
+        try write_part(&work, part, numbers.view())
+
+func close_parts(parts: Growing[MeshPart]*):
+    for at in 0..<parts.count: parts.items[at].close()
+    parts.close()
+
+## Faces grouped by their `path` text (in order of first appearance), or
+## all in one part.
+func split_faces(mesh: const Mesh*, author: Author*, base: u32, fallback_path: u32, split: bool, parts: Growing[MeshPart]*) -> !:
+    let faces = (usize)mesh.face_count()
+    let found = mesh.find_attribute("path", (i64)(u8)Domain.face) if split else -1
+    if found < 0:
+        try parts.push(MeshPart(path = fallback_path, faces = Growing[i32](), points = Growing[i32](), corners = Growing[i32](), whole = false, all_points = 0, all_corners = 0))
+        for face in 0..<faces: try parts.items[0].faces.push((i32)face)
+        return
+    let entry = try attribute_entry(mesh, found)
+    let values = i32[]((i32*)entry.data.view().data, faces)
+    # One part per distinct text: table index → part.
+    var part_of = Growing[i32]()
+    defer part_of.close()
+    for face in 0..<faces:
+        let text = values[face]
+        let slot = (usize)(text + 1)
+        while part_of.count <= slot: try part_of.push(-1)
+        if part_of.items[slot] < 0:
+            let path = try prim_path_of(author.names, base, entry.text_at(face))
+            part_of.items[slot] = (i32)parts.count
+            try parts.push(MeshPart(path = path if path != empty_path else fallback_path, faces = Growing[i32](), points = Growing[i32](), corners = Growing[i32](), whole = false, all_points = 0, all_corners = 0))
+        try parts.items[(usize)part_of.items[slot]].faces.push((i32)face)
+    # Parts whose texts named the same prim merge into the first.
+    var at: usize = 1
+    while at < parts.count:
+        var merged = false
+        for earlier in 0..<at:
+            if parts.items[earlier].path == parts.items[at].path:
+                for face in parts.items[at].faces.view(): try parts.items[earlier].faces.push(face)
+                parts.items[at].close()
+                parts.items[at] = parts.items[parts.count - 1]
+                parts.count -= 1
+                merged = true
+                break
+        if not merged: at += 1
+
+## A prim path under `base` from text: its '/'-separated names made valid
+## identifiers; empty_path when no name is left.
+func prim_path_of(names: Names*, base: u32, text: str) -> u32!:
+    var path = base
+    var name = Growing[u8]()
+    defer name.close()
+    var start: usize = 0
+    while start <= text.length:
+        var end = start
+        while end < text.length and text.bytes[end] != '/': end += 1
+        if end > start:
+            try valid_name((str)text.bytes[start..<end], &name)
+            path = try names.child(path, try names.token((str)name.view()))
+        start = end + 1
+    return path if path != base else empty_path
+
+## The part's points in first-use order and its corners.
+func number_points(mesh: const Mesh*, part: MeshPart*, id: i32, numbers: i32[], stamp: i32[]) -> !:
+    let offsets = offset_span(mesh)
+    let corners = corner_span(mesh)
+    for face in part.faces.view():
+        for corner in offsets[(usize)face]..<offsets[(usize)face + 1]:
+            let point = (usize)corners[(usize)corner]
+            if stamp[point] != id:
+                stamp[point] = id
+                numbers[point] = (i32)part.points.count
+                try part.points.push((i32)point)
+            try part.corners.push(corner)
+
+## One Mesh prim: topology, extent, primvars, subsets, subdivision.
+func write_part(work: MeshExport*, part: const MeshPart*, numbers: const i32[]) -> !:
+    let author = work.author
+    let t = work.tokens
+    let spec = try author.define(part.path, t.mesh, t.xform)
+    let mesh = work.mesh
+    let origin = mesh_origin(mesh)
+    let positions = point_span(mesh)
+    let points = part.point_count()
+    # Points, placed back at the origin, and the extent.
+    var low: f64[3] = [math.infinity, math.infinity, math.infinity]
+    var high: f64[3] = [-math.infinity, -math.infinity, -math.infinity]
+    let precise = work.options.precise
+    var column = try Column[u8].allocate(points * (24 if precise else 12))
+    errdefer column.release()
+    let out = column.span()
+    for at in 0..<points:
+        let p = positions[part.point_at(at)]
+        let xyz: f64[3] = [(f64)p.x + origin.x, (f64)p.y + origin.y, (f64)p.z + origin.z]
+        for axis in 0..<(usize)3:
+            low[axis] = math.min(low[axis], xyz[axis])
+            high[axis] = math.max(high[axis], xyz[axis])
+            if precise: memory.write[f64]((void*)&out[(at * 3 + axis) * 8], xyz[axis])
+            else: memory.write[f32]((void*)&out[(at * 3 + axis) * 4], (f32)xyz[axis])
+    let taken = column.take()
+    discard(try author.attribute(part.path, spec, "points", "point3d[]" if precise else "point3f[]", false, Value.of_array(ValueKind.vec3d if precise else ValueKind.vec3f, points, taken)))
+    let offsets = offset_span(mesh)
+    var counts = try Column[u8].allocate(part.faces.count * 4)
+    errdefer counts.release()
+    let count_out = i32[]((i32*)counts.span().data, part.faces.count)
+    for at in 0..<part.faces.count:
+        let face = (usize)part.faces.items[at]
+        count_out[at] = offsets[face + 1] - offsets[face]
+    let counts_taken = counts.take()
+    discard(try author.attribute(part.path, spec, "faceVertexCounts", "int[]", false, Value.of_array(ValueKind.int, part.faces.count, counts_taken)))
+    let corners = corner_span(mesh)
+    let corner_total = part.corner_count()
+    var indices = try Column[u8].allocate(corner_total * 4)
+    errdefer indices.release()
+    let index_out = i32[]((i32*)indices.span().data, corner_total)
+    if part.whole: memory.copy(index_out, corners, corner_total)
+    else:
+        for at in 0..<corner_total: index_out[at] = numbers[(usize)corners[part.corner_at(at)]]
+    let indices_taken = indices.take()
+    discard(try author.attribute(part.path, spec, "faceVertexIndices", "int[]", false, Value.of_array(ValueKind.int, corner_total, indices_taken)))
+    let extent: f32[6] = [(f32)low[0], (f32)low[1], (f32)low[2], (f32)high[0], (f32)high[1], (f32)high[2]]
+    discard(try author.attribute(part.path, spec, "extent", "float3[]", false, try array_of(ValueKind.vec3f, 2, u8[]((u8*)&extent[0], 24))))
+    for index in 0..<(usize)mesh.attribute_count():
+        try write_primvar(work, part, spec, try attribute_entry(mesh, (i64)index))
+    try write_subsets(work, part, spec, numbers)
+    try write_subdivision(work, part, spec, numbers)
+    try write_binding(work, part, spec)
+
+## Attributes that are not primvars: bookkeeping, and what the subsets,
+## subdivision and binding writers carry.
+func skipped_attribute(entry: const Attribute*) -> bool:
+    let name = entry.name()
+    if entry.is_group() or name == "path" or name == "material" or name == "crease" or name == "corner_sharpness": return true
+    return starts_with(name, "subd.") or starts_with(name, "usd.") or starts_with(name, ".")
+
+## One attribute as a primvar of the part.
+func write_primvar(work: MeshExport*, part: const MeshPart*, spec: usize, entry: const Attribute*) -> !:
+    if skipped_attribute(entry): return
+    if entry.domain == Domain.edge:
+        try work.warnings.add("Edge attributes other than crease have no USD primvar form; they were left out")
+        return
+    let typed = usd_type(entry)
+    if typed == none:
+        try work.warnings.add("Some attributes have no USD value type (int64 tuples); they were left out")
+        return
+    let usd = typed else return
+    var elements = Growing[i32]()
+    defer elements.close()
+    match entry.domain:
+        .point:
+            if not part.whole: try elements.assign(part.points.view())
+        .corner:
+            if not part.whole: try elements.assign(part.corners.view())
+        .face: try elements.assign(part.faces.view())
+        _: try elements.push(0)
+    var name = Growing[u8]()
+    defer name.close()
+    try primvar_name(entry, &name)
+    # The attribute takes the value, releasing it when it fails.
+    var value = Value.marker(ValueKind.empty)
+    if elements.count > 0 or entry.domain == Domain.face: value = try gathered_value(work.author.names, entry, usd.1, elements.view())
+    else: value = try whole_value(work.author.names, entry, usd.1)
+    if all_zero(&value) and entry.kind != DataType.text:
+        value.release()
+        return
+    let attribute = try work.author.attribute(part.path, spec, (str)name.view(), usd.0, false, value)
+    try work.author.token_field(attribute, work.tokens.interpolation, interpolation_of(entry.domain))
+
+func interpolation_of(domain: Domain) -> str:
+    match domain:
+        .point: return "vertex"
+        .corner: return "faceVarying"
+        .face: return "uniform"
+        _: return "constant"

@@ -4,8 +4,9 @@
 import math
 import memory
 from geocore import Mesh, GeometrySet
-from geocore_kernel import dispose_set, set_mesh, attribute_entry, corner_span, group_bits
-from usd_kernel import ImportOptions, Warnings, import_layer, Names, LayerData, read_usda, read_file, most_bytes, Stage, earliest, gather, Gathered, GprimKind, Matrix4d, local_transform, absolute_root, purpose_render
+from geocore_growing import Growing
+from geocore_kernel import dispose_set, set_mesh, attribute_entry, corner_span, group_bits, set_find, curves_type, points_component, Curves, PointCloud, AttributeStore, cloud_store
+from usd_kernel import ImportOptions, ExportOptions, Warnings, import_layer, export_set, write_usda, Names, LayerData, read_usda, read_file, most_bytes, Stage, earliest, gather, Gathered, GprimKind, Matrix4d, local_transform, absolute_root, purpose_render
 
 func near(a: f64, b: f64) -> bool:
     return math.abs(a - b) < 1e-5
@@ -198,3 +199,176 @@ pub func shapes() -> !:
     assert((try text_at(mesh, "path", 2, 0)) == "/Box")
     let color = mesh.find_attribute("Cd", 2)
     assert(color >= 0 and near(try mesh.attribute_value(color, 0, 2), 1.0) and near(try mesh.attribute_value(color, 6, 2), 0.0))
+
+## Curves and points: types, handles, knots, weights, widths and paths.
+pub func curves_and_points() -> !:
+    var buffer: u8[256]
+    let text = try read_file(try format(buffer, f"tests/fixtures/geom/curves.usda"), most_bytes)
+    defer free(text) in memory.heap
+    var names = try Names()
+    defer names.close()
+    var layer = try LayerData(&names)
+    defer layer.close()
+    try read_usda(text, &layer)
+    var warnings = Warnings()
+    defer warnings.close()
+    let options = ImportOptions(time = math.nan, realize = false, purposes = 0, convert_units = false, subdivide_unauthored = false)
+    let set = try import_layer(&layer, &options, &warnings)
+    defer dispose_set(set)
+    if warnings.text.count > 0: print((str)warnings.text.view())
+    assert(warnings.text.count == 0 and set_mesh(set) == none)
+    let curves = (const Curves*)(set_find(set, curves_type()) else trap("no curves"))
+    # 2 lines, 1 Bezier (2 control points), 1 spline, 1 NURBS arc.
+    assert(curves.curve_count() == 5 and curves.point_count() == 5 + 2 + 4 + 3)
+    let lifted = curves.point(0)
+    assert(near(lifted.z, 1.0))
+    let store = curves.store()
+    assert(near(store_number(store, "curve_type", 2, 2, 0), 1.0) and near(store_number(store, "curve_type", 2, 3, 0), 2.0) and near(store_number(store, "curve_type", 2, 4, 0), 2.0))
+    assert(near(store_number(store, "knot_mode", 2, 4, 0), 2.0) and near(store_number(store, "order", 2, 4, 0), 3.0))
+    # The Bezier's first handles: the vertex after it, and mirrored before.
+    assert(near(store_number(store, "handle_r", 0, 5, 0), 1.0) and near(store_number(store, "handle_l", 0, 5, 0), -1.0) and near(store_number(store, "handle_l", 0, 5, 1), -1.0))
+    assert(near(store_number(store, "w", 0, 12, 0), 0.70710678) and near(store_number(store, "w", 0, 0, 0), 1.0))
+    assert(near(store_number(store, "width", 2, 1, 0), 0.5) and near(store_number(store, "Cd", 2, 1, 1), 1.0))
+    let cloud = (const PointCloud*)(set_find(set, points_component()) else trap("no points"))
+    assert(cloud.count() == 2)
+    let points_store = cloud_store(cloud)
+    assert(near(store_number(points_store, "width", 0, 1, 0), 0.2) and near(store_number(points_store, "id", 0, 1, 0), 11.0))
+
+func store_number(store: const AttributeStore*, name: str, domain: i64, element: usize, component: usize) -> f64:
+    let index = store.find(name, domain)
+    if index < 0:
+        print(f"no attribute {name}")
+        trap("missing attribute")
+    return store.entry((usize)index).number(element, component)
+
+## The instancer fixture: instances, or placed gprims when flattening.
+func import_forest(realize: bool) -> GeometrySet*!:
+    var buffer: u8[256]
+    let text = try read_file(try format(buffer, f"tests/fixtures/geom/instancer.usda"), most_bytes)
+    defer free(text) in memory.heap
+    var names = try Names()
+    defer names.close()
+    var layer = try LayerData(&names)
+    defer layer.close()
+    try read_usda(text, &layer)
+    var warnings = Warnings()
+    defer warnings.close()
+    let options = ImportOptions(time = math.nan, realize = realize, purposes = 0, convert_units = false, subdivide_unauthored = false)
+    let set = try import_layer(&layer, &options, &warnings)
+    if warnings.text.count > 0: print((str)warnings.text.view())
+    return set
+
+pub func instancer() -> !:
+    let set = try import_forest(false)
+    defer dispose_set(set)
+    assert(set_mesh(set) == none and set.instance_count() == 3)
+    let moved = try set.instance_translation(1)
+    assert(near(moved.x, 2.0) and near(moved.z, 10.0))
+    let turned = try set.instance_rotation(1)
+    assert(near(turned.x, 0.0) and near(turned.y, 0.0) and math.abs(turned.z - math.pi * 0.5) < 1e-3)
+    let scaled = try set.instance_scale(1)
+    assert(near(scaled.x, 2.0) and near(scaled.z, 2.0))
+    assert(try set.instance_visible(0) and not try set.instance_visible(2))
+    let flat = try import_forest(true)
+    defer dispose_set(flat)
+    let mesh = set_mesh(flat) else trap("no mesh")
+    assert(mesh.face_count() == 7)
+    # The tree's corner (1, 0, 0) placed at (2, 0, 10).
+    let tip = try mesh.point(1)
+    assert(near(tip.x, 2.0) and near(tip.z, 10.0))
+
+## A fixture imported, exported, written as text, read and imported again.
+func round_trip(file_name: str, check: func(const GeometrySet*, const GeometrySet*) -> unit!) -> !:
+    var buffer: u8[256]
+    let text = try read_file(try format(buffer, f"tests/fixtures/geom/{file_name}"), most_bytes)
+    defer free(text) in memory.heap
+    var names = try Names()
+    defer names.close()
+    var layer = try LayerData(&names)
+    defer layer.close()
+    try read_usda(text, &layer)
+    var warnings = Warnings()
+    defer warnings.close()
+    let options = ImportOptions(time = math.nan, realize = false, purposes = 0, convert_units = false, subdivide_unauthored = false)
+    let first = try import_layer(&layer, &options, &warnings)
+    defer dispose_set(first)
+    var exported = try LayerData(&names)
+    defer exported.close()
+    let export_options = ExportOptions(split = true, precise = false)
+    try export_set(first, &exported, "geo", &export_options, &warnings)
+    var written = Growing[u8]()
+    defer written.close()
+    try write_usda(&exported, &written)
+    var again_names = try Names()
+    defer again_names.close()
+    var again = try LayerData(&again_names)
+    defer again.close()
+    try read_usda(written.view(), &again)
+    let second = try import_layer(&again, &options, &warnings)
+    defer dispose_set(second)
+    try check(first, second)
+
+## Every face, point, corner and element attribute the same after a trip.
+pub func mesh_round_trip() -> !:
+    try round_trip("meshes.usda", same_meshes)
+
+func same_meshes(first: const GeometrySet*, second: const GeometrySet*) -> !:
+    let a = set_mesh(first) else trap("no mesh")
+    let b = set_mesh(second) else trap("no mesh")
+    assert(a.face_count() == b.face_count() and a.point_count() == b.point_count())
+    for face in 0..<(usize)a.face_count():
+        assert((try text_at(a, "path", 2, face)) == (try text_at(b, "path", 2, face)))
+        assert((try text_at(a, "material", 2, face)) == (try text_at(b, "material", 2, face)))
+        assert(near(try number(a, "tag", 2, (i64)face, 0), try number(b, "tag", 2, (i64)face, 0)))
+        assert((try in_group(a, "top", 2, face)) == (try in_group(b, "top", 2, face)))
+        assert((try in_group(a, "hole", 2, face)) == (try in_group(b, "hole", 2, face)))
+    let ca = corner_span(a)
+    let cb = corner_span(b)
+    for corner in 0..<ca.length:
+        let pa = try a.point((i64)ca[corner])
+        let pb = try b.point((i64)cb[corner])
+        assert(near(pa.x, pb.x) and near(pa.y, pb.y) and near(pa.z, pb.z))
+        for k in 0..<(i64)2: assert(near(try number(a, "uv", 1, (i64)corner, k), try number(b, "uv", 1, (i64)corner, k)))
+        assert(near(try number(a, "Cd", 0, (i64)ca[corner], 1), try number(b, "Cd", 0, (i64)cb[corner], 1)))
+    let crease_a = a.find_attribute("crease", 4)
+    let crease_b = b.find_attribute("crease", 4)
+    assert(crease_a >= 0 and crease_b >= 0)
+    let creases = try sum_of(a, crease_a)
+    assert(near(creases, try sum_of(b, crease_b)) and near(creases, 4.0))
+    assert(near(try sum_of(a, a.find_attribute("corner_sharpness", 0)), try sum_of(b, b.find_attribute("corner_sharpness", 0))))
+
+func sum_of(mesh: const Mesh*, index: i64) -> f64!:
+    let entry = try attribute_entry(mesh, index)
+    var total: f64 = 0.0
+    for element in 0..<entry.elements: total += entry.number(element, 0)
+    return total
+
+## Curves, points and instances the same after a trip.
+pub func elements_round_trip() -> !:
+    try round_trip("curves.usda", same_curves)
+    try round_trip("instancer.usda", same_instances)
+
+func same_curves(first: const GeometrySet*, second: const GeometrySet*) -> !:
+    let a = (const Curves*)(set_find(first, curves_type()) else trap("no curves"))
+    let b = (const Curves*)(set_find(second, curves_type()) else trap("no curves"))
+    assert(a.curve_count() == b.curve_count() and a.point_count() == b.point_count())
+    for point in 0..<a.point_count():
+        let pa = a.point(point)
+        let pb = b.point(point)
+        assert(near(pa.x, pb.x) and near(pa.y, pb.y) and near(pa.z, pb.z))
+    for name in ["curve_type", "order", "knot_mode"]:
+        for curve in 0..<a.curve_count(): assert(near(store_number(a.store(), name, 2, curve, 0), store_number(b.store(), name, 2, curve, 0)))
+    assert(near(store_number(b.store(), "w", 0, 12, 0), 0.70710678))
+    let pa = cloud_store((const PointCloud*)(set_find(first, points_component()) else trap("no points")))
+    let pb = cloud_store((const PointCloud*)(set_find(second, points_component()) else trap("no points")))
+    assert(near(store_number(pa, "id", 0, 1, 0), store_number(pb, "id", 0, 1, 0)) and near(store_number(pb, "width", 0, 1, 0), 0.2))
+
+func same_instances(first: const GeometrySet*, second: const GeometrySet*) -> !:
+    assert(second.instance_count() == 3)
+    for at in 0..<(i64)3:
+        let ta = try first.instance_translation(at)
+        let tb = try second.instance_translation(at)
+        let ra = try first.instance_rotation(at)
+        let rb = try second.instance_rotation(at)
+        assert(near(ta.x, tb.x) and near(ta.z, tb.z) and math.abs(ra.z - rb.z) < 2e-3)
+        assert((try first.instance_visible(at)) == (try second.instance_visible(at)))

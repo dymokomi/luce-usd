@@ -1,0 +1,114 @@
+## Authoring specs into a layer as Sdf's API would (SdfPrimSpec,
+## SdfAttributeSpec, SdfRelationshipSpec): prims defined with their
+## ancestors as Xforms, attributes with type name, variability and default,
+## relationships with explicit targets, and the children fields
+## (primChildren, properties) written once at the end in creation order.
+
+## Builds a layer's specs.
+struct Author:
+    var layer: LayerData*
+    var names: Names*
+    ## Children and property names per spec index (grown as specs appear).
+    var children: Growing[Growing[u32]]
+    var properties: Growing[Growing[u32]]
+
+    func init(layer: LayerData*):
+        self.layer = layer
+        self.names = layer.names
+        self.children = Growing[Growing[u32]]()
+        self.properties = Growing[Growing[u32]]()
+
+    mutating func close():
+        for at in 0..<self.children.count: self.children.items[at].close()
+        for at in 0..<self.properties.count: self.properties.items[at].close()
+        self.children.close()
+        self.properties.close()
+
+    ## Room for spec `index`'s lists.
+    mutating func grow(index: usize) -> !:
+        while self.children.count <= index:
+            try self.children.push(Growing[u32]())
+            try self.properties.push(Growing[u32]())
+
+    ## The spec index of prim `path`, defined (typed `type_name`, 0 for
+    ## none) when new; its missing ancestors become Xforms.
+    mutating func define(path: u32, type_name: u32, xform: u32) -> usize!:
+        if let found = self.layer.find(path): return found
+        let parent = self.names.parent(path)
+        let parent_spec = (try self.define(parent, xform, xform)) if parent != absolute_root else 0
+        let spec = try self.layer.create_spec(path, SpecType.prim)
+        try self.grow(spec)
+        try self.layer.set(spec, self.layer.keys.specifier, Value.scalar(ValueKind.specifier, specifier_def))
+        if type_name != 0: try self.layer.set(spec, self.layer.keys.type_name, Value.scalar(ValueKind.token, (u64)type_name))
+        try self.grow(parent_spec)
+        try self.children.items[parent_spec].push(self.names.name(path))
+        return spec
+
+    ## A new attribute `name` of prim `prim` (spec `prim_spec`): its type
+    ## name, variability and default value (taken).
+    mutating func attribute(prim: u32, prim_spec: usize, name: str, type_name: str, uniform: bool, value: Value) -> usize!:
+        var owned = value
+        errdefer owned.release()
+        let token = try self.names.token(name)
+        let path = try self.names.property(prim, token)
+        let spec = try self.layer.create_spec(path, SpecType.attribute)
+        let keys = self.layer.keys
+        try self.layer.set(spec, keys.custom, Value.scalar(ValueKind.boolean, 0))
+        try self.layer.set(spec, keys.type_name, Value.scalar(ValueKind.token, (u64)(try self.names.token(type_name))))
+        try self.layer.set(spec, keys.variability, Value.scalar(ValueKind.variability, variability_uniform if uniform else variability_varying))
+        try self.grow(prim_spec)
+        try self.properties.items[prim_spec].push(token)
+        try self.layer.set(spec, keys.default, owned)
+        return spec
+
+    ## A token metadata field on spec `spec`.
+    mutating func token_field(spec: usize, key: u32, text: str) -> !:
+        try self.layer.set(spec, key, Value.scalar(ValueKind.token, (u64)(try self.names.token(text))))
+
+    ## A relationship `name` of prim `prim` targeting `targets` explicitly.
+    mutating func relationship(prim: u32, prim_spec: usize, name: str, targets: const u32[]) -> !:
+        let token = try self.names.token(name)
+        let path = try self.names.property(prim, token)
+        let spec = try self.layer.create_spec(path, SpecType.relationship)
+        try self.layer.set(spec, self.layer.keys.variability, Value.scalar(ValueKind.variability, variability_uniform))
+        try self.grow(prim_spec)
+        try self.properties.items[prim_spec].push(token)
+        let list = try ListOp.create()
+        try self.layer.set(spec, self.layer.keys.target_paths, Value.of_object(ValueKind.path_list_op, (void*)list))
+        list.explicit = true
+        for target in targets:
+            try list.push(ListPart.explicit, ListItem(a = (u64)target, b = 0, offset = 0.0, scale = 1.0, custom = none))
+            discard(try self.layer.create_spec(try self.names.target(path, target), SpecType.relationship_target))
+        try self.layer.set(spec, self.layer.keys.target_children, try id_vector(ValueKind.path_vector, targets))
+
+    ## Write every prim's primChildren and properties fields.
+    mutating func finish() -> !:
+        for spec in 0..<self.children.count:
+            if self.children.items[spec].count > 0:
+                try self.layer.set(spec, self.layer.keys.prim_children, try id_vector(ValueKind.token_vector, self.children.items[spec].view()))
+            if self.properties.items[spec].count > 0:
+                try self.layer.set(spec, self.layer.keys.properties, try id_vector(ValueKind.token_vector, self.properties.items[spec].view()))
+
+## A token, path or string vector value of `ids`.
+func id_vector(kind: ValueKind, ids: const u32[]) -> Value!:
+    let column = try Column[u8].copy_of(u8[]((u8*)ids.data, ids.length * 4))
+    return Value.of_records(kind, ids.length, column)
+
+## An array value of `count` elements of `kind` copied from `bytes`.
+func array_of(kind: ValueKind, count: usize, bytes: const u8[]) -> Value!:
+    return Value.of_array(kind, count, try Column[u8].copy_of(bytes))
+
+## A prim name from arbitrary text: identifier characters kept, others
+## replaced by '_', a leading digit prefixed (SdfPath's TfMakeValidIdentifier).
+func valid_name(text: str, out: Growing[u8]*) -> !:
+    out.clear()
+    for byte in text.bytes:
+        let keep = (byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or (byte >= '0' and byte <= '9') or byte == '_'
+        try out.push(byte if keep else '_')
+    if out.count == 0 or (out.items[0] >= '0' and out.items[0] <= '9'):
+        try out.push('_')
+        var at = out.count - 1
+        while at > 0:
+            out.items[at] = out.items[at - 1]
+            at -= 1
+        out.items[0] = '_'

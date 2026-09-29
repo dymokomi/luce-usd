@@ -16,8 +16,7 @@ func put_paths(stage: Stage*, gathered: const Gathered*, build: const MeshBuild*
     var any_material = subsets.faces.count > 0
     for index in 0..<build.sources.count:
         let source = &build.sources.items[index]
-        text.clear()
-        try stage.names.write_path(source.path, &text)
+        try write_element_path(stage.names, source.path, gathered.anchor, &text)
         let at = try paths.intern((str)text.view())
         for face in source.face_base..<face_end(build, index): out[face] = at
         any_material = any_material or gathered.gprims.items[source.gprim].material != empty_path
