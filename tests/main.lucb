@@ -139,4 +139,7 @@ pub func main(arguments: str[]) -> i32!:
     try pcp_checks.museum()
     settle(&tracker, "museum")
     inject(&tracker, every, pcp_checks.museum)
+    try pcp_checks.flattened()
+    settle(&tracker, "flattened")
+    inject(&tracker, every, pcp_checks.flattened)
     return 0

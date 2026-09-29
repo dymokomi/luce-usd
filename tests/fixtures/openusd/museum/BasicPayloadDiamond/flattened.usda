@@ -1,0 +1,25 @@
+#usda 1.0
+(
+    """
+    This example has a prim, Root, with payloads to
+    A.usda and B.usda. These payloads will both
+    reference C.usda, forming a 'payload diamond'.
+    This is a legal setup, so we don't want to report
+    errors about cycles in this case.
+    """
+)
+
+def Prim "Root"
+{
+    custom double A_attr
+    custom double B_attr
+    custom double C_attr
+}
+
+def Prim "RootUnloaded"
+{
+    custom double A_attr
+    custom double B_attr
+    custom double C_attr
+}
+

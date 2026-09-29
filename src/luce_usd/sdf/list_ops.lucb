@@ -4,7 +4,8 @@
 ## the same when their ids, offsets and scales are (custom data aside).
 ## Result items borrow the list op's custom data: keep the list op alive
 ## while they are used.
-from luce_usd.sdf.values import ListOp, ListItem, ListPart
+from luce_usd.sdf.values import Value, ListOp, ListItem, ListPart
+from luce_usd.sdf.value_types import ValueKind
 from geocore_growing import Growing
 
 ## Apply `list` to `items` in place.
@@ -89,3 +90,80 @@ func reorder(items: Growing[ListItem]*, order: const ListItem[]) -> !:
     for index in 0..<scratch.count:
         if not taken.items[index]: try items.push(scratch.items[index])
     for item in tail.view(): try items.push(item)
+
+## `strong` composed over `weak` (SdfListOp::ApplyOperations(inner)): an
+## explicit strong list wins; a strong list of deletes, prepends and appends
+## edits an explicit weak one into an explicit list, or merges with a weak
+## one of the same kinds; none when either uses added or ordered items.
+## Custom data is not carried.
+pub func compose_list_ops(strong: const ListOp*, weak: const ListOp*) -> ListOp*?!:
+    let made = try ListOp.create()
+    var owner = Value.of_object(ValueKind.token_list_op, (void*)made)
+    errdefer owner.release()
+    if strong.explicit:
+        made.explicit = true
+        for item in strong.items(ListPart.explicit): try made.push(ListPart.explicit, plain(item))
+        return made
+    if strong.parts[(usize)(u8)ListPart.added].count > 0 or strong.parts[(usize)(u8)ListPart.ordered].count > 0:
+        owner.release()
+        return none
+    if weak.explicit:
+        var items = Growing[ListItem]()
+        defer items.close()
+        for item in weak.items(ListPart.explicit): try items.push(plain(item))
+        try apply_list_op(strong, &items)
+        made.explicit = true
+        for item in items.view(): try made.push(ListPart.explicit, plain(item))
+        return made
+    if weak.parts[(usize)(u8)ListPart.added].count > 0 or weak.parts[(usize)(u8)ListPart.ordered].count > 0:
+        owner.release()
+        return none
+    var deleted = Growing[ListItem]()
+    defer deleted.close()
+    var prepended = Growing[ListItem]()
+    defer prepended.close()
+    var appended = Growing[ListItem]()
+    defer appended.close()
+    for item in weak.items(ListPart.deleted): try deleted.push(plain(item))
+    for item in weak.items(ListPart.prepended): try prepended.push(plain(item))
+    for item in weak.items(ListPart.appended): try appended.push(plain(item))
+    for item in strong.items(ListPart.deleted):
+        remove_all(&prepended, item)
+        remove_all(&appended, item)
+        if find(deleted.view(), item) == none: try deleted.push(plain(item))
+    for item in strong.items(ListPart.prepended):
+        remove_all(&deleted, item)
+        remove_all(&prepended, item)
+        remove_all(&appended, item)
+    for item in strong.items(ListPart.appended):
+        remove_all(&deleted, item)
+        remove_all(&prepended, item)
+        remove_all(&appended, item)
+    for item in deleted.view(): try made.push(ListPart.deleted, item)
+    for item in strong.items(ListPart.prepended): try made.push(ListPart.prepended, plain(item))
+    for item in prepended.view(): try made.push(ListPart.prepended, item)
+    for item in appended.view(): try made.push(ListPart.appended, item)
+    for item in strong.items(ListPart.appended): try made.push(ListPart.appended, plain(item))
+    return made
+
+## `list` applied to nothing, as an explicit list (a composed list op
+## finalized over the background).
+pub func explicit_list(list: const ListOp*) -> ListOp*!:
+    let made = try ListOp.create()
+    var owner = Value.of_object(ValueKind.token_list_op, (void*)made)
+    errdefer owner.release()
+    var items = Growing[ListItem]()
+    defer items.close()
+    try apply_list_op(list, &items)
+    made.explicit = true
+    for item in items.view(): try made.push(ListPart.explicit, plain(item))
+    return made
+
+func plain(item: ListItem) -> ListItem:
+    return ListItem(a = item.a, b = item.b, offset = item.offset, scale = item.scale, custom = none)
+
+func remove_all(items: Growing[ListItem]*, item: ListItem):
+    var at: usize = 0
+    while at < items.count:
+        if same_item(items.items[at], item): remove_at(items, at)
+        else: at += 1

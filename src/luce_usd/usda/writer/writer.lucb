@@ -15,6 +15,7 @@ import memory
 import luce_usd.errors as errors
 import luce_usd.usda.numbers as numbers
 from luce_usd.usda.quote import quote_into, asset_into
+from luce_usd.dictionary_order import dictionary_less
 from luce_usd.sdf.names import Names, PathKind, absolute_root, relative_root, empty_path
 from luce_usd.sdf.layer_data import LayerData, Spec, SpecType, FieldKeys, Field
 from luce_usd.sdf.values import Value, Dictionary, ListOp, ListItem, ListPart, TimeSamples, specifier_def, specifier_over, specifier_class, variability_varying, variability_uniform, permission_public, permission_private

@@ -23,3 +23,11 @@ pub func geometry_tests() -> unit!:
     assert((flat.mesh() else error(invalid, "no mesh")).face_count() == 7)
     let placed = Usd.load("tests/fixtures/geom/instancer.usda")
     assert(placed.instance_count() == 3)
+
+## A composed stage: the museum's time-offset case loads through its
+## references and sublayers, and flattens to a file.
+pub func composed_tests() -> unit!:
+    let loaded = Usd.load("tests/fixtures/openusd/museum/BasicAncestralReference/root.usda")
+    assert(loaded.is_empty())
+    Usd.flatten("tests/fixtures/openusd/museum/BasicTimeOffset/root.usda", "flat.usda")
+    assert(Usd.info("flat.usda").contains("prims: "))

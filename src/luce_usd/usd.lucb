@@ -16,6 +16,9 @@ import luce_usd.usdc.writer as usdc_writer
 import luce_usd.usdz.package as usdz
 import luce_usd.convert as convert
 import luce_usd.layer_info as layer_info
+import luce_usd.ar as ar
+import luce_usd.pcp as pcp
+import luce_usd.flatten as flattening
 from luce_usd.sdf.names import Names
 from luce_usd.sdf.layer_data import LayerData
 from geocore import GeometrySet
@@ -49,15 +52,24 @@ pub struct Usd:
     pub static func load(path: str, time: f64 = math.nan, flatten: bool = false, purposes: i64 = 0, convert_units: bool = false, subdivide: bool = true) -> interop.Reference[GeometrySet]!:
         var names = try Names()
         defer names.close()
-        var layer = try LayerData(&names)
-        defer layer.close()
-        try read_layer(path, &layer)
+        var identifier = Growing[u8]()
+        defer identifier.close()
+        try ar.absolute(path, &identifier)
+        var composer = try pcp.Composer(&names, (str)identifier.view(), "")
+        defer composer.close()
+        # A lone layer is the stage; otherwise the composed stage, flattened.
+        var flattened = try LayerData(&names)
+        defer flattened.close()
+        var layer: const LayerData* = composer.root_layer()
+        if not composer.is_single_layer():
+            try flattening.flatten_stage(&composer, &flattened, false)
+            layer = &flattened
         var warnings = convert.Warnings()
         defer warnings.close()
         # usd_geom's purpose bits: default 1, render 2, proxy 4, guide 8.
         let bits = (u8)((purposes & 7) << 1)
         let options = convert.ImportOptions(time = time, realize = flatten, purposes = bits, convert_units = convert_units, subdivide_unauthored = subdivide)
-        let set = try convert.import_layer(&layer, &options, &warnings)
+        let set = try convert.import_layer(layer, &options, &warnings)
         errdefer dispose_set(set)
         remember(&warnings)
         return try adopt_set(set)
@@ -87,6 +99,22 @@ pub struct Usd:
         defer layer.close()
         try read_layer(source_path, &layer)
         try write_layer(&layer, destination)
+
+    ## Write the stage of the layer at `source_path` to `destination`
+    ## composed into one layer (as usdcat --flatten does), in the format the
+    ## extension names.
+    pub static func flatten(source_path: str, destination: str) -> !:
+        var names = try Names()
+        defer names.close()
+        var identifier = Growing[u8]()
+        defer identifier.close()
+        try ar.absolute(source_path, &identifier)
+        var composer = try pcp.Composer(&names, (str)identifier.view(), "")
+        defer composer.close()
+        var flattened = try LayerData(&names)
+        defer flattened.close()
+        try flattening.flatten_stage(&composer, &flattened, true)
+        try write_layer(&flattened, destination)
 
     ## A summary of the layer at `path`, one "key: value" per line: its
     ## serialization, default prim, up axis, units, time range and prim

@@ -3,7 +3,7 @@
 ## the one OpenUSD prints (after the first line, which names the layer as
 ## given on the command line).
 import memory
-from usd_kernel import Names, composition_report, read_file, most_bytes
+from usd_kernel import Names, LayerData, Composer, flatten_stage, write_usda, absolute_path, composition_report, read_file, most_bytes
 from geocore_growing import Growing
 
 ## One museum case: its directory, the session layer (or ""), and the
@@ -57,3 +57,34 @@ func after_loading(text: str) -> str:
             return (str)text.bytes[end..]
         at += 1
     return text
+
+## Flattened stages of the museum cases, as usdcat --flatten
+## --skipSourceFileComment writes them.
+pub func flattened() -> !:
+    for case in cases:
+        if case.session.length > 0 or case.unloaded.length > 0: continue
+        try check_flattened(case.name)
+
+func check_flattened(name: str) -> !:
+    var root: u8[256]
+    let root_path = try format(root, f"tests/fixtures/openusd/museum/{name}/root.usda")
+    var expected_buffer: u8[256]
+    let expected = try read_file(try format(expected_buffer, f"tests/fixtures/openusd/museum/{name}/flattened.usda"), most_bytes)
+    defer free(expected) in memory.heap
+    var names = try Names()
+    defer names.close()
+    var identifier = Growing[u8]()
+    defer identifier.close()
+    try absolute_path(root_path, &identifier)
+    var composer = try Composer(&names, (str)identifier.view(), "")
+    defer composer.close()
+    var flat = try LayerData(&names)
+    defer flat.close()
+    try flatten_stage(&composer, &flat, false)
+    var text = Growing[u8]()
+    defer text.close()
+    try write_usda(&flat, &text)
+    if (str)text.view() != (str)expected:
+        print(f"museum case {name} flattens differently:")
+        print((str)text.view())
+    assert((str)text.view() == (str)expected)

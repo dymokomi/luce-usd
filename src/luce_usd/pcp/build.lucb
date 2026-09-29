@@ -124,6 +124,26 @@ pub struct Composer:
             if node.has_specs: node.has_specs = self.site_has_specs(node.stack, node.path)
         return index
 
+    ## Whether the stage is its root layer alone: no sublayers, session
+    ## layer or composition arcs, so the layer's specs are the stage's.
+    pub func is_single_layer() -> bool:
+        let stack = self.stacks.stack(self.root_stack)
+        if stack.layers.count != 1: return false
+        let layer = self.layers.layer(stack.root)
+        let keys = &layer.keys
+        let arcs: u32[7] = [keys.references, keys.payload, keys.inherit_paths, keys.specializes, keys.variant_set_names, keys.relocates, keys.instanceable]
+        for index in 0..<layer.spec_count():
+            let spec = layer.spec(index)
+            if spec.kind != SpecType.prim: continue
+            for field in spec.fields.view():
+                for key in arcs:
+                    if field.name == key: return false
+        return true
+
+    ## The root layer's data.
+    pub func root_layer() -> const LayerData*:
+        return self.layers.layer(self.stacks.stack(self.root_stack).root)
+
     ## Leave the payloads of prims whose path text starts with `prefix` unloaded.
     pub mutating func exclude_payloads(prefix: str) -> !:
         var text = Growing[u8]()

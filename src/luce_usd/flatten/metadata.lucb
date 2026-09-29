@@ -1,0 +1,233 @@
+## Composed metadata, after UsdStage's MetadataValueComposer and its special
+## cases (stage.cpp: _ComposeGeneralMetadataImpl, _GetPrimSpecifierImpl,
+## _GetPrimTypeNameImpl, _GetAttrVariabilityImpl, _GetPropCustomImpl): the
+## strongest opinion wins, except that dictionaries merge (stronger keys
+## first) and list ops compose over weaker ones, ending as the explicit
+## list they give applied to nothing. A prim's specifier is its strongest
+## def (or class), else over; its type the strongest non-empty one; a
+## property's custom and variability come from the weakest opinion.
+## Composition arcs, values, children and read-only fields are not
+## metadata (_IsPrivateFieldKey).
+
+let private_names: str[20] = ["inheritPaths", "layerRelocates", "payload", "references", "specializes", "subLayers",
+    "subLayerOffsets", "variantSelection", "variantSetNames", "clips", "clipSets", "default", "timeSamples", "spline",
+    "connectionPaths", "targetPaths", "primChildren", "properties", "variantChildren", "variantSetChildren"]
+let private_children: str[5] = ["targetChildren", "connectionChildren", "expressionChildren", "mapperChildren", "mapperArgChildren"]
+
+## The fields Sdf's schema defines for each spec type (schema.cpp's
+## _Define); plugin metadata comes from sdf/schema's table.
+let layer_core: str[20] = ["colorConfiguration", "colorManagementSystem", "comment", "customLayerData", "defaultPrim",
+    "documentation", "endTimeCode", "expressionVariables", "framesPerSecond", "framePrecision", "hasOwnedSubLayers",
+    "owner", "sessionOwner", "startTimeCode", "timeCodesPerSecond", "endFrame", "startFrame", "primChildren",
+    "layerRelocates", "primOrder"]
+let prim_core: str[35] = ["specifier", "comment", "inheritPaths", "specializes", "primChildren", "primOrder", "properties",
+    "propertyOrder", "references", "relocates", "variantSelection", "variantSetChildren", "variantSetNames", "active",
+    "assetInfo", "clips", "clipSets", "customData", "displayGroupOrder", "displayName", "documentation", "hidden",
+    "instanceable", "kind", "payload", "permission", "prefix", "prefixSubstitutions", "suffix", "suffixSubstitutions",
+    "symmetricPeer", "symmetryArguments", "symmetryFunction", "typeName", "apiSchemas"]
+let property_core: str[16] = ["custom", "variability", "comment", "default", "assetInfo", "customData", "displayGroup",
+    "displayName", "documentation", "hidden", "permission", "prefix", "suffix", "symmetricPeer", "symmetryArguments",
+    "symmetryFunction"]
+let attribute_core: str[10] = ["typeName", "spline", "connectionChildren", "connectionPaths", "displayUnit", "timeSamples",
+    "allowedTokens", "arraySizeConstraint", "colorSpace", "limits"]
+let relationship_core: str[3] = ["targetChildren", "targetPaths", "noLoadHint"]
+
+extend Flattener:
+    ## Whether a field is not metadata to flatten: private, or not valid on
+    ## the spec type (SdfSpec::SetInfo refuses it).
+    func private_field(key: u32, kind: SpecType) -> bool:
+        let text = self.names.text_of(key)
+        for name in private_names:
+            if name == text: return true
+        for name in private_children:
+            if name == text: return true
+        return not valid_field(text, kind)
+
+    ## The composed `active` (true when unauthored).
+    mutating func is_active(index: const PrimIndex*, opinions: const Opinion[]) -> bool!:
+        for opinion in opinions:
+            if let found = self.composer.layers.layer(opinion.layer).get(opinion.spec, self.out.keys.active): return found.as_bool()
+        return true
+
+    ## Every metadata field of the prim's specs, composed, on spec `spec`.
+    mutating func prim_metadata(index: const PrimIndex*, opinions: const Opinion[], spec: usize) -> !:
+        let keys = &self.out.keys
+        var fields = Growing[u32]()
+        defer fields.close()
+        for opinion in opinions:
+            for field in self.composer.layers.layer(opinion.layer).spec(opinion.spec).fields.view():
+                if not self.private_field(field.name, SpecType.prim): try add_unique(&fields, field.name)
+        try add_unique(&fields, keys.specifier)
+        for key in fields.view():
+            if key == keys.specifier:
+                try self.out.set(spec, key, Value.scalar(ValueKind.specifier, self.specifier(opinions)))
+                continue
+            if key == keys.type_name:
+                let name = self.type_name(opinions)
+                if name != 0: try self.out.set(spec, key, Value.scalar(ValueKind.token, (u64)name))
+                continue
+            if let value = try self.composed_value(index, opinions, key):
+                try self.out.set(spec, key, value)
+
+    ## The strongest def (or class) specifier, else over.
+    func specifier(opinions: const Opinion[]) -> u64:
+        for opinion in opinions:
+            let found = self.composer.layers.layer(opinion.layer).get(opinion.spec, self.out.keys.specifier) else continue
+            if found.bits == specifier_over: continue
+            return found.bits
+        return specifier_over
+
+    ## The strongest non-empty type name (0 for none).
+    func type_name(opinions: const Opinion[]) -> u32:
+        for opinion in opinions:
+            let found = self.composer.layers.layer(opinion.layer).get(opinion.spec, self.out.keys.type_name) else continue
+            let name = found.as_token()
+            if name != 0: return name
+        return 0
+
+    ## The weakest opinion's value of `key`, when any.
+    func weakest(opinions: const Opinion[], key: u32) -> const Value*?:
+        var at = opinions.length
+        while at > 0:
+            at -= 1
+            if let found = self.composer.layers.layer(opinions[at].layer).get(opinions[at].spec, key): return found
+        return none
+
+    ## The composed value of metadata field `key` (none when unauthored):
+    ## each opinion moved into stage terms first.
+    mutating func composed_value(index: const PrimIndex*, opinions: const Opinion[], key: u32) -> Value?!:
+        var value = Value.marker(ValueKind.empty)
+        errdefer value.release()
+        for opinion in opinions:
+            let found = self.composer.layers.layer(opinion.layer).get(opinion.spec, key) else continue
+            var next = try self.to_stage(index, opinion, found)
+            if value.kind == ValueKind.empty:
+                value = next
+            else:
+                let merged = compose_over(&value, &next) catch failure:
+                    next.release()
+                    error(failure.code, failure.message)
+                next.release()
+                value.release()
+                value = merged
+            if not composes_over(&value): break
+        if value.kind == ValueKind.empty: return none
+        let done = value
+        value = Value.marker(ValueKind.empty)
+        return try finalized(done)
+
+    ## A field value moved into stage terms (_FieldValueToStageXf): asset
+    ## paths anchored at their layer, time codes and sample times shifted by
+    ## the layer's offset.
+    mutating func to_stage(index: const PrimIndex*, opinion: Opinion, value: const Value*) -> Value!:
+        match value.kind:
+            .asset:
+                if value.array: return value.share()
+                return Value.scalar(ValueKind.asset, (u64)(try self.anchor_asset(value.as_token(), opinion.layer)))
+            .time_code:
+                if value.array: return value.share()
+                let offset = try self.layer_offset(index, opinion)
+                return Value.scalar(ValueKind.time_code, offset.apply(value.as_double()).bits())
+            .dictionary:
+                # Dictionary values move too (VtValueTryTransform recurses).
+                let held = value.dictionary() else return value.share()
+                let made = try Dictionary.create()
+                var owner = Value.of_object(ValueKind.dictionary, (void*)made)
+                errdefer owner.release()
+                for at in 0..<held.keys.count:
+                    try made.put(held.keys.items[at], try self.to_stage(index, opinion, &held.values.items[at]))
+                return owner
+            _: return value.share()
+
+    ## The offset from the opinion's layer into stage time.
+    mutating func layer_offset(index: const PrimIndex*, opinion: Opinion) -> Offset!:
+        var map = try index.map_to_root(self.names, opinion.node)
+        defer map.close()
+        let stack = self.composer.stacks.stack(index.node(opinion.node).stack)
+        return map.offset.times(stack.offsets.items[opinion.position])
+
+    ## An asset path as flattening anchors it (SdfAnchorAssetPaths): anchored
+    ## at the layer when that differs from the path on its own, except that
+    ## a search path whose anchored file does not exist stays as it is.
+    mutating func anchor_asset(asset: u32, layer: usize) -> u32!:
+        let text = self.names.text_of(asset)
+        if text.length == 0: return asset
+        var anchored = Growing[u8]()
+        defer anchored.close()
+        try ar.anchored(text, self.composer.layers.identifier(layer), &anchored)
+        let search = text.bytes[0] != '.' and text.bytes[0] != '/'
+        if search and not ar.exists((str)anchored.view()): return asset
+        var plain = Growing[u8]()
+        defer plain.close()
+        try ar.normalize_into(text, &plain)
+        if (str)plain.view() == (str)anchored.view(): return asset
+        return try self.names.token((str)anchored.view())
+
+## Whether a value composes over weaker ones (a dictionary or a list op).
+func composes_over(value: const Value*) -> bool:
+    return value.kind == ValueKind.dictionary or is_list_op(value.kind)
+
+## `strong` composed over `weak` (VtValueTryComposeOver): dictionaries
+## merge, list ops of one kind compose; otherwise the weaker value stays.
+func compose_over(strong: const Value*, weak: const Value*) -> Value!:
+    if strong.kind == ValueKind.dictionary and weak.kind == ValueKind.dictionary:
+        let a = strong.dictionary() else return weak.share()
+        let b = weak.dictionary() else return strong.share()
+        return Value.of_object(ValueKind.dictionary, (void*)(try merged_dictionary(a, b)))
+    if is_list_op(strong.kind) and strong.kind == weak.kind:
+        let a = strong.list_op() else return weak.share()
+        let b = weak.list_op() else return strong.share()
+        let composed = try compose_list_ops(a, b)
+        if let made = composed: return Value.of_object(strong.kind, (void*)made)
+        return strong.share()
+    return weak.share()
+
+## A dictionary with `strong`'s entries over `weak`'s, nested dictionaries
+## merged (VtDictionaryOverRecursive).
+func merged_dictionary(strong: const Dictionary*, weak: const Dictionary*) -> Dictionary*!:
+    let made = try Dictionary.create()
+    var owner = Value.of_object(ValueKind.dictionary, (void*)made)
+    errdefer owner.release()
+    for at in 0..<weak.keys.count: try made.put(weak.keys.items[at], weak.values.items[at].share())
+    for at in 0..<strong.keys.count:
+        let key = strong.keys.items[at]
+        let value = &strong.values.items[at]
+        if let under = made.find(key):
+            if value.kind == ValueKind.dictionary and under.kind == ValueKind.dictionary:
+                let a = value.dictionary() else continue
+                let b = under.dictionary() else continue
+                try made.put(key, Value.of_object(ValueKind.dictionary, (void*)(try merged_dictionary(a, b))))
+                continue
+        try made.put(key, value.share())
+    return made
+
+## A composed value made final: list ops as their explicit lists.
+func finalized(value: Value) -> Value!:
+    var owned = value
+    defer owned.release()
+    if is_list_op(owned.kind):
+        let list = owned.list_op() else return owned.share()
+        return Value.of_object(owned.kind, (void*)(try explicit_list(list)))
+    return owned.share()
+
+## Whether Sdf's schema (with the plugin metadata) lets `name` be set on a
+## spec of `kind`.
+func valid_field(name: str, kind: SpecType) -> bool:
+    match kind:
+        .pseudo_root:
+            if listed_in(layer_core, name): return true
+        .prim:
+            if listed_in(prim_core, name): return true
+        .attribute:
+            if listed_in(property_core, name) or listed_in(attribute_core, name): return true
+        .relationship:
+            if listed_in(property_core, name) or listed_in(relationship_core, name): return true
+        _: return false
+    let field = find_field(name) else return false
+    let mask = applies_layer if kind == SpecType.pseudo_root else (applies_prim if kind == SpecType.prim else (applies_attribute if kind == SpecType.attribute else applies_relationship))
+    return field.applies & mask != 0
+
+func listed_in(list: const str[], name: str) -> bool:
+    for known in list:
+        if known == name: return true
+    return false

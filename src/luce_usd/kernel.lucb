@@ -107,3 +107,9 @@ import luce_usd.pcp as pcp
 
 pub type Composer = pcp.Composer
 pub let composition_report = pcp.composition_report
+import luce_usd.flatten as flatten
+
+pub let flatten_stage = flatten.flatten_stage
+import luce_usd.ar as asset_resolution
+
+pub let absolute_path = asset_resolution.absolute

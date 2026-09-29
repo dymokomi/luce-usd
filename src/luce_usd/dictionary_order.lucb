@@ -1,0 +1,90 @@
+## TfDictionaryLessThan (pxr/base/tf/stringUtils.cpp): the order OpenUSD
+## sorts metadata, property and dictionary names in: letters compare
+## ignoring case ('_' before letters), digit runs compare as numbers, and
+## case and leading zeros break ties.
+
+inline func is_digit(byte: u8) -> bool:
+    return byte >= '0' and byte <= '9'
+
+inline func is_alpha(byte: u8) -> bool:
+    return (byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z')
+
+## The first index at or after `start` where a and b differ, below `end`.
+func mismatch(a: const u8[], b: const u8[], start: usize, end: usize) -> usize:
+    var at = start
+    while at < end and a[at] == b[at]: at += 1
+    return at
+
+## TfDictionaryLessThan: letters compare ignoring case ('_' before
+## letters), digit runs compare as numbers, and case and leading zeros
+## break ties.
+pub func dictionary_less(left: str, right: str) -> bool:
+    let l_text = left.bytes
+    let r_text = right.bytes
+    let l_size = l_text.length
+    let r_size = r_text.length
+    var l_at: usize = 0
+    var r_at: usize = 0
+    var common = l_size if l_size < r_size else r_size
+    l_at = mismatch(l_text, r_text, 0, common)
+    r_at = l_at
+    if l_at == common and l_size == r_size: return false
+    # Positions in both strings advance together until digit runs of
+    # different lengths shift them apart.
+    var l_end = common
+    while true:
+        if l_at == l_end: break
+        let l = l_text[l_at]
+        let r = r_text[r_at]
+        let both_ascii = l < 0x80 and r < 0x80
+        let differs = (l & 0xDF) != (r & 0xDF)
+        let letters = l >= 0x40 and r >= 0x40
+        if both_ascii and differs and letters:
+            return ((l +% 5) & 31) < ((r +% 5) & 31)
+        if is_digit(l) or is_digit(r):
+            if is_digit(l) and is_digit(r):
+                var l_start = l_at
+                var r_start = r_at
+                while l_start > 0 and is_digit(l_text[l_start - 1]): l_start -= 1
+                while r_start > 0 and is_digit(r_text[r_start - 1]): r_start -= 1
+                var l_digits_end = l_at
+                var r_digits_end = r_at
+                while l_digits_end < l_size and is_digit(l_text[l_digits_end]): l_digits_end += 1
+                while r_digits_end < r_size and is_digit(r_text[r_digits_end]): r_digits_end += 1
+                while l_start != l_digits_end and l_text[l_start] == '0': l_start += 1
+                while r_start != r_digits_end and r_text[r_start] == '0': r_start += 1
+                while l_start != l_digits_end and r_start != r_digits_end and l_text[l_start] == r_text[r_start]:
+                    l_start += 1
+                    r_start += 1
+                if (l_start == l_digits_end) != (r_start == r_digits_end):
+                    return l_start == l_digits_end and r_start != r_digits_end
+                if l_start != l_digits_end and r_start != r_digits_end:
+                    let l_count = l_digits_end - l_start
+                    let r_count = r_digits_end - r_start
+                    if l_count != r_count: return l_count < r_count
+                    return l_text[l_start] < r_text[r_start]
+                l_at = l_digits_end
+                r_at = r_digits_end
+                let l_rest = l_size - l_at
+                let r_rest = r_size - r_at
+                l_end = l_at + (l_rest if l_rest < r_rest else r_rest)
+            else:
+                if l_at == 0: return l < r
+                let previous = l_text[l_at - 1]
+                return is_digit(r) if is_digit(previous) else is_digit(l)
+        elif not is_alpha(l) or not is_alpha(r):
+            return l < r
+        else:
+            l_at += 1
+            r_at += 1
+        # The next difference, with the two positions offset alike.
+        while l_at < l_end and l_text[l_at] == r_text[r_at]:
+            l_at += 1
+            r_at += 1
+    if l_at != l_size or r_at != r_size: return l_at == l_size
+    common = l_size if l_size < r_size else r_size
+    let first = mismatch(l_text, r_text, 0, common)
+    let l = l_text[first] if first < l_size else 0
+    let r = r_text[first] if first < r_size else 0
+    return r == '0' or (l != '0' and l < r)
+

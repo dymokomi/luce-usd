@@ -1,0 +1,110 @@
+## Properties flattened (_CopyProperty): an attribute keeps its composed
+## type, custom, variability and metadata, the time samples of its
+## strongest value opinion when that opinion is time samples (moved into
+## stage time), its strongest default when any opinion authors one, and its
+## connections in stage namespace as an explicit list; a relationship keeps
+## its metadata and its targets likewise.
+
+extend Flattener:
+    ## Flatten property `name` of the prim at `path` (output spec `prim`).
+    mutating func property(index: const PrimIndex*, path: u32, prim: usize, name: u32) -> !:
+        var opinions = Growing[Opinion]()
+        defer opinions.close()
+        try self.gather(index, name, &opinions)
+        if opinions.count == 0: return
+        let composer = self.composer
+        let keys = &self.out.keys
+        let first = opinions.items[0]
+        let kind = composer.layers.layer(first.layer).spec(first.spec).kind
+        # Specs of the other property kind are not part of this property.
+        var kept = Growing[Opinion]()
+        defer kept.close()
+        for opinion in opinions.view():
+            if composer.layers.layer(opinion.layer).spec(opinion.spec).kind == kind: try kept.push(opinion)
+        let attribute = kind == SpecType.attribute
+        if attribute and self.type_name(kept.view()) == 0: return
+        let property_path = try self.names.property(path, name)
+        let spec = try self.out.create_spec(property_path, kind)
+        try self.grow(prim)
+        try self.properties.items[prim].push(name)
+        var fields = Growing[u32]()
+        defer fields.close()
+        for opinion in kept.view():
+            for field in composer.layers.layer(opinion.layer).spec(opinion.spec).fields.view():
+                if not self.private_field(field.name, kind): try add_unique(&fields, field.name)
+        try add_unique(&fields, keys.custom)
+        try add_unique(&fields, keys.variability)
+        for key in fields.view():
+            if key == keys.custom:
+                var custom: u64 = 0
+                if let found = self.weakest(kept.view(), key): custom = found.bits
+                try self.out.set(spec, key, Value.scalar(ValueKind.boolean, custom))
+                continue
+            if key == keys.variability and attribute:
+                var variability = variability_varying
+                if let found = self.weakest(kept.view(), key): variability = found.bits
+                try self.out.set(spec, key, Value.scalar(ValueKind.variability, variability))
+                continue
+            if let value = try self.composed_value(index, kept.view(), key): try self.out.set(spec, key, value)
+        var targets = Growing[u32]()
+        defer targets.close()
+        var deleted = Growing[u32]()
+        defer deleted.close()
+        try composer.target_paths(index, name, attribute, &targets, &deleted)
+        if targets.count > 0:
+            let list = try ListOp.create()
+            try self.out.set(spec, keys.connection_paths if attribute else keys.target_paths, Value.of_object(ValueKind.path_list_op, (void*)list))
+            list.explicit = true
+            for target in targets.view(): try list.push(ListPart.explicit, ListItem(a = (u64)target, b = 0, offset = 0.0, scale = 1.0, custom = none))
+        if attribute: try self.attribute_values(index, kept.view(), spec)
+
+    ## An attribute's samples (when its strongest value opinion is samples)
+    ## and default (when any opinion has one).
+    mutating func attribute_values(index: const PrimIndex*, opinions: const Opinion[], spec: usize) -> !:
+        let keys = &self.out.keys
+        let composer = self.composer
+        for opinion in opinions:
+            let data = composer.layers.layer(opinion.layer)
+            if let found = data.get(opinion.spec, keys.time_samples):
+                let samples = found.time_samples() else break
+                if samples.count() == 0: continue
+                try self.out.set(spec, keys.time_samples, try self.samples_to_stage(index, opinion, samples))
+                break
+            if data.get(opinion.spec, keys.default) != none: break
+        for opinion in opinions:
+            let found = composer.layers.layer(opinion.layer).get(opinion.spec, keys.default) else continue
+            try self.out.set(spec, keys.default, try self.value_to_stage(index, opinion, found))
+            break
+
+    ## Time samples in stage time, their values moved too.
+    mutating func samples_to_stage(index: const PrimIndex*, opinion: Opinion, samples: const TimeSamples*) -> Value!:
+        let offset = try self.layer_offset(index, opinion)
+        let made = try TimeSamples.create()
+        var owner = Value.of_object(ValueKind.time_samples, (void*)made)
+        errdefer owner.release()
+        for at in 0..<samples.count():
+            try made.put(offset.apply(samples.times.items[at]), try self.value_to_stage(index, opinion, &samples.values.items[at]))
+        return owner
+
+    ## An attribute value in stage terms (_MakeResolvedAssetPathsValue and
+    ## Usd_ApplyLayerOffsetToValue): asset paths anchored, time codes moved.
+    mutating func value_to_stage(index: const PrimIndex*, opinion: Opinion, value: const Value*) -> Value!:
+        if value.kind == ValueKind.asset and value.array:
+            let ids = u32[]((u32*)value.bytes().data, value.count)
+            var column = try Column[u8].allocate(value.count * 4)
+            errdefer column.release()
+            let out = u32[]((u32*)column.span().data, value.count)
+            var anchoring = true
+            for at in 0..<ids.length:
+                # SdfAnchorAssetPaths stops at the first empty path.
+                if self.names.text_of(ids[at]).length == 0: anchoring = false
+                out[at] = try self.anchor_asset(ids[at], opinion.layer) if anchoring else ids[at]
+            return Value.of_array(ValueKind.asset, value.count, column.take())
+        if value.kind == ValueKind.time_code and value.array:
+            let offset = try self.layer_offset(index, opinion)
+            let times = f64[]((f64*)value.bytes().data, value.count)
+            var column = try Column[u8].allocate(value.count * 8)
+            let out = f64[]((f64*)column.span().data, value.count)
+            for at in 0..<times.length: out[at] = offset.apply(times[at])
+            return Value.of_array(ValueKind.time_code, value.count, column.take())
+        return try self.to_stage(index, opinion, value)
