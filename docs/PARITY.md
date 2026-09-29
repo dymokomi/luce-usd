@@ -28,7 +28,10 @@ python3 ~/Dev/luce_dev/.donors/oracles/luce-usd/parity.py [suite ...]
 | `sdf-parsing` | `sdf/testenv/testSdfParsing.testenv` (192 files): good files print as their baselines, bad files fail |
 | `usda` | every testenv `.usda` (2,271): ours, parsed and written, byte-identical to `usdcat` |
 | `usdc` | every testenv `.usdc` (38): ours read and printed as usda, identical to `usdcat` |
-| `usdc-write` | our `.usdc` output read back by `usdcat` identically; `usdchecker` passes (`--arkit` for usdz) |
+| `usdc-corpus` | every testenv `.usda` written as `.usdc` by `usdcat`: ours reads it identically |
+| `usdc-write` | every testenv `.usda` written as `.usdc` by us, read back by `usdcat` identically |
+| `usdz` | every testenv `.usdz`: ours reads the root layer and prints it identically to `usdcat` |
+| `usdz-write` | every testenv `.usda` written as a `.usdz` by us: read back by `usdcat` identically, and `usdchecker`'s package validators (stored, 64-byte aligned) pass |
 | `museum` | the 141 `testPcpMuseum_*` cases: our composition report equals `compositionResults_*.txt`, and our flatten equals `usdcat --flatten` |
 
 The driver builds nothing in the repo: it runs `ourcat`, a small Base program

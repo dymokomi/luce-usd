@@ -1,0 +1,47 @@
+## usdz packages: one usdzip wrote reads its root layer in place; packages
+## written here hold their files stored and 64-byte aligned, read back to
+## the same layer, and give their other entries back in place.
+import memory
+import zip
+from usd_kernel import Names, LayerData, read_usdz, write_usdz, write_usda, package_entry, read_file, most_bytes, PackageFile
+from geocore_growing import Growing
+
+pub func exercise() -> !:
+    var buffer: u8[256]
+    let package = try read_file(try format(buffer, f"tests/fixtures/usdz/package.usdz"), most_bytes)
+    defer free(package) in memory.heap
+    var expected_buffer: u8[256]
+    let expected = try read_file(try format(expected_buffer, f"tests/fixtures/usdc/arrays.expected.usda"), most_bytes)
+    defer free(expected) in memory.heap
+    var names = try Names()
+    defer names.close()
+    var layer = try LayerData(&names)
+    defer layer.close()
+    try read_usdz(package, &layer)
+    var text = Growing[u8]()
+    defer text.close()
+    try write_usda(&layer, &text)
+    assert((str)text.view() == (str)expected)
+    let texture = try package_entry(package, "texture.png")
+    assert((str)texture == "not really a png")
+    # Write a package of the layer and a file; read both back.
+    let files: PackageFile[1] = [PackageFile(name = "textures/wood.png", data = b"wood pixels")]
+    var written = Growing[u8]()
+    defer written.close()
+    try write_usdz(&layer, "arrays.usdc", files, &written)
+    var archive = try zip.open(written.view())
+    defer archive.close()
+    assert(archive.count == 2 and archive.entries[0].name == "arrays.usdc")
+    for index in 0..<archive.count:
+        let entry = archive.entries[index]
+        assert(entry.method == zip.method_stored)
+        let bytes = try archive.stored_bytes(entry)
+        assert(((usize)bytes.data - (usize)written.items.data) % 64 == 0)
+    var again = try LayerData(&names)
+    defer again.close()
+    try read_usdz(written.view(), &again)
+    var text_again = Growing[u8]()
+    defer text_again.close()
+    try write_usda(&again, &text_again)
+    assert((str)text_again.view() == (str)expected)
+    assert((str)(try package_entry(written.view(), "textures/wood.png")) == "wood pixels")

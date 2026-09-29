@@ -11,6 +11,7 @@ import value_checks
 import number_checks
 import usda_checks
 import usdc_checks
+import usdz_checks
 
 ## Counts live blocks and fails the allocation after `remaining` more.
 struct Tracker: memory.Allocator:
@@ -41,6 +42,9 @@ struct Tracker: memory.Allocator:
         self.live -= 1
         self.upstream.release(block)
 
+## Stages enough to fail every allocation of any check here.
+let every: usize = 1000000
+
 func restore(previous: memory.Allocator):
     memory.heap = previous
 
@@ -50,14 +54,18 @@ func settle(tracker: Tracker*, what: str = "a check"):
     if tracker.live != 0: print(f"{tracker.live} blocks still live after {what}")
     assert(tracker.live == 0)
 
-## Fail each of the first `stages` allocations of `check` in turn.
+## Fail each allocation of `check` in turn, until it runs through (or for
+## the first `stages` of them).
 func inject(tracker: Tracker*, stages: usize, check: func() -> unit!):
     for stage in 0..<stages:
         tracker.remaining = stage
+        var failed = false
         check() catch failure:
             assert(failure.code == memory.exhausted)
+            failed = true
         if tracker.live != 0: print(f"allocation {stage} failing leaks")
         settle(tracker)
+        if not failed: return
 
 pub func main(arguments: str[]) -> i32!:
     # Start the pool first: its starting threads free blocks in the current heap.
@@ -70,10 +78,10 @@ pub func main(arguments: str[]) -> i32!:
     settle(&tracker, "sniff_checks")
     try path_checks.exercise()
     settle(&tracker, "path_checks")
-    inject(&tracker, 64, path_checks.allocations)
+    inject(&tracker, every, path_checks.allocations)
     try value_checks.exercise()
     settle(&tracker, "value_checks")
-    inject(&tracker, 64, value_checks.allocations)
+    inject(&tracker, every, value_checks.allocations)
     try number_checks.exercise()
     settle(&tracker, "number_checks")
     try usda_checks.exercise()
@@ -84,15 +92,22 @@ pub func main(arguments: str[]) -> i32!:
     settle(&tracker, "usda fixtures")
     try usda_checks.large_arrays()
     settle(&tracker, "usda large arrays")
-    inject(&tracker, 200, usda_checks.round_trip)
+    inject(&tracker, every, usda_checks.round_trip)
+    inject(&tracker, every, usda_checks.fixtures)
     try usdc_checks.fixtures()
     settle(&tracker, "usdc fixtures")
     try usdc_checks.integers()
     settle(&tracker, "integer coding")
     try usdc_checks.damaged()
     settle(&tracker, "damaged crates")
-    inject(&tracker, 120, usdc_checks.fixtures)
+    inject(&tracker, every, usdc_checks.values_fixture)
+    inject(&tracker, every, usdc_checks.properties_fixture)
+    inject(&tracker, every, usdc_checks.composition_fixture)
+    inject(&tracker, every, usdc_checks.arrays_fixture)
     try usdc_checks.writes()
     settle(&tracker, "usdc writes")
-    inject(&tracker, 150, usdc_checks.writes)
+    inject(&tracker, every, usdc_checks.writes)
+    try usdz_checks.exercise()
+    settle(&tracker, "usdz")
+    inject(&tracker, every, usdz_checks.exercise)
     return 0

@@ -16,6 +16,8 @@ corner `uv`, as luce-geocore's benchmark saves it.
 | usda: write the grid layer (bytes) | 124 ms | 108,574,613 |
 | usdc: read the grid layer (bytes) | 18 ms | 30,863,379 |
 | usdc: write the grid layer (bytes) | 37 ms | 30,863,379 |
+| usdz: write the grid layer as a package (bytes) | 56 ms | 30,863,545 |
+| usdz: read that package (bytes) | 18.5 ms | 30,863,545 |
 
 The usda grid is the same mesh as a layer: points, face vertex counts and
 indices, and a faceVarying `primvars:st`, written with 17-digit doubles for
@@ -25,7 +27,9 @@ The usdc grid is the same layer written as a crate by luce-usd (0.8.0,
 integer arrays compressed; OpenUSD's usdcat writes the same layer 3 bytes
 longer). Crate arrays decode in parallel, each straight into its column, and
 compressible arrays are compressed in parallel before packing (times exclude
-file I/O).
+file I/O). The usdz rows hold that crate as the package's root layer: reading
+opens the ZIP directory and reads the crate in place; writing is the crate
+write plus a CRC-32 and one copy into the stored, 64-byte aligned entry.
 
 ## Targets
 

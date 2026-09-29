@@ -75,3 +75,9 @@ pub let encoded_bound = crate_compression.encoded_bound
 import luce_usd.usdc.writer as usdc_writer
 
 pub let write_usdc = usdc_writer.write_usdc
+import luce_usd.usdz.package as usdz
+
+pub let read_usdz = usdz.read_usdz
+pub let write_usdz = usdz.write_usdz
+pub let package_entry = usdz.package_entry
+pub type PackageFile = usdz.PackageFile

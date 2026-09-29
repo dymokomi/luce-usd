@@ -211,9 +211,13 @@ pub struct ListOp:
     pub func items(part: ListPart) -> const ListItem[]:
         return self.parts[(usize)(u8)part].view()
 
-    ## Append an item (taken) to a part.
+    ## Append an item (taken, its custom data released on failure) to a part.
     pub mutating func push(part: ListPart, item: ListItem) -> !:
-        try self.parts[(usize)(u8)part].push(item)
+        self.parts[(usize)(u8)part].push(item) catch failure:
+            if let custom = item.custom:
+                var owned = Value.of_object(ValueKind.dictionary, (void*)custom)
+                owned.release()
+            error(failure.code, failure.message)
 
 ## A single payload in a vector-shaped value.
 pub struct PayloadRecord:

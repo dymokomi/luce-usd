@@ -11,6 +11,12 @@ pub func fixtures() -> !:
     try fixture("composition")
     try fixture("arrays")
 
+## Each fixture alone, so allocation failure reaches every one of them.
+pub func values_fixture() -> !: try fixture("values")
+pub func properties_fixture() -> !: try fixture("properties")
+pub func composition_fixture() -> !: try fixture("composition")
+pub func arrays_fixture() -> !: try fixture("arrays")
+
 func fixture(name: str) -> !:
     var buffer: u8[256]
     let crate = try read_file(try format(buffer, f"tests/fixtures/usdc/{name}.usdc"), most_bytes)
