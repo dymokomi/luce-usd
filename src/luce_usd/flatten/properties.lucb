@@ -55,7 +55,7 @@ extend Flattener:
             let list = try ListOp.create()
             try self.out.set(spec, keys.connection_paths if attribute else keys.target_paths, Value.of_object(ValueKind.path_list_op, (void*)list))
             list.explicit = true
-            for target in targets.view(): try list.push(ListPart.explicit, ListItem(a = (u64)target, b = 0, offset = 0.0, scale = 1.0, custom = none))
+            for target in targets.view(): try list.push(ListPart.explicit, ListItem(a = (u64)(try self.in_prototype(target)), b = 0, offset = 0.0, scale = 1.0, custom = none))
         if attribute: try self.attribute_values(index, kept.view(), spec)
 
     ## An attribute's samples (when its strongest value opinion is samples)

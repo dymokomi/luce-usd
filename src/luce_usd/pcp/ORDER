@@ -9,5 +9,6 @@ build.lucb
 arcs.lucb
 variants.lucb
 classes.lucb
+instancing.lucb
 compose.lucb
 report.lucb

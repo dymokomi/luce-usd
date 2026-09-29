@@ -1,0 +1,68 @@
+#usda 1.0
+(
+    """
+    This museum case exercises the interaction between instancing and
+    subroot implied arcs in the root layer stack.
+    """
+)
+
+over "Flattened_Prototype_1"
+{
+    class "class_widget"
+    {
+        double radius = 1
+    }
+
+    def "widget"
+    {
+        double radius = 5
+    }
+}
+
+over "Flattened_Prototype_2"
+{
+    class "class_widget"
+    {
+        double radius = 1
+    }
+
+    def "widget"
+    {
+        double radius = 5
+    }
+}
+
+over "Flattened_Prototype_3"
+{
+    class "class_widget"
+    {
+        double radius = 1
+    }
+
+    def "widget"
+    {
+        double radius = 5
+    }
+}
+
+def "Inherits" (
+    instanceable = true
+    add references = </Flattened_Prototype_1>
+)
+{
+}
+
+def "Specializes" (
+    instanceable = true
+    add references = </Flattened_Prototype_3>
+)
+{
+}
+
+def "References" (
+    instanceable = true
+    add references = </Flattened_Prototype_2>
+)
+{
+}
+

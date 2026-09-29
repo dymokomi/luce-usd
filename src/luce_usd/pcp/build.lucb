@@ -92,6 +92,7 @@ pub struct Composer:
         var built = try self.build(self.root_stack, path, none, true, true)
         defer built.close()
         cull(&built, self.names, self.root_stack)
+        built.instanceable = try self.is_instanceable(&built)
         var made = try finalized(&built)
         errdefer made.close()
         try self.cached_paths.push(path)
@@ -127,15 +128,28 @@ pub struct Composer:
         let parent_path = self.names.parent(path)
         var index = PrimIndex()
         errdefer index.close()
+        var instance = false
         if frame == none and stack == self.root_stack:
-            index = try copy_index(try self.index(parent_path))
+            let cached = try self.index(parent_path)
+            index = try copy_index(cached)
+            instance = cached.instanceable
         else:
             index = try self.build(stack, parent_path, frame, true, outer)
+            instance = try self.ancestor_is_instance(stack, parent_path, &index)
+        # Below an instance only its instanceable opinions count.
+        if instance: disable_non_instanceable(&index, self.names)
+        index.has_payloads = false
         let name = self.names.name(path)
         for at in 0..<index.nodes.count:
             let node = &index.nodes.items[at]
             node.path = path if node.path == parent_path else try self.names.child(node.path, name)
             if node.has_specs: node.has_specs = self.site_has_specs(node.stack, node.path)
+            if at > 0:
+                # _ConvertNodeForChild: every node but the root now comes
+                # from an ancestor.
+                node.due_to_ancestor = true
+                node.direct = false
+                node.ancestral_arc = true
         return index
 
     ## Whether the stage is its root layer alone: no sublayers, session
@@ -215,6 +229,8 @@ func copy_index(index: const PrimIndex*) -> PrimIndex!:
         copied.children = children
         copied.map_to_parent = map
         try made.nodes.push(copied)
+    made.instanceable = index.instanceable
+    made.has_payloads = index.has_payloads
     return made
 
 ## `index` finalized (PcpPrimIndex_Graph::Finalize): nodes renumbered in
@@ -253,6 +269,8 @@ func finalized(index: const PrimIndex*) -> PrimIndex!:
         copied.parent = mapping.items[(usize)entry.parent] if entry.parent >= 0 else -1
         copied.origin = mapping.items[(usize)entry.origin] if entry.origin >= 0 else -1
         try made.nodes.push(copied)
+    made.instanceable = index.instanceable
+    made.has_payloads = index.has_payloads
     return made
 
 ## Culled nodes on a kept node's chain of origins, and their parents, stay

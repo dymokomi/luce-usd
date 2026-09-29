@@ -24,24 +24,27 @@ extend Composer:
             for layer in self.stacks.stack(entry.stack).layers.view():
                 if self.layers.layer(layer).find(entry.path) != none: try out.push(Site(layer = layer, path = entry.path))
 
-    ## The prim's child names (tokens) in order.
+    ## The prim's child names (tokens) in order; an instance's come from
+    ## its instanceable nodes only (_ComposePrimChildNamesForInstance).
     pub mutating func child_names(index: const PrimIndex*, out: Growing[u32]*) -> !:
         out.clear()
-        if index.nodes.count > 0: try self.names_at(index, 0, true, out)
+        if index.nodes.count > 0: try self.names_at(index, 0, true, index.instanceable, out)
 
     ## The prim's property names in order.
     pub mutating func property_names(index: const PrimIndex*, out: Growing[u32]*) -> !:
         out.clear()
-        if index.nodes.count > 0: try self.names_at(index, 0, false, out)
+        if index.nodes.count > 0: try self.names_at(index, 0, false, false, out)
 
-    mutating func names_at(index: const PrimIndex*, node: u32, prims: bool, out: Growing[u32]*) -> !:
+    mutating func names_at(index: const PrimIndex*, node: u32, prims: bool, instance: bool, out: Growing[u32]*) -> !:
         let entry = index.node(node)
         if entry.culled: return
         var at = entry.children.count
         while at > 0:
             at -= 1
-            try self.names_at(index, entry.children.items[at], prims, out)
-        if not entry.contributes(): return
+            try self.names_at(index, entry.children.items[at], prims, instance, out)
+        if instance:
+            if node == 0 or not index.node_instanceable(node): return
+        elif not entry.contributes(): return
         let layers = self.stacks.stack(entry.stack).layers.view()
         var position = layers.length
         while position > 0:

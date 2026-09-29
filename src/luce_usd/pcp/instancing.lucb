@@ -1,0 +1,145 @@
+## Instancing, after Pcp_PrimIndexIsInstanceable, the instanceable
+## traversals of instancing.h and PcpInstanceKey (pxr/usd/pcp/instancing.cpp,
+## instanceKey.cpp). A node is instanceable when it contributes specs and it,
+## or an arc above it, was added directly at this prim rather than coming
+## with a namespace ancestor. A prim is an instance when some node is
+## instanceable and its strongest `instanceable` opinion is true; below an
+## instance only instanceable nodes contribute. Instances whose instanceable
+## arcs and variant selections match share one prototype.
+
+## One arc of an instance key: its type, site and time offset to the root.
+pub struct InstanceArc:
+    pub var arc: ArcType
+    pub var stack: usize
+    pub var path: u32
+    pub var offset: Offset
+
+## What decides which instances share a prototype (PcpInstanceKey).
+pub struct InstanceKey:
+    pub var arcs: Growing[InstanceArc]
+    ## (set, selection) token pairs, sorted by set name.
+    pub var selections: Growing[u32]
+
+    pub func init():
+        self.arcs = Growing[InstanceArc]()
+        self.selections = Growing[u32]()
+
+    pub mutating func close():
+        self.arcs.close()
+        self.selections.close()
+
+    pub func equals(other: const InstanceKey*) -> bool:
+        if self.arcs.count != other.arcs.count or self.selections.count != other.selections.count: return false
+        for at in 0..<self.arcs.count:
+            let a = self.arcs.items[at]
+            let b = other.arcs.items[at]
+            if a.arc != b.arc or a.stack != b.stack or a.path != b.path: return false
+            if a.offset.offset != b.offset.offset or a.offset.scale != b.offset.scale: return false
+        for at in 0..<self.selections.count:
+            if self.selections.items[at] != other.selections.items[at]: return false
+        return true
+
+extend PrimIndex:
+    ## Pcp_ChildNodeIsInstanceable.
+    pub func node_instanceable(node: u32) -> bool:
+        let entry = &self.nodes.items[(usize)node]
+        return entry.direct and entry.contributes() and entry.has_specs
+
+    ## Whether an instanceable node lies under `node`, culled subtrees
+    ## skipped.
+    func has_instanceable_below(node: u32) -> bool:
+        for child in self.nodes.items[(usize)node].children.view():
+            if self.nodes.items[(usize)child].culled: continue
+            if self.node_instanceable(child) or self.has_instanceable_below(child): return true
+        return false
+
+## Make the index's nodes that are not instanceable inert, down to the
+## instanceable ones (Pcp_DisableNonInstanceableNodesVisitor).
+func disable_non_instanceable(index: PrimIndex*, names: const Names*):
+    if index.nodes.count == 0: return
+    index.set_inert(names, 0)
+    for child in index.nodes.items[0].children.view(): disable_below(index, names, child)
+
+func disable_below(index: PrimIndex*, names: const Names*, node: u32):
+    if index.nodes.items[(usize)node].culled or index.node_instanceable(node): return
+    index.set_inert(names, node)
+    for child in index.nodes.items[(usize)node].children.view(): disable_below(index, names, child)
+
+extend Composer:
+    ## Pcp_PrimIndexIsInstanceable: instanceable data, and the strongest
+    ## `instanceable` opinion true.
+    func is_instanceable(index: const PrimIndex*) -> bool!:
+        if index.nodes.count == 0 or not index.has_instanceable_below(0): return false
+        var order = Growing[u32]()
+        defer order.close()
+        try index.order(&order, false)
+        for node in order.view():
+            let entry = index.node(node)
+            if not entry.contributes(): continue
+            for layer in self.stacks.stack(entry.stack).layers.view():
+                let data = self.layers.layer(layer)
+                let spec = data.find(entry.path) else continue
+                if let found = data.get(spec, data.keys.instanceable): return found.as_bool()
+        return false
+
+    ## Whether the parent a nested build extends is an instance: the
+    ## cached index's answer when the parent is an ancestor of the prim
+    ## being composed, else the rebuilt parent's.
+    mutating func ancestor_is_instance(stack: usize, parent: u32, index: const PrimIndex*) -> bool!:
+        if stack == self.root_stack and self.names.has_prefix(self.composing, parent):
+            for at in 0..<self.cached_paths.count:
+                if self.cached_paths.items[at] == parent: return self.cached.items[at].instanceable
+        return try self.is_instanceable(index)
+
+    ## The index's instance key (PcpInstanceKey): the instanceable arcs met
+    ## strongest first (below one only when the index has payloads, which
+    ## may be left unloaded), and the authored variant selections.
+    pub mutating func instance_key(index: const PrimIndex*, out: InstanceKey*) -> !:
+        out.arcs.clear()
+        out.selections.clear()
+        if not index.instanceable: return
+        for child in index.node(0).children.view(): try self.collect_arcs(index, child, out)
+        var order = Growing[u32]()
+        defer order.close()
+        try index.order(&order, false)
+        for node in order.view():
+            let entry = index.node(node)
+            if not entry.contributes(): continue
+            for layer in self.stacks.stack(entry.stack).layers.view():
+                let data = self.layers.layer(layer)
+                let spec = data.find(entry.path) else continue
+                let field = data.get(spec, data.keys.variant_selection) else continue
+                let pairs = field.ids()
+                var at: usize = 0
+                while at + 1 < pairs.length:
+                    try self.add_selection(out, pairs[at], pairs[at + 1])
+                    at += 2
+
+    mutating func collect_arcs(index: const PrimIndex*, node: u32, out: InstanceKey*) -> !:
+        if index.node(node).culled: return
+        if index.node_instanceable(node):
+            let entry = index.node(node)
+            var map = try index.map_to_root(self.names, node)
+            defer map.close()
+            try out.arcs.push(InstanceArc(arc = entry.arc, stack = entry.stack, path = entry.path, offset = map.offset))
+            if not index.has_payloads: return
+        for child in index.node(node).children.view(): try self.collect_arcs(index, child, out)
+
+    ## Keep the strongest selection per set, sorted by set name.
+    func add_selection(out: InstanceKey*, set: u32, selection: u32) -> !:
+        let text = self.names.text_of(set)
+        var at: usize = 0
+        while at < out.selections.count:
+            let known = self.names.text_of(out.selections.items[at])
+            if known == text: return
+            if text_less(text, known): break
+            at += 2
+        try out.selections.push(0)
+        try out.selections.push(0)
+        var move = out.selections.count - 2
+        while move > at:
+            out.selections.items[move] = out.selections.items[move - 2]
+            out.selections.items[move + 1] = out.selections.items[move - 1]
+            move -= 2
+        out.selections.items[at] = set
+        out.selections.items[at + 1] = selection

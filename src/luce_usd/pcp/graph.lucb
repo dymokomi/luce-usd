@@ -26,6 +26,12 @@ pub struct Node:
     ## The path depth at which the node was first kept from contributing
     ## (GetSpecContributionRestrictedDepth); 0 while it is not.
     pub var restricted: u32
+    ## Whether the node came with a namespace ancestor's index
+    ## (IsDueToAncestor), and whether it or an arc above it was added
+    ## directly or ancestrally (HasTransitiveDirect/AncestralDependency).
+    pub var due_to_ancestor: bool
+    pub var direct: bool
+    pub var ancestral_arc: bool
 
     pub mutating func close():
         self.children.close()
@@ -38,9 +44,15 @@ pub struct Node:
 ## The composed index of one prim.
 pub struct PrimIndex:
     pub var nodes: Growing[Node]
+    ## Whether the prim is an instance (Pcp_PrimIndexIsInstanceable).
+    pub var instanceable: bool
+    ## Whether this prim's own nodes author payloads (HasAnyPayloads).
+    pub var has_payloads: bool
 
     pub func init():
         self.nodes = Growing[Node]()
+        self.instanceable = false
+        self.has_payloads = false
 
     pub mutating func close():
         for at in 0..<self.nodes.count: self.nodes.items[at].close()
@@ -53,7 +65,7 @@ pub struct PrimIndex:
     pub static func rooted(stack: usize, path: u32) -> PrimIndex!:
         var index = PrimIndex()
         errdefer index.close()
-        try index.nodes.push(Node(stack = stack, path = path, arc = ArcType.root, parent = -1, origin = -1, children = Growing[u32](), sibling = 0, depth = 0, map_to_parent = MapFunction.identity(), inert = false, culled = false, has_specs = false, restricted = 0))
+        try index.nodes.push(Node(stack = stack, path = path, arc = ArcType.root, parent = -1, origin = -1, children = Growing[u32](), sibling = 0, depth = 0, map_to_parent = MapFunction.identity(), inert = false, culled = false, has_specs = false, restricted = 0, due_to_ancestor = false, direct = false, ancestral_arc = false))
         return index
 
     ## Nodes strongest first (pre-order), culled subtrees included unless

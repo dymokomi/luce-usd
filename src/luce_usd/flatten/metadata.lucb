@@ -60,7 +60,7 @@ extend Flattener:
         try add_unique(&fields, keys.specifier)
         for key in fields.view():
             if key == keys.specifier:
-                try self.out.set(spec, key, Value.scalar(ValueKind.specifier, self.specifier(opinions)))
+                try self.out.set(spec, key, Value.scalar(ValueKind.specifier, self.specifier(index, opinions)))
                 continue
             if key == keys.type_name:
                 let name = self.type_name(opinions)
@@ -69,13 +69,17 @@ extend Flattener:
             if let value = try self.composed_value(index, opinions, key):
                 try self.out.set(spec, key, value)
 
-    ## The strongest def (or class) specifier, else over.
-    func specifier(opinions: const Opinion[]) -> u64:
+    ## The strongest def specifier; else the strongest class one, but a
+    ## class due to a direct inherit only when nothing defines the prim
+    ## (classness is not inherited); else over.
+    func specifier(index: const PrimIndex*, opinions: const Opinion[]) -> u64:
+        var resolved = specifier_over
         for opinion in opinions:
             let found = self.composer.layers.layer(opinion.layer).get(opinion.spec, self.out.keys.specifier) else continue
             if found.bits == specifier_over: continue
-            return found.bits
-        return specifier_over
+            if found.bits != specifier_class or not due_to_direct_inherit(index, opinion.node): return found.bits
+            resolved = specifier_class
+        return resolved
 
     ## The strongest non-empty type name (0 for none).
     func type_name(opinions: const Opinion[]) -> u32:
@@ -230,4 +234,13 @@ func valid_field(name: str, kind: SpecType) -> bool:
 func listed_in(list: const str[], name: str) -> bool:
     for known in list:
         if known == name: return true
+    return false
+
+## Whether a node is, or lies under, an inherit added at this prim.
+func due_to_direct_inherit(index: const PrimIndex*, node: u32) -> bool:
+    var at = (i32)node
+    while at >= 0:
+        let entry = index.node((u32)at)
+        if entry.arc == ArcType.inherit and not entry.due_to_ancestor: return true
+        at = entry.parent
     return false

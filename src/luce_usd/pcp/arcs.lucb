@@ -14,10 +14,12 @@ struct ArcOptions:
     var contribute: bool
     var ancestral: bool
     var skip_duplicates: bool
+    ## Whether the new node takes its origin's dependency flags.
+    var copy_ancestor: bool
     var tasks: u32
 
     static func plain() -> ArcOptions:
-        return ArcOptions(contribute = true, ancestral = false, skip_duplicates = false, tasks = all_tasks)
+        return ArcOptions(contribute = true, ancestral = false, skip_duplicates = false, copy_ancestor = false, tasks = all_tasks)
 
 ## One composed arc: the item (asset anchored: its identifier's token) and
 ## the position in the layer stack of the layer that authored it.
@@ -29,12 +31,14 @@ extend Composer:
     ## Add the references (or payloads) of `node`.
     mutating func eval_arcs(indexer: Indexer*, node: u32, payloads: bool) -> !:
         if not indexer.index.node(node).contributes(): return
-        if payloads and not try self.loads_payloads(): return
         let stack = indexer.index.node(node).stack
         let path = indexer.index.node(node).path
         var arcs = Growing[ArcItem]()
         defer arcs.close()
         try self.compose_arcs(stack, path, payloads, &arcs)
+        if payloads and arcs.count > 0:
+            indexer.index.has_payloads = true
+            if not try self.loads_payloads(): return
         for number in 0..<arcs.count:
             try self.add_ref_arc(indexer, node, arcs.items[number], (i32)number, payloads)
 
@@ -169,7 +173,7 @@ extend Composer:
             return none
         var added: u32 = 0
         if not options.ancestral:
-            let node = Node(stack = stack, path = path, arc = kind, parent = (i32)parent, origin = origin, children = Growing[u32](), sibling = sibling, depth = depth, map_to_parent = owned, inert = false, culled = false, has_specs = self.site_has_specs(stack, path), restricted = 0)
+            let node = Node(stack = stack, path = path, arc = kind, parent = (i32)parent, origin = origin, children = Growing[u32](), sibling = sibling, depth = depth, map_to_parent = owned, inert = false, culled = false, has_specs = self.site_has_specs(stack, path), restricted = 0, due_to_ancestor = false, direct = false, ancestral_arc = false)
             added = try index.insert_child(self.names, parent, node)
             if not options.contribute:
                 index.set_inert(self.names, added)
@@ -184,6 +188,20 @@ extend Composer:
                 error(failure.code, failure.message)
             defer sub.close()
             added = try append_subtree(index, self.names, parent, &sub, kind, origin, sibling, depth, owned)
+            if sub.has_payloads: index.has_payloads = true
+        # Dependency flags: a new node is direct unless it copies its
+        # origin's; an ancestral subtree takes them from its new root.
+        let entry = &index.nodes.items[(usize)added]
+        if options.copy_ancestor and origin >= 0:
+            let source = index.nodes.items[(usize)origin]
+            entry.due_to_ancestor = source.due_to_ancestor
+            entry.direct = source.direct
+            entry.ancestral_arc = source.ancestral_arc
+        else:
+            entry.due_to_ancestor = false
+            entry.direct = true
+            entry.ancestral_arc = index.nodes.items[(usize)parent].ancestral_arc
+        if options.ancestral and indexer.frame == none: spread_dependencies(index, added, entry.direct, entry.ancestral_arc)
         # A nested build evaluated the subtree's expressed arcs; its
         # ancestral variants are evaluated only where variants are.
         var tasks = options.tasks
@@ -287,7 +305,7 @@ func append_subtree(index: PrimIndex*, names: const Names*, parent: u32, sub: co
             owned = MapFunction.identity()
         else:
             node_map = try node.map_to_parent.copy()
-        index.nodes.push(Node(stack = node.stack, path = node.path, arc = kind if root else node.arc, parent = (i32)parent if root else node.parent + (i32)base, origin = origin if root else (node.origin + (i32)base if node.origin >= 0 else -1), children = children, sibling = sibling if root else node.sibling, depth = depth if root else node.depth, map_to_parent = node_map, inert = node.inert, culled = node.culled, has_specs = node.has_specs, restricted = node.restricted)) catch failure:
+        index.nodes.push(Node(stack = node.stack, path = node.path, arc = kind if root else node.arc, parent = (i32)parent if root else node.parent + (i32)base, origin = origin if root else (node.origin + (i32)base if node.origin >= 0 else -1), children = children, sibling = sibling if root else node.sibling, depth = depth if root else node.depth, map_to_parent = node_map, inert = node.inert, culled = node.culled, has_specs = node.has_specs, restricted = node.restricted, due_to_ancestor = node.due_to_ancestor, direct = node.direct, ancestral_arc = node.ancestral_arc)) catch failure:
             node_map.close()
             error(failure.code, failure.message)
     try index.link_child(names, parent, base)
@@ -310,3 +328,10 @@ func default_prim_path(names: Names*, token: u32) -> u32!:
 ## Whether a path is a root prim's (SdfPath::IsRootPrimPath).
 func is_root_prim(names: const Names*, path: u32) -> bool:
     return names.node(path).depth == 1 and names.is_prim(path)
+
+## Give a subtree its new root's dependency flags too.
+func spread_dependencies(index: PrimIndex*, node: u32, direct: bool, ancestral: bool):
+    let entry = &index.nodes.items[(usize)node]
+    entry.direct = entry.direct or direct
+    entry.ancestral_arc = entry.ancestral_arc or ancestral
+    for child in index.nodes.items[(usize)node].children.view(): spread_dependencies(index, child, direct, ancestral)

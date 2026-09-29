@@ -6,8 +6,10 @@
 ## strongest first; values move into stage time by their layer's offset,
 ## and asset paths are anchored at the layer that authored them.
 ##
-## This fragment walks prims and writes specs; metadata.lucb composes
-## fields; properties.lucb writes attributes and relationships.
+## Instances reference a prototype written first as /Flattened_Prototype_N
+## (instances.lucb). This fragment walks prims and writes specs;
+## metadata.lucb composes fields; properties.lucb writes attributes and
+## relationships.
 import math
 import memory
 import luce_usd.errors as errors
@@ -19,7 +21,7 @@ from luce_usd.sdf.value_types import ValueKind, scalar_of, element_bytes
 from luce_usd.sdf.list_ops import compose_list_ops, explicit_list
 from luce_usd.dictionary_order import dictionary_less
 from luce_usd.sdf.schema import find_field, applies_layer, applies_prim, applies_attribute, applies_relationship
-from luce_usd.pcp import Composer, PrimIndex, Offset
+from luce_usd.pcp import Composer, PrimIndex, Offset, ArcType, InstanceKey
 from geocore_growing import Growing
 from geocore_shared import Column
 
@@ -32,14 +34,26 @@ struct Opinion:
 
 ## Flatten the composer's stage into the empty layer `out` (sharing its
 ## Names). `comment` adds OpenUSD's "Generated from Composed Stage" note.
-pub func flatten_stage(composer: Composer*, out: LayerData*, comment: bool) -> !:
+## With `instancing`, instances reference prototypes as UsdStage::Flatten
+## writes them; without, each instance holds its own copy of the
+## prototype's prims (as instance proxies show them).
+pub func flatten_stage(composer: Composer*, out: LayerData*, comment: bool, instancing: bool) -> !:
     var flat = Flattener(composer, out)
     defer flat.close()
+    flat.instancing = instancing
     try flat.pseudo_root(comment)
     var children = Growing[u32]()
     defer children.close()
     try composer.child_names(try composer.index(absolute_root), &children)
-    for name in children.view(): try flat.prim(try composer.names.child(absolute_root, name))
+    var roots = Growing[u32]()
+    defer roots.close()
+    for name in children.view(): try roots.push(try composer.names.child(absolute_root, name))
+    if instancing:
+        try flat.populate(roots.view())
+        try flat.write_prototypes()
+    for name in children.view():
+        let path = try composer.names.child(absolute_root, name)
+        try flat.prim(path, path)
     try flat.finish()
 
 ## The flattening's output state.
@@ -50,6 +64,15 @@ struct Flattener:
     ## Child and property names per output spec index.
     var children: Growing[Growing[u32]]
     var properties: Growing[Growing[u32]]
+    ## The stage's prototypes and its instances' paths and prototypes.
+    var prototypes: Growing[Prototype]
+    var instances: Growing[u32]
+    var instance_of: Growing[u32]
+    ## While a prototype is written: its source and flattened paths.
+    var writing_source: u32
+    var writing_path: u32
+    ## Whether instances reference prototypes.
+    var instancing: bool
 
     func init(composer: Composer*, out: LayerData*):
         self.composer = composer
@@ -57,12 +80,22 @@ struct Flattener:
         self.names = composer.names
         self.children = Growing[Growing[u32]]()
         self.properties = Growing[Growing[u32]]()
+        self.prototypes = Growing[Prototype]()
+        self.instances = Growing[u32]()
+        self.instance_of = Growing[u32]()
+        self.writing_source = empty_path
+        self.writing_path = empty_path
+        self.instancing = true
 
     mutating func close():
         for at in 0..<self.children.count: self.children.items[at].close()
         for at in 0..<self.properties.count: self.properties.items[at].close()
         self.children.close()
         self.properties.close()
+        for at in 0..<self.prototypes.count: self.prototypes.items[at].key.close()
+        self.prototypes.close()
+        self.instances.close()
+        self.instance_of.close()
 
     mutating func grow(index: usize) -> !:
         while self.children.count <= index:
@@ -117,10 +150,11 @@ struct Flattener:
         try text.push(10)
         try self.out.set(0, key, Value.scalar(ValueKind.string, (u64)(try self.names.token((str)text.view()))))
 
-    ## Flatten prim `path` and its descendants (_CopyPrim over the range).
-    mutating func prim(path: u32) -> !:
+    ## Flatten the prim whose index is at `source` into `path`, and its
+    ## descendants unless it is an instance (_CopyPrim over the range).
+    mutating func prim(source: u32, path: u32) -> !:
         let composer = self.composer
-        let index = try composer.index(path)
+        let index = try composer.index(source)
         var opinions = Growing[Opinion]()
         defer opinions.close()
         try self.gather(index, 0, &opinions)
@@ -130,6 +164,8 @@ struct Flattener:
         let parent = self.out.find(self.names.parent(path)) else error(errors.invalid, "a flattened prim's parent is missing")
         try self.grow(parent)
         try self.children.items[parent].push(self.names.name(path))
+        let instance = index.instanceable and self.instancing
+        if instance: try self.reference_prototype(source, spec)
         try self.prim_metadata(index, opinions.view(), spec)
         # Properties by name (TfDictionaryLessThan), then propertyOrder.
         var names = Growing[u32]()
@@ -141,10 +177,11 @@ struct Flattener:
             defer held.release()
             try apply_property_order(&names, held.ids())
         for name in names.view(): try self.property(index, path, spec, name)
+        if instance: return
         var children = Growing[u32]()
         defer children.close()
         try composer.child_names(index, &children)
-        for name in children.view(): try self.prim(try self.names.child(path, name))
+        for name in children.view(): try self.prim(try self.names.child(source, name), try self.names.child(path, name))
 
     ## The opinions of the prim (`property` 0) or of one of its properties.
     mutating func gather(index: const PrimIndex*, property: u32, out: Growing[Opinion]*) -> !:

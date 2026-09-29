@@ -13,7 +13,7 @@ struct Case:
     var session: str
     var unloaded: str
 
-let cases: Case[16] = [
+let cases: Case[19] = [
     Case(name = "BasicAncestralReference", session = "", unloaded = ""),
     Case(name = "BasicReferenceDiamond", session = "", unloaded = ""),
     Case(name = "BasicTimeOffset", session = "", unloaded = ""),
@@ -30,6 +30,9 @@ let cases: Case[16] = [
     Case(name = "ImpliedAndAncestralInherits", session = "", unloaded = ""),
     Case(name = "TrickySpecializesAndInherits3", session = "", unloaded = ""),
     Case(name = "SpecializesAndVariants2", session = "", unloaded = ""),
+    Case(name = "BasicInstancing", session = "", unloaded = ""),
+    Case(name = "BasicInstancingAndNestedInstances", session = "", unloaded = ""),
+    Case(name = "ImpliedArcsAndInstancing", session = "", unloaded = ""),
 ]
 
 pub func museum() -> !:
@@ -89,7 +92,7 @@ func check_flattened(name: str) -> !:
     defer composer.close()
     var flat = try LayerData(&names)
     defer flat.close()
-    try flatten_stage(&composer, &flat, false)
+    try flatten_stage(&composer, &flat, false, true)
     var text = Growing[u8]()
     defer text.close()
     try write_usda(&flat, &text)

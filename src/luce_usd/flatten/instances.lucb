@@ -1,0 +1,169 @@
+## Instances in a flattened stage, after Usd_InstanceCache and
+## UsdStage::Flatten (pxr/usd/usd/instanceCache.cpp, stage.cpp). Instances
+## with the same key share a prototype, whose source is one of them; the
+## source's descendants are searched too, for nested instances. Prototypes are
+## numbered in their sources' path order (as with
+## USD_ASSIGN_PROTOTYPES_DETERMINISTICALLY) and written first, as
+## /Flattened_Prototype_N in the text order of their /__Prototype_M paths:
+## an over holding the source's children. Instances reference theirs.
+
+## One prototype: its instances' key, its source instance, and its path
+## in the flattened layer.
+struct Prototype:
+    var key: InstanceKey
+    var source: u32
+    var flattened: u32
+
+extend Flattener:
+    ## Find the stage's instances (its population): the stage's prims
+    ## down to instances, then each new prototype's source's descendants,
+    ## where nested instances are. Pcp registers instances from parallel
+    ## tasks, so which instance of a key comes first varies; the source
+    ## here is the shallowest, then the first in path order.
+    mutating func populate(roots: const u32[]) -> !:
+        for root in roots: try self.walk(root)
+        var at: usize = 0
+        while at < self.prototypes.count:
+            var source = self.prototypes.items[at].source
+            for instance in 0..<self.instances.count:
+                if self.instance_of.items[instance] != (u32)at: continue
+                let path = self.instances.items[instance]
+                let depth = self.names.node(path).depth
+                let known = self.names.node(source).depth
+                if depth < known or (depth == known and self.names.path_less(path, source)): source = path
+            self.prototypes.items[at].source = source
+            var children = Growing[u32]()
+            defer children.close()
+            try self.composer.child_names(try self.composer.index(source), &children)
+            for name in children.view(): try self.walk(try self.names.child(source, name))
+            at += 1
+
+    ## Register the instances at and under `path`, not looking inside them.
+    mutating func walk(path: u32) -> !:
+        let composer = self.composer
+        let index = try composer.index(path)
+        var opinions = Growing[Opinion]()
+        defer opinions.close()
+        try self.gather(index, 0, &opinions)
+        if not try self.is_active(index, opinions.view()): return
+        if index.instanceable:
+            try self.register(index, path)
+            return
+        var children = Growing[u32]()
+        defer children.close()
+        try composer.child_names(index, &children)
+        for name in children.view(): try self.walk(try self.names.child(path, name))
+
+    ## Register instance `path` with the prototype of its key, a new one
+    ## when the key is new.
+    mutating func register(index: const PrimIndex*, path: u32) -> !:
+        var key = InstanceKey()
+        errdefer key.close()
+        try self.composer.instance_key(index, &key)
+        for at in 0..<self.prototypes.count:
+            if self.prototypes.items[at].key.equals(&key):
+                key.close()
+                key = InstanceKey()
+                try self.add_instance(path, (u32)at)
+                return
+        try self.prototypes.push(Prototype(key = key, source = path, flattened = empty_path))
+        key = InstanceKey()
+        try self.add_instance(path, (u32)(self.prototypes.count - 1))
+
+    mutating func add_instance(path: u32, prototype: u32) -> !:
+        try self.instances.push(path)
+        errdefer self.instances.count -= 1
+        try self.instance_of.push(prototype)
+
+    ## Name the prototypes and write each: an over with its source's
+    ## children (_CopyPrototypePrim).
+    mutating func write_prototypes() -> !:
+        let count = self.prototypes.count
+        if count == 0: return
+        # __Prototype_N numbers follow the sources' path order.
+        var numbers = Growing[u32]()
+        defer numbers.close()
+        var by_source = Growing[u32]()
+        defer by_source.close()
+        for at in 0..<count: try by_source.push((u32)at)
+        sort_by(&by_source, self.names, self.prototypes.view(), false, numbers.view())
+        try numbers.fill(count, 0)
+        for rank in 0..<count: numbers.items[(usize)by_source.items[rank]] = (u32)rank + 1
+        # Flattened names follow the prototype paths' text order.
+        var by_text = Growing[u32]()
+        defer by_text.close()
+        try by_text.assign(by_source.view())
+        sort_by(&by_text, self.names, self.prototypes.view(), true, numbers.view())
+        var text: u8[40]
+        for rank in 0..<count:
+            let name = try format(text, f"Flattened_Prototype_{rank + 1}")
+            self.prototypes.items[(usize)by_text.items[rank]].flattened = try self.names.child(absolute_root, try self.names.token(name))
+        for at in by_text.view():
+            let prototype = self.prototypes.items[(usize)at]
+            let spec = try self.out.create_spec(prototype.flattened, SpecType.prim)
+            try self.grow(spec)
+            try self.out.set(spec, self.out.keys.specifier, Value.scalar(ValueKind.specifier, specifier_over))
+            try self.children.items[0].push(self.names.name(prototype.flattened))
+            var children = Growing[u32]()
+            defer children.close()
+            try self.composer.child_names(try self.composer.index(prototype.source), &children)
+            self.writing_source = prototype.source
+            self.writing_path = prototype.flattened
+            defer self.writing_source = empty_path
+            for name in children.view():
+                try self.prim(try self.names.child(prototype.source, name), try self.names.child(prototype.flattened, name))
+
+    ## A target path of a prim in the prototype being written: paths in
+    ## its source move into the prototype.
+    mutating func in_prototype(path: u32) -> u32!:
+        if self.writing_source == empty_path or not self.names.has_prefix(path, self.writing_source): return path
+        return try self.names.replace_prefix(path, self.writing_source, self.writing_path)
+
+    ## `add references = </Flattened_Prototype_N>` on instance `source`'s
+    ## flattened spec.
+    mutating func reference_prototype(source: u32, spec: usize) -> !:
+        var target = empty_path
+        for at in 0..<self.instances.count:
+            if self.instances.items[at] == source: target = self.prototypes.items[(usize)self.instance_of.items[at]].flattened
+        if target == empty_path: return
+        let list = try ListOp.create()
+        var owner = Value.of_object(ValueKind.reference_list_op, (void*)list)
+        errdefer owner.release()
+        try list.push(ListPart.added, ListItem(a = 0, b = (u64)target, offset = 0.0, scale = 1.0, custom = none))
+        try self.out.set(spec, self.out.keys.references, owner)
+
+## Sort prototype indexes by their sources' paths, or (`by_text`) by the
+## text of their numbers, as "__Prototype_10" sorts before "__Prototype_2".
+func sort_by(order: Growing[u32]*, names: const Names*, prototypes: const Prototype[], by_text: bool, numbers: const u32[]):
+    for at in 1..<order.count:
+        let current = order.items[at]
+        var move = at
+        while move > 0:
+            let before = order.items[move - 1]
+            let less = number_text_less(numbers[(usize)current], numbers[(usize)before]) if by_text else names.path_less(prototypes[(usize)current].source, prototypes[(usize)before].source)
+            if not less: break
+            order.items[move] = before
+            move -= 1
+        order.items[move] = current
+
+## Whether `a`'s decimal text sorts before `b`'s.
+func number_text_less(a: u32, b: u32) -> bool:
+    var left: u8[12]
+    var right: u8[12]
+    let x = decimal(a, left)
+    let y = decimal(b, right)
+    let count = x.length if x.length < y.length else y.length
+    for at in 0..<count:
+        if x[at] != y[at]: return x[at] < y[at]
+    return x.length < y.length
+
+## The decimal digits of `value` in `buffer`.
+func decimal(value: u32, buffer: u8[]) -> u8[]:
+    var at = buffer.length
+    var rest = value
+    while true:
+        at -= 1
+        buffer[at] = (u8)(48 + rest % 10)
+        rest = rest // 10
+        if rest == 0: break
+    return buffer[at..]

@@ -2,9 +2,9 @@
 ## faces: where each chunk's corners start; which faces geocore can hold
 ## (at least 3 corners and an area, by the test geocore's assembly applies
 ## to the placed points); then the offsets, corners, display triangles and
-## the maps back to each prim's faces and corners. Triangles and convex
-## quads get their display triangles here; larger faces are ear clipped by
-## geocore.
+## the maps back to each prim's faces and corners. Every face gets its
+## display triangles here (triangulate.lucb for faces of five corners or
+## more).
 
 struct FaceChunk:
     var source: usize
@@ -209,7 +209,7 @@ func write_chunk(context: void*?, index: usize):
         elif count == 4:
             write_quad(work.corners[out_corner..<out_corner + 4], points, base, first, triangles)
         else:
-            for k in 0..<triangles.length: triangles[k] = -1
+            triangulate_face(points, work.corners[out_corner..<out_corner + count], base, first, triangles)
         out_face += 1
         out_corner += count
         corner += count

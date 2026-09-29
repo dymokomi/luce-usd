@@ -62,7 +62,8 @@ pub struct Usd:
         defer flattened.close()
         var layer: const LayerData* = composer.root_layer()
         if not composer.is_single_layer():
-            try flattening.flatten_stage(&composer, &flattened, false)
+            # Instances are imported expanded, each with its prototype's prims.
+            try flattening.flatten_stage(&composer, &flattened, false, false)
             layer = &flattened
         var warnings = convert.Warnings()
         defer warnings.close()
@@ -113,7 +114,7 @@ pub struct Usd:
         defer composer.close()
         var flattened = try LayerData(&names)
         defer flattened.close()
-        try flattening.flatten_stage(&composer, &flattened, true)
+        try flattening.flatten_stage(&composer, &flattened, true, true)
         try write_layer(&flattened, destination)
 
     ## A summary of the layer at `path`, one "key: value" per line: its

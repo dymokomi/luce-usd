@@ -1,0 +1,113 @@
+## Display triangles of faces with more than four corners, by ear clipping
+## in the face's plane as geocore's triangulate does (the same ear, blocking
+## and last-quad tests). Real assets hold faces ear clipping cannot finish
+## (self-intersecting or folded ones, which geocore refuses); the rest of
+## such a face becomes a fan, so every face that has an area keeps its
+## triangles and the import goes on.
+
+## The most corners ear clipped; larger faces become fans.
+let most_clipped: usize = 256
+
+## A face's plane: its unit area normal and the tolerance for areas.
+struct Plane:
+    var x: f64
+    var y: f64
+    var z: f64
+    var epsilon: f64
+
+## Write the `corners.length - 2` triangles of a face (corner indices from
+## `first`, the face's first corner) into `triangles`. `points` are the
+## prim's points, `corners` the face's point indices plus `base`.
+func triangulate_face(points: const Float3[], corners: const i32[], base: i32, first: i32, triangles: i32[]):
+    let count = corners.length
+    let plane = plane_of(points, corners, base)
+    var remaining: u16[256] = ---
+    var left: usize = 0
+    var written: usize = 0
+    if count <= most_clipped:
+        for at in 0..<count: remaining[at] = (u16)at
+        left = count
+        while left > 3:
+            let ear = find_ear(points, corners, base, remaining[..<left], plane) else break
+            triangles[written] = first + (i32)remaining[(ear + left - 1) % left]
+            triangles[written + 1] = first + (i32)remaining[ear]
+            triangles[written + 2] = first + (i32)remaining[(ear + 1) % left]
+            written += 3
+            for at in ear..<left - 1: remaining[at] = remaining[at + 1]
+            left -= 1
+    if left == 0:
+        # Too many corners to clip: a fan over the face.
+        for at in 1..<count - 1:
+            triangles[written] = first
+            triangles[written + 1] = first + (i32)at
+            triangles[written + 2] = first + (i32)at + 1
+            written += 3
+        return
+    # The last triangle, or a fan over what no ear could clip.
+    for at in 1..<left - 1:
+        triangles[written] = first + (i32)remaining[0]
+        triangles[written + 1] = first + (i32)remaining[at]
+        triangles[written + 2] = first + (i32)remaining[at + 1]
+        written += 3
+
+## A corner of `remaining` that is an ear: convex along the face normal,
+## no other corner inside or on its triangle, and (with four left) not
+## leaving the other two collinear.
+func find_ear(points: const Float3[], corners: const i32[], base: i32, remaining: const u16[], plane: Plane) -> usize?:
+    let left = remaining.length
+    for at in 0..<left:
+        let a = point_of(points, corners, base, remaining[(at + left - 1) % left])
+        let b = point_of(points, corners, base, remaining[at])
+        let c = point_of(points, corners, base, remaining[(at + 1) % left])
+        if plane_facing(a, b, c, plane) <= plane.epsilon: continue
+        var blocked = false
+        for other in 0..<left:
+            if other == at or other == (at + left - 1) % left or other == (at + 1) % left: continue
+            let p = point_of(points, corners, base, remaining[other])
+            if plane_facing(a, b, p, plane) >= -plane.epsilon and plane_facing(b, c, p, plane) >= -plane.epsilon and plane_facing(c, a, p, plane) >= -plane.epsilon:
+                blocked = true
+                break
+        if blocked: continue
+        if left == 4:
+            let d = point_of(points, corners, base, remaining[(at + 2) % left])
+            if plane_facing(a, c, d, plane) <= plane.epsilon: continue
+        return at
+    return none
+
+## Twice the triangle's area along the plane's normal.
+func plane_facing(a: Float3, b: Float3, c: Float3, plane: Plane) -> f64:
+    let ux = (f64)b.x - (f64)a.x
+    let uy = (f64)b.y - (f64)a.y
+    let uz = (f64)b.z - (f64)a.z
+    let vx = (f64)c.x - (f64)a.x
+    let vy = (f64)c.y - (f64)a.y
+    let vz = (f64)c.z - (f64)a.z
+    return (uy * vz - uz * vy) * plane.x + (uz * vx - ux * vz) * plane.y + (ux * vy - uy * vx) * plane.z
+
+## The face's unit area normal, and geocore's tolerance: 1e-14 of the
+## squared extent from its first corner.
+func plane_of(points: const Float3[], corners: const i32[], base: i32) -> Plane:
+    let origin = point_of(points, corners, base, 0)
+    var nx: f64 = 0.0
+    var ny: f64 = 0.0
+    var nz: f64 = 0.0
+    var extent2: f64 = 0.0
+    for at in 0..<corners.length:
+        let p = point_of(points, corners, base, (u16)at)
+        let q = point_of(points, corners, base, (u16)((at + 1) % corners.length))
+        let ax = (f64)p.x - (f64)origin.x
+        let ay = (f64)p.y - (f64)origin.y
+        let az = (f64)p.z - (f64)origin.z
+        let bx = (f64)q.x - (f64)origin.x
+        let by = (f64)q.y - (f64)origin.y
+        let bz = (f64)q.z - (f64)origin.z
+        extent2 = math.max(extent2, ax * ax + ay * ay + az * az)
+        nx += ay * bz - az * by
+        ny += az * bx - ax * bz
+        nz += ax * by - ay * bx
+    let length = math.sqrt(nx * nx + ny * ny + nz * nz)
+    let scale = 1.0 / length if length > 0.0 else 0.0
+    return Plane(x = nx * scale, y = ny * scale, z = nz * scale, epsilon = math.max(1e-30, extent2 * 1e-14))
+
+func point_of(points: const Float3[], corners: const i32[], base: i32, corner: u16) -> Float3:
+    return points[(usize)(corners[(usize)corner] - base)]

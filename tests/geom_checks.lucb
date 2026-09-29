@@ -5,7 +5,7 @@ import math
 import memory
 from geocore import Mesh, GeometrySet
 from geocore_growing import Growing
-from geocore_kernel import dispose_set, set_mesh, attribute_entry, corner_span, group_bits, set_find, curves_type, points_component, Curves, PointCloud, AttributeStore, cloud_store, curves_knot_offsets
+from geocore_kernel import dispose_set, set_mesh, attribute_entry, corner_span, triangle_span, group_bits, set_find, curves_type, points_component, Curves, PointCloud, AttributeStore, cloud_store, curves_knot_offsets
 from usd_kernel import ImportOptions, ExportOptions, Warnings, import_layer, export_set, write_usda, Names, LayerData, read_usda, read_file, most_bytes, Stage, earliest, gather, Gathered, GprimKind, Matrix4d, local_transform, absolute_root, purpose_render
 
 func near(a: f64, b: f64) -> bool:
@@ -375,3 +375,35 @@ func same_instances(first: const GeometrySet*, second: const GeometrySet*) -> !:
         let rb = try second.instance_rotation(at)
         assert(near(ta.x, tb.x) and near(ta.z, tb.z) and math.abs(ra.z - rb.z) < 2e-3)
         assert((try first.instance_visible(at)) == (try second.instance_visible(at)))
+
+## Faces of five corners or more: a concave one is ear clipped (no display
+## triangle covers its notch), a self-intersecting one still imports.
+pub func folded_faces() -> !:
+    let text = "#usda 1.0\ndef Mesh \"Folded\"\n{\n    int[] faceVertexCounts = [6, 5]\n    int[] faceVertexIndices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]\n    point3f[] points = [(0, 0, 0), (2, 0, 0), (2, 1, 0), (1, 1, 0), (1, 2, 0), (0, 2, 0), (0, 0, 1), (2, 0, 1), (0, 1, 1), (2, 1, 1), (1, -1, 1)]\n}\n"
+    var names = try Names()
+    defer names.close()
+    var layer = try LayerData(&names)
+    defer layer.close()
+    try read_usda(text.bytes, &layer)
+    var warnings = Warnings()
+    defer warnings.close()
+    let options = ImportOptions(time = math.nan, realize = false, purposes = 0, convert_units = false, subdivide_unauthored = false)
+    let set = try import_layer(&layer, &options, &warnings)
+    defer dispose_set(set)
+    let mesh = set_mesh(set) else trap("no mesh")
+    assert(mesh.face_count() == 2)
+    let triangles = triangle_span(mesh)
+    let corners = corner_span(mesh)
+    assert(triangles.length == 7 * 3)
+    var area: f64 = 0.0
+    for at in 0..<(usize)4:
+        let a = try mesh.point((i64)corners[(usize)triangles[at * 3]])
+        let b = try mesh.point((i64)corners[(usize)triangles[at * 3 + 1]])
+        let c = try mesh.point((i64)corners[(usize)triangles[at * 3 + 2]])
+        let twice = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+        assert(twice > 0.0)
+        area += twice / 2.0
+        let x = (a.x + b.x + c.x) / 3.0
+        let y = (a.y + b.y + c.y) / 3.0
+        assert(not (x > 1.0 and y > 1.0))
+    assert(near(area, 3.0))

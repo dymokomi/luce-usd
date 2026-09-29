@@ -99,6 +99,7 @@ extend Composer:
         let map = try index.map_to_root(names, node)
         var options = ArcOptions.plain()
         options.skip_duplicates = true
+        options.copy_ancestor = true
         options.ancestral = not is_root_prim(names, entry.path)
         return try self.add_arc(indexer, entry.arc, 0, (i32)node, entry.stack, entry.path, map, entry.sibling, namespace_depth(names, index.node(0).path), options)
 

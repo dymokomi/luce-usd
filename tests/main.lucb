@@ -123,6 +123,8 @@ pub func main(arguments: str[]) -> i32!:
     try geom_checks.mesh_units()
     settle(&tracker, "mesh import")
     inject(&tracker, every, geom_checks.mesh_features)
+    try geom_checks.folded_faces()
+    inject(&tracker, every, geom_checks.folded_faces)
     try geom_checks.shapes()
     settle(&tracker, "shapes")
     try geom_checks.curves_and_points()
