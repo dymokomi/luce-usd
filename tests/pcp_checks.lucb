@@ -3,7 +3,7 @@
 ## the one OpenUSD prints (after the first line, which names the layer as
 ## given on the command line).
 import memory
-from usd_kernel import Names, LayerData, Composer, flatten_stage, write_usda, absolute_path, composition_report, read_file, most_bytes
+from usd_kernel import Names, LayerData, Composer, anonymous_session, flatten_stage, write_usda, absolute_path, composition_report, read_file, most_bytes
 from geocore_growing import Growing
 
 ## One museum case: its directory, the session layer (or ""), and the
@@ -13,7 +13,7 @@ struct Case:
     var session: str
     var unloaded: str
 
-let cases: Case[25] = [
+let cases: Case[28] = [
     Case(name = "BasicAncestralReference", session = "", unloaded = ""),
     Case(name = "BasicReferenceDiamond", session = "", unloaded = ""),
     Case(name = "BasicTimeOffset", session = "", unloaded = ""),
@@ -39,6 +39,9 @@ let cases: Case[25] = [
     Case(name = "ErrorInvalidInstanceTargetPath", session = "", unloaded = ""),
     Case(name = "TrickyMultipleRelocations", session = "", unloaded = ""),
     Case(name = "RelocateToNone", session = "", unloaded = ""),
+    Case(name = "ExpressionsInReferences", session = "", unloaded = ""),
+    Case(name = "ExpressionsInVariantSelections", session = "", unloaded = ""),
+    Case(name = "ExpressionsInSublayers", session = "session.usda", unloaded = ""),
 ]
 
 pub func museum() -> !:
@@ -101,7 +104,7 @@ func compare_flattened(root_path: str, expected_path: str, name: str) -> !:
     var identifier = Growing[u8]()
     defer identifier.close()
     try absolute_path(root_path, &identifier)
-    var composer = try Composer(&names, (str)identifier.view(), "")
+    var composer = try Composer(&names, (str)identifier.view(), anonymous_session)
     defer composer.close()
     var flat = try LayerData(&names)
     defer flat.close()

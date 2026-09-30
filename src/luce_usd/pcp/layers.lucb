@@ -61,6 +61,23 @@ pub struct Layers:
             error(failure.code, failure.message)
         return self.entries.count - 1 if read else none
 
+    ## A new empty layer named `identifier` (an anonymous layer).
+    pub mutating func anonymous(identifier: str) -> usize!:
+        let storage = try alloc LayerData[1] in memory.heap
+        storage[0] = LayerData(self.names) catch failure:
+            free(storage) in memory.heap
+            error(failure.code, failure.message)
+        var name = Growing[u8]()
+        name.assign(identifier.bytes) catch failure:
+            name.close()
+            release_layer(storage.data)
+            error(failure.code, failure.message)
+        self.entries.push(LayerEntry(identifier = name, layer = storage.data)) catch failure:
+            name.close()
+            release_layer(storage.data)
+            error(failure.code, failure.message)
+        return self.entries.count - 1
+
     ## The layer's metadata field `key` (on its pseudo-root).
     pub func field(index: usize, key: u32) -> const Value*?:
         return self.layer(index).get(0, key)

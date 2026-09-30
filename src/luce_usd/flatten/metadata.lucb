@@ -81,21 +81,20 @@ extend Flattener:
             resolved = specifier_class
         return resolved
 
-    ## The strongest non-empty type name (0 for none).
+    ## The strongest non-empty type name other than __AnyType__ (0 for
+    ## none).
     func type_name(opinions: const Opinion[]) -> u32:
         for opinion in opinions:
             let found = self.composer.layers.layer(opinion.layer).get(opinion.spec, self.out.keys.type_name) else continue
             let name = found.as_token()
-            if name != 0: return name
+            if name != 0 and self.names.text_of(name) != "__AnyType__": return name
         return 0
 
-    ## The weakest opinion's value of `key`, when any.
-    func weakest(opinions: const Opinion[], key: u32) -> const Value*?:
-        var at = opinions.length
-        while at > 0:
-            at -= 1
-            if let found = self.composer.layers.layer(opinions[at].layer).get(opinions[at].spec, key): return found
-        return none
+    ## The weakest opinion's own value of `key` (none: the field's fallback).
+    func weakest_spec_field(opinions: const Opinion[], key: u32) -> const Value*?:
+        if opinions.length == 0: return none
+        let last = opinions[opinions.length - 1]
+        return self.composer.layers.layer(last.layer).get(last.spec, key)
 
     ## The composed value of metadata field `key` (none when unauthored):
     ## each opinion moved into stage terms first.
@@ -126,11 +125,17 @@ extend Flattener:
     mutating func to_stage(index: const PrimIndex*, opinion: Opinion, value: const Value*) -> Value!:
         match value.kind:
             .asset:
-                if value.array: return value.share()
-                return Value.scalar(ValueKind.asset, (u64)(try self.anchor_asset(value.as_token(), opinion.layer)))
+                if value.array: return try self.anchored_assets(index, opinion, value)
+                let evaluated = try self.evaluated_asset(index, opinion, value.as_token())
+                return Value.scalar(ValueKind.asset, (u64)(try self.anchor_asset(evaluated, opinion.layer)))
             .time_code:
-                if value.array: return value.share()
                 let offset = try self.layer_offset(index, opinion)
+                if value.array:
+                    let times = f64[]((f64*)value.bytes().data, value.count)
+                    var column = try Column[u8].allocate(value.count * 8)
+                    let out = f64[]((f64*)column.span().data, value.count)
+                    for at in 0..<times.length: out[at] = offset.apply(times[at])
+                    return Value.of_array(ValueKind.time_code, value.count, column.take())
                 return Value.scalar(ValueKind.time_code, offset.apply(value.as_double()).bits())
             .dictionary:
                 # Dictionary values move too (VtValueTryTransform recurses).
@@ -149,6 +154,36 @@ extend Flattener:
         defer map.close()
         let stack = self.composer.stacks.stack(index.node(opinion.node).stack)
         return map.offset.times(stack.offsets.items[opinion.position])
+
+    ## An asset array with its paths anchored, up to the first empty one
+    ## (SdfAnchorAssetPaths stops there).
+    mutating func anchored_assets(index: const PrimIndex*, opinion: Opinion, value: const Value*) -> Value!:
+        let ids = u32[]((u32*)value.bytes().data, value.count)
+        var column = try Column[u8].allocate(value.count * 4)
+        errdefer column.release()
+        let out = u32[]((u32*)column.span().data, value.count)
+        var anchoring = true
+        for at in 0..<ids.length:
+            out[at] = ids[at]
+            if not anchoring: continue
+            let evaluated = try self.evaluated_asset(index, opinion, ids[at])
+            if self.names.text_of(evaluated).length == 0:
+                anchoring = false
+                continue
+            out[at] = try self.anchor_asset(evaluated, opinion.layer)
+        return Value.of_array(ValueKind.asset, value.count, column.take())
+
+    ## An asset path expression evaluated with the expression variables of
+    ## the layer stack that authored it (_AnchorOrResolveAssetPaths); the
+    ## path itself when it is no expression, fails, or gives None.
+    mutating func evaluated_asset(index: const PrimIndex*, opinion: Opinion, asset: u32) -> u32!:
+        let text = self.names.text_of(asset)
+        if not is_expression(text): return asset
+        let stack = self.composer.stacks.stack(index.node(opinion.node).stack)
+        var result = try evaluate(self.names, text, &stack.variables)
+        defer result.close()
+        if result.failed or result.kind != ExpressionKind.string: return asset
+        return (u32)result.number
 
     ## An asset path as flattening anchors it (SdfAnchorAssetPaths): anchored
     ## at the layer when that differs from the path on its own, except that

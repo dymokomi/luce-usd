@@ -1,0 +1,42 @@
+#usda 1.0
+(
+    expressionVariables = {
+        string ROOT_VAR_SEL = "x"
+    }
+)
+
+def "BadExpressionInSelection" (
+    """
+    The variant selection authored here is an invalid expression.
+    We should get a composition error about this but fall through
+    to the next weaker selection.
+    """
+)
+{
+}
+
+def "BasicVariantSelection" (
+    "Test simple variant selection expressions."
+)
+{
+}
+
+def "VariantSelectionInReference" (
+    """
+    Test that variant selections using expression variables
+    authored in referenced layer stacks work properly.
+    """
+)
+{
+}
+
+def "OverriddenVariantSelectionInReference" (
+    """
+    Test that variant selection expressions in referenced layer
+    stacks take into account overriding opinions on expression
+    variables.
+    """
+)
+{
+}
+

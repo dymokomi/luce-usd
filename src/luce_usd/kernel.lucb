@@ -45,6 +45,12 @@ pub type ListItem = values.ListItem
 pub type ListPart = values.ListPart
 pub type TimeSamples = values.TimeSamples
 pub let same_value = values.same
+
+import luce_usd.sdf.expressions as expressions
+pub type Evaluated = expressions.Evaluated
+pub type ExpressionKind = expressions.ExpressionKind
+pub let evaluate_expression = expressions.evaluate
+pub let expression_string = expressions.evaluate_to_string
 pub let array_column = values.array_column
 pub let apply_list_op = list_ops.apply_list_op
 
@@ -106,6 +112,7 @@ pub let export_set = convert.export_set
 import luce_usd.pcp as pcp
 
 pub type Composer = pcp.Composer
+pub let anonymous_session = pcp.anonymous_session
 pub let composition_report = pcp.composition_report
 import luce_usd.flatten as flatten
 

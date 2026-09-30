@@ -9,6 +9,10 @@
 ## added as a subtree. The finished index culls subtrees with no opinions
 ## and is stored in strength order.
 
+## The session identifier that stands for a stage's anonymous session
+## layer (UsdStage::Open makes one).
+pub let anonymous_session: str = "anon:session.usda"
+
 ## One level of nested index building (PcpPrimIndex_StackFrame): the graph
 ## and node the index being built will hang under, and the site requested.
 struct Frame:
@@ -59,10 +63,14 @@ pub struct Composer:
         if opened == none: error(errors.invalid, "the root layer cannot be read")
         let root_layer = opened else return
         var session_layer: usize? = none
-        if session.length > 0:
+        if session == anonymous_session:
+            # UsdStage::Open's empty session layer: no opinions, but the
+            # root layer stack differs from its root layer referenced alone.
+            session_layer = try layers.anonymous(session)
+        elif session.length > 0:
             session_layer = try layers.find_or_open(session)
             if session_layer == none: error(errors.invalid, "the session layer cannot be read")
-        let root_stack = try stacks.find_or_build(&layers, root_layer, session_layer, &problems)
+        let root_stack = try stacks.find_or_build(&layers, root_layer, session_layer, none, &problems)
         self.names = names
         self.layers = layers
         self.stacks = stacks

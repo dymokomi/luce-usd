@@ -115,7 +115,7 @@ extend Composer:
             if index.node(visit.node).arc == ArcType.variant:
                 let intro = index.path_at_introduction(names, visit.node)
                 site = try names.replace_prefix(site, try names.strip_variants(intro), intro)
-            if let found = self.site_selection(index.node(visit.node).stack, site, set): return found
+            if let found = try self.site_selection(index.node(visit.node).stack, site, set): return found
         return 0
 
     ## `path` (in `node`'s namespace) mapped to the root node, or to the
@@ -150,8 +150,9 @@ extend Composer:
             try self.walk_translated(index, child, below, out)
 
     ## The strongest selection for `set` authored at the site, when any
-    ## layer authors one (PcpComposeSiteVariantSelection).
-    func site_selection(stack: usize, path: u32, set: u32) -> u32?:
+    ## layer authors one (PcpComposeSiteVariantSelection); a selection
+    ## expression that fails leaves the choice to weaker layers.
+    mutating func site_selection(stack: usize, path: u32, set: u32) -> u32?!:
         for layer in self.stacks.stack(stack).layers.view():
             let data = self.layers.layer(layer)
             let spec = data.find(path) else continue
@@ -159,9 +160,22 @@ extend Composer:
             let pairs = field.ids()
             var at: usize = 0
             while at + 1 < pairs.length:
-                if pairs[at] == set: return pairs[at + 1]
+                if pairs[at] == set:
+                    if let found = try self.selection_value(stack, pairs[at + 1]): return found
                 at += 2
         return none
+
+    ## A selection as authored, or its expression's string; none when the
+    ## expression fails (None gives the empty selection).
+    mutating func selection_value(stack: usize, selection: u32) -> u32?!:
+        let text = self.names.text_of(selection)
+        if not is_expression(text): return selection
+        var result = try evaluate(self.names, text, &self.stacks.stack(stack).variables)
+        defer result.close()
+        if result.failed: return none
+        if result.kind == ExpressionKind.nothing: return 0
+        if result.kind != ExpressionKind.string: return none
+        return (u32)result.number
 
     ## Add the variant arc for `selection` of the task's set; a new variant
     ## may author selections pending tasks are waiting for.

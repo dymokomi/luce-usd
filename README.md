@@ -14,8 +14,9 @@ of 2,056 text layers print byte-identical to `usdcat`, every crate and
 package reads identically, and 2,020 layers written as crates read back
 identically; splines and array edits are the gap); composition (sublayers,
 references, payloads, variants, inherits, specializes, relocates,
-instancing; 143 of OpenUSD's 151 Pcp museum cases compose identically,
-expression variables are the main gap); and stages converted to and from luce-geocore `GeometrySet`s
+instancing, expression variables; 147 of OpenUSD's 151 Pcp museum cases
+compose identically, and the four left print Pcp's graph dumps or read
+layers OpenUSD itself refuses); and stages converted to and from luce-geocore `GeometrySet`s
 (docs/MAPPING.md), scene-graph instances as instances. Pixar's Kitchen Set
 flattens byte-identical to `usdcat` and loads in about 0.2 s (docs/PORT.md).
 

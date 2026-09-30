@@ -101,30 +101,33 @@ extend Composer:
                 let record = memory.read[PayloadRecord]((void*)bytes.data)
                 out.clear()
                 if record.asset != 0 or record.prim != empty_path:
-                    try out.push(ArcItem(item = ListItem(a = (u64)(try self.anchor(record.asset, layer)), b = (u64)record.prim, offset = record.offset, scale = record.scale, custom = none), layer = position))
+                    let single = ListItem(a = (u64)record.asset, b = (u64)record.prim, offset = record.offset, scale = record.scale, custom = none)
+                    if let anchored = try self.anchored_item(single, stack, layer): try out.push(ArcItem(item = anchored, layer = position))
                 continue
             let list = field.list_op() else continue
-            try self.apply_arcs(list, layer, position, out)
+            try self.apply_arcs(list, stack, layer, position, out)
 
     ## Apply one layer's list op (SdfListOp::ApplyOperations), anchoring
-    ## asset paths first and tagging new items with the layer.
-    mutating func apply_arcs(list: const ListOp*, layer: usize, position: usize, out: Growing[ArcItem]*) -> !:
+    ## asset paths first and tagging new items with the layer; an item
+    ## whose asset expression evaluates to nothing is left out.
+    mutating func apply_arcs(list: const ListOp*, stack: usize, layer: usize, position: usize, out: Growing[ArcItem]*) -> !:
         if list.explicit:
             out.clear()
             for item in list.items(ListPart.explicit):
-                let anchored = try self.anchored_item(item, layer)
+                let anchored = (try self.anchored_item(item, stack, layer)) else continue
                 if find_arc(out.view(), anchored) == none: try out.push(ArcItem(item = anchored, layer = position))
             return
         for item in list.items(ListPart.deleted):
-            if let at = find_arc(out.view(), try self.anchored_item(item, layer)): remove_arc(out, at)
+            let anchored = (try self.anchored_item(item, stack, layer)) else continue
+            if let at = find_arc(out.view(), anchored): remove_arc(out, at)
         for item in list.items(ListPart.added):
-            let anchored = try self.anchored_item(item, layer)
+            let anchored = (try self.anchored_item(item, stack, layer)) else continue
             if find_arc(out.view(), anchored) == none: try out.push(ArcItem(item = anchored, layer = position))
         let prepended = list.items(ListPart.prepended)
         var at = prepended.length
         while at > 0:
             at -= 1
-            let anchored = try self.anchored_item(prepended[at], layer)
+            let anchored = (try self.anchored_item(prepended[at], stack, layer)) else continue
             if let found = find_arc(out.view(), anchored): remove_arc(out, found)
             try out.push(ArcItem(item = anchored, layer = position))
             var move = out.count - 1
@@ -133,14 +136,19 @@ extend Composer:
                 move -= 1
             out.items[0] = ArcItem(item = anchored, layer = position)
         for item in list.items(ListPart.appended):
-            let anchored = try self.anchored_item(item, layer)
+            let anchored = (try self.anchored_item(item, stack, layer)) else continue
             if let found = find_arc(out.view(), anchored): remove_arc(out, found)
             try out.push(ArcItem(item = anchored, layer = position))
 
-    ## `item` with its asset path anchored at `layer`.
-    mutating func anchored_item(item: ListItem, layer: usize) -> ListItem!:
+    ## `item` with its asset path anchored at `layer`, an expression first
+    ## evaluated with the stack's variables; none when that gives nothing.
+    mutating func anchored_item(item: ListItem, stack: usize, layer: usize) -> ListItem?!:
         var made = item
-        made.a = (u64)(try self.anchor((u32)item.a, layer))
+        var asset = (u32)item.a
+        if is_expression(self.names.text_of(asset)):
+            asset = try evaluate_to_string(self.names, self.names.text_of(asset), &self.stacks.stack(stack).variables)
+            if asset == 0: return none
+        made.a = (u64)(try self.anchor(asset, layer))
         return made
 
     ## The token of asset `asset` (a string token) anchored at `layer`; 0
@@ -175,7 +183,10 @@ extend Composer:
                 try self.problems.add_with("Could not open asset @", identifier)
                 return
             target_layer = opened else return
-            target_stack = try self.stacks.find_or_build(&self.layers, target_layer, none, &self.problems)
+            # The referenced stack's expression variables are overridden by
+            # the referencing stack's.
+            let overrides = self.stacks.stack(stack).source
+            target_stack = try self.stacks.find_or_build(&self.layers, target_layer, none, overrides, &self.problems)
             let source_rate = self.layers.time_codes_per_second(self.stacks.stack(stack).layers.items[arc.layer])
             let target_rate = self.stacks.stack(target_stack).time_codes_per_second
             if source_rate != target_rate: offset.scale = offset.scale * source_rate / target_rate

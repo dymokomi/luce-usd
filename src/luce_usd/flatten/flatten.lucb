@@ -23,6 +23,7 @@ from luce_usd.dictionary_order import dictionary_less
 from luce_usd.sdf.schema import find_field, applies_layer, applies_prim, applies_attribute, applies_relationship
 from luce_usd.pcp import Composer, PrimIndex, Offset, ArcType, InstanceKey
 from luce_usd.prim_definitions import Schemas, PropertyDefinition
+from luce_usd.sdf.expressions import is_expression, evaluate, ExpressionKind
 from geocore_growing import Growing
 from geocore_shared import Column
 

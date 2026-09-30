@@ -6,7 +6,10 @@
 ## timeCodesPerSecond differs. A sublayer that is missing or already an
 ## ancestor (a cycle) is skipped with an error; the same layer may appear
 ## twice on different branches. Its relocations come from its layers'
-## layerRelocates (relocations.lucb).
+## layerRelocates (relocations.lucb). Its expression variables
+## (PcpExpressionVariables) are the root layer's expressionVariables, the
+## session layer's over them, and those of the layer stack that references
+## it over both; a sublayer path may be an expression over them.
 
 ## One layer stack.
 pub struct LayerStack:
@@ -16,11 +19,18 @@ pub struct LayerStack:
     pub var offsets: Growing[Offset]
     pub var time_codes_per_second: f64
     pub var relocates: Growing[Relocate]
+    ## The variables (a dictionary value), the stack that last changed
+    ## them, and the stack whose variables override its own (part of its
+    ## identity); none stands for the root layer stack (the first built).
+    pub var variables: Value
+    pub var source: usize?
+    pub var overrides: usize?
 
     pub mutating func close():
         self.layers.close()
         self.offsets.close()
         self.relocates.close()
+        self.variables.release()
 
     ## Whether any layer's offset is not the identity.
     pub func has_offsets() -> bool:
@@ -42,13 +52,15 @@ pub struct Stacks:
     pub func stack(index: usize) -> const LayerStack*:
         return &self.stacks.items[index]
 
-    ## The layer stack of root layer `root` (and `session`), built now if new.
-    pub mutating func find_or_build(layers: Layers*, root: usize, session: usize?, problems: Problems*) -> usize!:
+    ## The layer stack of root layer `root` (and `session`) whose variables
+    ## `overrides` (a stack's variables source) overrides, built now if new.
+    pub mutating func find_or_build(layers: Layers*, root: usize, session: usize?, overrides: usize?, problems: Problems*) -> usize!:
         for at in 0..<self.stacks.count:
             let stack = &self.stacks.items[at]
-            if stack.root == root and stack.session == session: return at
-        var stack = LayerStack(root = root, session = session, layers = Growing[usize](), offsets = Growing[Offset](), time_codes_per_second = layers.time_codes_per_second(root), relocates = Growing[Relocate]())
+            if stack.root == root and stack.session == session and stack.overrides == overrides: return at
+        var stack = LayerStack(root = root, session = session, layers = Growing[usize](), offsets = Growing[Offset](), time_codes_per_second = layers.time_codes_per_second(root), relocates = Growing[Relocate](), variables = Value.marker(ValueKind.empty), source = none, overrides = overrides)
         errdefer stack.close()
+        try self.compose_variables(layers, &stack)
         var seen = Growing[usize]()
         defer seen.close()
         var root_offset = Offset.identity()
@@ -71,6 +83,39 @@ pub struct Stacks:
         try compute_relocations(layers, &stack, problems)
         try self.stacks.push(stack)
         return self.stacks.count - 1
+
+extend Stacks:
+    ## The stack's expression variables (Pcp_ComposeExpressionVariablesOver):
+    ## later sources win; the source stays the overriding stack's when
+    ## nothing changed.
+    mutating func compose_variables(layers: Layers*, stack: LayerStack*) -> !:
+        let made = try Dictionary.create()
+        stack.variables = Value.of_object(ValueKind.dictionary, (void*)made)
+        let key = layers.layer(stack.root).keys.expression_variables
+        if let found = layers.field(stack.root, key): try over(made, found)
+        if let session = stack.session:
+            if let found = layers.field(session, key): try over(made, found)
+        # The root layer stack's own variables are the base of the others.
+        if self.stacks.count == 0: return
+        let overrides = stack.overrides else 0
+        let base = &self.stacks.items[overrides].variables
+        try over(made, base)
+        if not same_entries(made, base.dictionary()): stack.source = self.stacks.count
+        else: stack.source = self.stacks.items[overrides].source
+
+## Put `stronger`'s entries over `into` (VtDictionaryOver).
+func over(into: Dictionary*, stronger: const Value*) -> !:
+    let held = stronger.dictionary() else return
+    for at in 0..<held.keys.count: try into.put(held.keys.items[at], held.values.items[at].share())
+
+## Whether two dictionaries hold the same entries, in any order.
+func same_entries(a: const Dictionary*, b: const Dictionary*?) -> bool:
+    let other = b else return a.count() == 0
+    if a.count() != other.count(): return false
+    for at in 0..<a.keys.count:
+        let found = other.find(a.keys.items[at]) else return false
+        if not same(&a.values.items[at], found): return false
+    return true
 
 ## Whether a session layer's own rate governs the stack
 ## (_ShouldUseSessionTcps): it authors timeCodesPerSecond, or the root does
@@ -102,7 +147,10 @@ func build(layers: Layers*, layer: usize, offset: Offset, rate: f64, session_own
     var sublayers = Growing[Sublayer]()
     defer sublayers.close()
     for at in 0..<paths.length:
-        let asset = layers.names.text_of(paths[at])
+        var asset = layers.names.text_of(paths[at])
+        if is_expression(asset):
+            # Expressions evaluating to nothing (or failing) are skipped.
+            asset = layers.names.text_of(try evaluate_to_string(layers.names, asset, &stack.variables))
         if asset.length == 0: continue
         try ar.anchored(asset, layers.identifier(layer), &identifier)
         let opened = try layers.find_or_open((str)identifier.view())

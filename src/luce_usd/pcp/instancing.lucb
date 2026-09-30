@@ -111,7 +111,7 @@ extend Composer:
                 let pairs = field.ids()
                 var at: usize = 0
                 while at + 1 < pairs.length:
-                    try self.add_selection(out, pairs[at], pairs[at + 1])
+                    if let selection = try self.selection_value(entry.stack, pairs[at + 1]): try self.add_selection(out, pairs[at], selection)
                     at += 2
 
     mutating func collect_arcs(index: const PrimIndex*, node: u32, out: InstanceKey*) -> !:

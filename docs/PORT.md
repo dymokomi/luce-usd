@@ -16,7 +16,7 @@ record; statuses change as milestones land.
 | M6 | `usdGeom/` (xformOp, mesh, subset, curves, points, pointInstancer, primvar, gprims), stage metadata | `stage/`, `usd_geom/`, `convert/` | done: every testenv layer luce-usd reads imports and exports without failing, and usdcat reads every exported layer (2,105 of 2,105) |
 | M7 | (luced-3d: File rows, Export node) | luced-3d `usd_nodes.luc` | done: the File node reads USD with its options, the Export node writes USD, OBJ or prism by extension, `luced-3d --import` smoke checks installed builds |
 | M8 | `pcp/layerStack.cpp`, `mapFunction.cpp`, `primIndex.cpp` (references, payloads), `ar/` (filesystem, packages), `usd/stage.cpp` (Flatten) | `pcp/`, `flatten/`, `ar.lucb` | done |
-| M9 | `pcp/primIndex.cpp` (task queue, variants, inherits, specializes, implied classes), `strengthOrdering.cpp`, `instancing.cpp`, `instanceKey.cpp`, `usd/instanceCache.cpp`, `usd/stage.cpp` (prototypes in Flatten) | `pcp/`, `flatten/instances.lucb` | in progress: Kitchen Set and its instanced version flatten as usdcat does (the instanced one up to usdcat's run-to-run prototype numbering) and import |
+| M9 | `pcp/primIndex.cpp` (task queue, variants, inherits, specializes, implied classes, relocations), `strengthOrdering.cpp`, `layerStack.cpp` (relocations, expression variables), `instancing.cpp`, `instanceKey.cpp`, `expressionVariables.cpp`, `sdf/variableExpression*.cpp`, `usd/instanceCache.cpp`, `usd/primDefinition.cpp`, `usd/stage.cpp` (prototypes and built-in properties in Flatten) | `pcp/`, `flatten/`, `sdf/expressions.lucb`, `prim_definitions.lucb`, `schema_table.lucb` | in progress: Kitchen Set and its instanced version flatten as usdcat does (the instanced one up to usdcat's run-to-run prototype numbering) and import |
 | M10 | (luced-3d composition rows) | | planned |
 | M11 | performance pass (Kitchen Set) | | planned |
 
@@ -28,6 +28,7 @@ record; statuses change as milestones land.
 | Plug, schema codegen, file-format plugins | One package, fixed formats; schemas are hand-written tables. Unknown prim types pass through as data. |
 | Ar resolvers beyond the filesystem | Anchored, absolute and package-relative paths plus optional search paths only. |
 | Python, usdview, Tf notices, change processing, edit targets | Whole layers are loaded and written; a live editable stage is a separate product. |
+| `matches_regex` in variable expressions | No regular expression engine in luce-usd; the function fails, so an expression using it gives nothing. |
 | Value clips, Ts spline evaluation, UsdSkel, UsdLux, UsdShade networks, MaterialX, UsdPhysics, UsdVol, cameras | Geometry first. Splines and unknown values round-trip as opaque data. |
 | Tf, Vt, Gf, Work as libraries | Base, luce-geocore's columns and parallel pool cover them. |
 
@@ -43,6 +44,6 @@ Measured with the local driver (docs/PARITY.md) against OpenUSD v26.08.
 | usdc-write (each testenv `.usda` written as `.usdc` by luce-usd, read by usdcat) | 2,020 / 2,056 (layers OpenUSD cannot write as crates either count as agreeing) | splines; path expression anchoring |
 | usdz (testenv `.usdz` usdcat opens) | 51 / 51 byte-identical | |
 | usdz-write (each testenv `.usda` written as `.usdz` by luce-usd) | 2,020 / 2,056 read back identically; 0 fail usdchecker's RootPackageValidator/UsdzPackageValidator | the usdc-write gaps |
-| flatten (each testenv `.usda` and museum root, usdcat --flatten) | 1,918 / 2,078 byte-identical (prototypes numbered as with USD_ASSIGN_PROTOTYPES_DETERMINISTICALLY) | value clips; splines |
-| museum (testPcpMuseum composition results, 151 cases) | 143 / 151 identical to the baselines | expression variables (asset paths, sublayers, variant selections); two `_graph` cases print Pcp's graph dump; BasicInherits and SubrootReferenceAndVariants, whose root layers OpenUSD v26.08 itself refuses to read |
+| flatten (each testenv `.usda` and museum root, usdcat --flatten) | 1,952 / 2,078 byte-identical (prototypes numbered as with USD_ASSIGN_PROTOTYPES_DETERMINISTICALLY) | value clips; splines; path expressions mapped into prototypes |
+| museum (testPcpMuseum composition results, 151 cases) | 147 / 151 identical to the baselines | two `_graph` cases print Pcp's graph dump; BasicInherits and SubrootReferenceAndVariants, whose root layers OpenUSD v26.08 itself refuses to read |
 | sdf-parsing (testSdfParsing) | 69 printed as expected, 113 bad files rejected, 8 differ | the same spline and array-edit files; two baselines made with a test plugin's metadata registered |

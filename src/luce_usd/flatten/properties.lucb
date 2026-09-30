@@ -43,15 +43,17 @@ extend Flattener:
         for key in fields.view():
             if key == keys.custom:
                 # Custom and variability come from the weakest spec of any
-                # kind (_GetPropCustomImpl, _GetAttrVariabilityImpl).
+                # kind (_GetPropCustomImpl, _GetAttrVariabilityImpl): both are
+                # required fields, so a spec without one gives the fallback
+                # (SdfLayer::HasField).
                 var custom: u64 = 0
-                if let found = self.weakest(opinions.view(), key): custom = found.bits
+                if let found = self.weakest_spec_field(opinions.view(), key): custom = found.bits
                 if builtin != none: custom = 0
                 try self.out.set(spec, key, Value.scalar(ValueKind.boolean, custom))
                 continue
             if key == keys.variability and attribute:
                 var variability = variability_varying
-                if let found = self.weakest(opinions.view(), key): variability = found.bits
+                if let found = self.weakest_spec_field(opinions.view(), key): variability = found.bits
                 if let found = builtin: variability = variability_uniform if found.uniform else variability_varying
                 try self.out.set(spec, key, Value.scalar(ValueKind.variability, variability))
                 continue
@@ -85,10 +87,18 @@ extend Flattener:
                 try self.out.set(spec, keys.time_samples, try self.samples_to_stage(index, opinion, samples))
                 break
             if data.get(opinion.spec, keys.default) != none: break
+        # An animation block is no default: a weaker one shows through, and
+        # with none the default is blocked (attr.Get fails, SdfValueBlock).
+        var blocked = false
         for opinion in opinions:
             let found = composer.layers.layer(opinion.layer).get(opinion.spec, keys.default) else continue
+            if found.kind == ValueKind.animation_block:
+                blocked = true
+                continue
             try self.out.set(spec, keys.default, try self.value_to_stage(index, opinion, found))
+            blocked = false
             break
+        if blocked: try self.out.set(spec, keys.default, Value.marker(ValueKind.value_block))
 
     ## Time samples in stage time, their values moved too.
     mutating func samples_to_stage(index: const PrimIndex*, opinion: Opinion, samples: const TimeSamples*) -> Value!:
@@ -103,22 +113,4 @@ extend Flattener:
     ## An attribute value in stage terms (_MakeResolvedAssetPathsValue and
     ## Usd_ApplyLayerOffsetToValue): asset paths anchored, time codes moved.
     mutating func value_to_stage(index: const PrimIndex*, opinion: Opinion, value: const Value*) -> Value!:
-        if value.kind == ValueKind.asset and value.array:
-            let ids = u32[]((u32*)value.bytes().data, value.count)
-            var column = try Column[u8].allocate(value.count * 4)
-            errdefer column.release()
-            let out = u32[]((u32*)column.span().data, value.count)
-            var anchoring = true
-            for at in 0..<ids.length:
-                # SdfAnchorAssetPaths stops at the first empty path.
-                if self.names.text_of(ids[at]).length == 0: anchoring = false
-                out[at] = try self.anchor_asset(ids[at], opinion.layer) if anchoring else ids[at]
-            return Value.of_array(ValueKind.asset, value.count, column.take())
-        if value.kind == ValueKind.time_code and value.array:
-            let offset = try self.layer_offset(index, opinion)
-            let times = f64[]((f64*)value.bytes().data, value.count)
-            var column = try Column[u8].allocate(value.count * 8)
-            let out = f64[]((f64*)column.span().data, value.count)
-            for at in 0..<times.length: out[at] = offset.apply(times[at])
-            return Value.of_array(ValueKind.time_code, value.count, column.take())
         return try self.to_stage(index, opinion, value)

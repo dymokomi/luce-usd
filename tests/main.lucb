@@ -12,6 +12,7 @@ import number_checks
 import usda_checks
 import usdc_checks
 import usdz_checks
+import expression_checks
 import geom_checks
 import pcp_checks
 
@@ -148,4 +149,6 @@ pub func main(arguments: str[]) -> i32!:
     inject(&tracker, every, pcp_checks.flattened)
     try pcp_checks.builtins()
     inject(&tracker, every, pcp_checks.builtins)
+    try expression_checks.expressions()
+    inject(&tracker, every, expression_checks.expressions)
     return 0

@@ -55,7 +55,7 @@ pub struct Usd:
         var identifier = Growing[u8]()
         defer identifier.close()
         try ar.absolute(path, &identifier)
-        var composer = try pcp.Composer(&names, (str)identifier.view(), "")
+        var composer = try pcp.Composer(&names, (str)identifier.view(), pcp.anonymous_session)
         defer composer.close()
         # A lone layer is the stage; otherwise the composed stage, flattened.
         var flattened = try LayerData(&names)
@@ -111,7 +111,7 @@ pub struct Usd:
         var identifier = Growing[u8]()
         defer identifier.close()
         try ar.absolute(source_path, &identifier)
-        var composer = try pcp.Composer(&names, (str)identifier.view(), "")
+        var composer = try pcp.Composer(&names, (str)identifier.view(), pcp.anonymous_session)
         defer composer.close()
         var flattened = try LayerData(&names)
         defer flattened.close()

@@ -1,0 +1,72 @@
+## Variable expressions (sdf/expressions.lucb) against the behaviour of
+## OpenUSD's SdfVariableExpression: substitution, functions, lists, typed
+## results, nested and circular variables, and syntax errors.
+from usd_kernel import Names, Value, ValueKind, Dictionary, Evaluated, ExpressionKind, evaluate_expression, expression_string
+
+## A dictionary value of expression variables.
+func variables(names: Names*) -> Value!:
+    let made = try Dictionary.create()
+    var owner = Value.of_object(ValueKind.dictionary, (void*)made)
+    errdefer owner.release()
+    try made.put(try names.token("A"), Value.scalar(ValueKind.string, (u64)(try names.token("left"))))
+    try made.put(try names.token("N"), Value.scalar(ValueKind.int, 3))
+    try made.put(try names.token("ON"), Value.scalar(ValueKind.boolean, 1))
+    try made.put(try names.token("NESTED"), Value.scalar(ValueKind.string, (u64)(try names.token("`\"${A}_nested\"`"))))
+    try made.put(try names.token("LOOP"), Value.scalar(ValueKind.string, (u64)(try names.token("`${LOOP2}`"))))
+    try made.put(try names.token("LOOP2"), Value.scalar(ValueKind.string, (u64)(try names.token("`${LOOP}`"))))
+    return owner
+
+## The string an expression gives ("" when it fails or is not a string).
+func text_of(names: Names*, vars: const Value*, expression: str) -> str!:
+    return names.text_of(try expression_string(names, expression, vars))
+
+## The kind and number an expression gives.
+func value_of(names: Names*, vars: const Value*, expression: str) -> Evaluated!:
+    return try evaluate_expression(names, expression, vars)
+
+func is_true(names: Names*, vars: const Value*, expression: str) -> bool!:
+    var result = try value_of(names, vars, expression)
+    defer result.close()
+    return not result.failed and result.kind == ExpressionKind.boolean and result.number == 1
+
+func fails(names: Names*, vars: const Value*, expression: str) -> bool!:
+    var result = try value_of(names, vars, expression)
+    defer result.close()
+    return result.failed
+
+pub func expressions() -> !:
+    var names = try Names()
+    defer names.close()
+    var vars = try variables(&names)
+    defer vars.release()
+    # Substitution; an unset variable leaves its name; escapes.
+    assert((try text_of(&names, &vars, "`\"${A}.usda\"`")) == "left.usda")
+    assert((try text_of(&names, &vars, "`'${MISSING}_x'`")) == "MISSING_x")
+    assert((try text_of(&names, &vars, "`\"a\\tb\\\\c\\$\"`")) == "a\tb\\c$")
+    assert((try text_of(&names, &vars, "`${NESTED}`")) == "left_nested")
+    assert(try fails(&names, &vars, "`${LOOP}`"))
+    assert(try fails(&names, &vars, "`${MISSING}`"))
+    # Typed results: an integer is no string.
+    assert((try text_of(&names, &vars, "`${N}`")) == "")
+    # Functions.
+    assert((try text_of(&names, &vars, "`if(${ON}, \"yes\", \"no\")`")) == "yes")
+    assert((try text_of(&names, &vars, "`if(not(${ON}), \"yes\")`")) == "")
+    assert(try is_true(&names, &vars, "`and(${ON}, eq(${N}, 3), lt(\"a\", \"b\"))`"))
+    assert(try is_true(&names, &vars, "`or(${ON}, ${MISSING})`"))
+    assert(try fails(&names, &vars, "`and(${ON}, ${MISSING})`"))
+    assert(try is_true(&names, &vars, "`contains([1, 2, 3], ${N})`"))
+    assert(try is_true(&names, &vars, "`contains(${A}, \"ef\")`"))
+    assert((try text_of(&names, &vars, "`at(['x', 'y', 'z'], -1)`")) == "z")
+    assert(try is_true(&names, &vars, "`eq(len(${A}), 4)`"))
+    assert(try is_true(&names, &vars, "`defined(\"A\", \"N\")`"))
+    assert(not try is_true(&names, &vars, "`defined(\"A\", \"MISSING\")`"))
+    assert(try is_true(&names, &vars, "`eq(None, None)`"))
+    # Type errors, mixed lists, syntax errors and unknown functions fail.
+    assert(try fails(&names, &vars, "`eq(1, \"1\")`"))
+    assert(try fails(&names, &vars, "`[1, 'a']`"))
+    assert(try fails(&names, &vars, "`\"${BAD\"`"))
+    assert(try fails(&names, &vars, "`nope(1)`"))
+    assert(try fails(&names, &vars, "`or(${ON}, nope(1))`"))
+    var list = try value_of(&names, &vars, "`['a', 'b']`")
+    defer list.close()
+    assert(list.kind == ExpressionKind.strings and list.items.count == 2)
