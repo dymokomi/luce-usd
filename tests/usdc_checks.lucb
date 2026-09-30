@@ -2,7 +2,7 @@
 ## usdcat from our layers) read into layers that print as usdcat prints
 ## them; the integer coding round-trips; damaged crates fail cleanly.
 import memory
-from usd_kernel import Names, LayerData, read_usda, read_usdc, write_usda, write_usdc, read_file, most_bytes, decode_integers, encode_integers, encoded_bound, invalid, unsupported
+from usd_kernel import Names, LayerData, read_usda, read_usdc, write_usda, write_usdc, read_file, decode_integers, encode_integers, encoded_bound, invalid, unsupported
 from geocore_growing import Growing
 
 pub func fixtures() -> !:
@@ -19,10 +19,10 @@ pub func arrays_fixture() -> !: try fixture("arrays")
 
 func fixture(name: str) -> !:
     var buffer: u8[256]
-    let crate = try read_file(try format(buffer, f"tests/fixtures/usdc/{name}.usdc"), most_bytes)
+    let crate = try read_file(try format(buffer, f"tests/fixtures/usdc/{name}.usdc"))
     defer free(crate) in memory.heap
     var expected_buffer: u8[256]
-    let expected = try read_file(try format(expected_buffer, f"tests/fixtures/usdc/{name}.expected.usda"), most_bytes)
+    let expected = try read_file(try format(expected_buffer, f"tests/fixtures/usdc/{name}.expected.usda"))
     defer free(expected) in memory.heap
     var names = try Names()
     defer names.close()
@@ -70,7 +70,7 @@ pub func integers() -> !:
 ## they never read out of bounds.
 pub func damaged() -> !:
     var buffer: u8[256]
-    let crate = try read_file(try format(buffer, f"tests/fixtures/usdc/arrays.usdc"), most_bytes)
+    let crate = try read_file(try format(buffer, f"tests/fixtures/usdc/arrays.usdc"))
     defer free(crate) in memory.heap
     let copy = try alloc u8[crate.length] in memory.heap
     defer free(copy) in memory.heap
@@ -108,10 +108,10 @@ pub func writes() -> !:
 func rewrite(folder: str, name: str, crate: bool) -> !:
     var buffer: u8[256]
     let path = try format(buffer, f"tests/fixtures/{folder}/{name}.{folder}")
-    let input = try read_file(path, most_bytes)
+    let input = try read_file(path)
     defer free(input) in memory.heap
     var expected_buffer: u8[256]
-    let expected = try read_file(try format(expected_buffer, f"tests/fixtures/{folder}/{name}.expected.usda"), most_bytes)
+    let expected = try read_file(try format(expected_buffer, f"tests/fixtures/{folder}/{name}.expected.usda"))
     defer free(expected) in memory.heap
     var names = try Names()
     defer names.close()

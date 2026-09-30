@@ -85,10 +85,7 @@ func import_curves(stage: Stage*, gathered: const Gathered*, warnings: Warnings*
         for at in 0..<knot_counts.count: out[at + 1] = out[at] + knot_counts.items[at]
     let store = try curve_store(stage, gathered, sources.items[..<sources.count], rows.view(), handles.view(), weights.view(), any_handles, any_weights, points, origin, warnings)
     # curves_assembled takes every column and the store, even on failure.
-    # LUCE-BUG: re-exported function values (geocore_kernel's `pub let
-    # curves_assembled = curves.curves_assembled`) lose their default
-    # parameters, so the default `seed = none` is passed explicitly.
-    return try curves_assembled(positions.take(), origin, offsets.take(), knot_column.take(), knot_offsets.take(), store, none)
+    return try curves_assembled(positions.take(), origin, offsets.take(), knot_column.take(), knot_offsets.take(), store)
 
 ## The curves' attributes.
 func curve_store(stage: Stage*, gathered: const Gathered*, sources: const ElementSource[], rows: const CurveRow[], handles: const i32[], weights: const f32[], any_handles: bool, any_weights: bool, points: usize, origin: Vector3, warnings: Warnings*) -> AttributeStore!:

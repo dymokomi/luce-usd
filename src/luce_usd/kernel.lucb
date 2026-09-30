@@ -12,7 +12,7 @@ pub let limit = errors.limit
 
 pub let read_file = source.read
 pub let read_prefix = source.read_prefix
-## The largest file read_file takes whole (pass it: function values drop defaults).
+## The largest file read_file takes whole (its default limit).
 pub let most_bytes = source.most_bytes
 
 pub type Format = sniff.Format

@@ -3,7 +3,7 @@
 ## the one OpenUSD prints (after the first line, which names the layer as
 ## given on the command line).
 import memory
-from usd_kernel import Names, LayerData, Composer, anonymous_session, flatten_stage, write_usda, absolute_path, composition_report, read_file, most_bytes
+from usd_kernel import Names, LayerData, Composer, anonymous_session, flatten_stage, write_usda, absolute_path, composition_report, read_file
 from geocore_growing import Growing
 
 ## One museum case: its directory, the session layer (or ""), and the
@@ -53,7 +53,7 @@ func check_case(case: Case) -> !:
     var session: u8[256]
     let session_path = try format(session, f"tests/fixtures/openusd/museum/{case.name}/{case.session}") if case.session.length > 0 else ""
     var expected_buffer: u8[256]
-    let expected = try read_file(try format(expected_buffer, f"tests/fixtures/openusd/museum/{case.name}/expected.txt"), most_bytes)
+    let expected = try read_file(try format(expected_buffer, f"tests/fixtures/openusd/museum/{case.name}/expected.txt"))
     defer free(expected) in memory.heap
     var names = try Names()
     defer names.close()
@@ -97,7 +97,7 @@ pub func builtins() -> !:
     try compare_flattened("tests/fixtures/flatten/builtins.usda", "tests/fixtures/flatten/builtins.flattened.usda", "builtins")
 
 func compare_flattened(root_path: str, expected_path: str, name: str) -> !:
-    let expected = try read_file(expected_path, most_bytes)
+    let expected = try read_file(expected_path)
     defer free(expected) in memory.heap
     var names = try Names()
     defer names.close()

@@ -6,7 +6,7 @@ import memory
 from geocore import Mesh, GeometrySet
 from geocore_growing import Growing
 from geocore_kernel import dispose_set, set_mesh, attribute_entry, corner_span, triangle_span, group_bits, set_find, curves_type, points_component, Curves, PointCloud, AttributeStore, cloud_store, curves_knot_offsets
-from usd_kernel import Composer, anonymous_session, flatten_stage, absolute_path, ImportOptions, ExportOptions, Warnings, import_layer, export_set, write_usda, Names, LayerData, read_usda, read_file, most_bytes, Stage, earliest, gather, Gathered, GprimKind, Matrix4d, local_transform, absolute_root, purpose_render
+from usd_kernel import Composer, anonymous_session, flatten_stage, absolute_path, ImportOptions, ExportOptions, Warnings, import_layer, export_set, write_usda, Names, LayerData, read_usda, read_file, Stage, earliest, gather, Gathered, GprimKind, Matrix4d, local_transform, absolute_root, purpose_render
 
 func near(a: f64, b: f64) -> bool:
     return math.abs(a - b) < 1e-5
@@ -19,7 +19,7 @@ func check_point(matrix: const Matrix4d*, x: f64, y: f64, z: f64, ex: f64, ey: f
 
 pub func transforms() -> !:
     var buffer: u8[256]
-    let text = try read_file(try format(buffer, f"tests/fixtures/geom/xforms.usda"), most_bytes)
+    let text = try read_file(try format(buffer, f"tests/fixtures/geom/xforms.usda"))
     defer free(text) in memory.heap
     var names = try Names()
     defer names.close()
@@ -49,7 +49,7 @@ pub func transforms() -> !:
 ## the instancer left out, the inherited displayColor on the detail.
 pub func imported() -> !:
     var buffer: u8[256]
-    let text = try read_file(try format(buffer, f"tests/fixtures/geom/xforms.usda"), most_bytes)
+    let text = try read_file(try format(buffer, f"tests/fixtures/geom/xforms.usda"))
     defer free(text) in memory.heap
     var names = try Names()
     defer names.close()
@@ -80,7 +80,7 @@ pub func imported() -> !:
 ## The mesh fixture read at `time` (NaN: startTimeCode).
 func import_meshes_at(at_time: f64, convert_units: bool, check: func(const Mesh*, const GeometrySet*, const Names*) -> unit!) -> !:
     var buffer: u8[256]
-    let text = try read_file(try format(buffer, f"tests/fixtures/geom/meshes.usda"), most_bytes)
+    let text = try read_file(try format(buffer, f"tests/fixtures/geom/meshes.usda"))
     defer free(text) in memory.heap
     var names = try Names()
     defer names.close()
@@ -173,7 +173,7 @@ func check_units(mesh: const Mesh*, set: const GeometrySet*, names: const Names*
 ## Intrinsic shapes tessellated, sized and turned onto their axes.
 pub func shapes() -> !:
     var buffer: u8[256]
-    let text = try read_file(try format(buffer, f"tests/fixtures/geom/shapes.usda"), most_bytes)
+    let text = try read_file(try format(buffer, f"tests/fixtures/geom/shapes.usda"))
     defer free(text) in memory.heap
     var names = try Names()
     defer names.close()
@@ -203,7 +203,7 @@ pub func shapes() -> !:
 ## Curves and points: types, handles, knots, weights, widths and paths.
 pub func curves_and_points() -> !:
     var buffer: u8[256]
-    let text = try read_file(try format(buffer, f"tests/fixtures/geom/curves.usda"), most_bytes)
+    let text = try read_file(try format(buffer, f"tests/fixtures/geom/curves.usda"))
     defer free(text) in memory.heap
     var names = try Names()
     defer names.close()
@@ -247,7 +247,7 @@ func store_number(store: const AttributeStore*, name: str, domain: i64, element:
 ## The instancer fixture: instances, or placed gprims when flattening.
 func import_forest(realize: bool) -> GeometrySet*!:
     var buffer: u8[256]
-    let text = try read_file(try format(buffer, f"tests/fixtures/geom/instancer.usda"), most_bytes)
+    let text = try read_file(try format(buffer, f"tests/fixtures/geom/instancer.usda"))
     defer free(text) in memory.heap
     var names = try Names()
     defer names.close()
@@ -283,7 +283,7 @@ pub func instancer() -> !:
 ## A fixture imported, exported, written as text, read and imported again.
 func round_trip(file_name: str, check: func(const GeometrySet*, const GeometrySet*) -> unit!) -> !:
     var buffer: u8[256]
-    let text = try read_file(try format(buffer, f"tests/fixtures/geom/{file_name}"), most_bytes)
+    let text = try read_file(try format(buffer, f"tests/fixtures/geom/{file_name}"))
     defer free(text) in memory.heap
     var names = try Names()
     defer names.close()

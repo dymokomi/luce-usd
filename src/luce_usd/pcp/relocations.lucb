@@ -197,12 +197,7 @@ extend Composer:
         let parent = (u32)entry.parent
         let grandparent = index.node(parent).parent
         if grandparent < 0: return
-        # LUCE-BUG: calling a method on a field reached through a `const T*`
-        # call result (index.node(parent).map_to_parent.map(...)) makes the
-        # C backend declare a non-const receiver temp that clang rejects;
-        # bind a const pointer first.
-        let across: const MapFunction* = &index.node(parent).map_to_parent
-        let source = try across.map(self.names, index.node(node).path, false)
+        let source = try index.node(parent).map_to_parent.map(self.names, index.node(node).path, false)
         if source == empty_path: return
         for child in index.node((u32)grandparent).children.view():
             if index.node(child).path == source and index.node(child).arc == ArcType.relocate: return
