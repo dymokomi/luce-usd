@@ -1,7 +1,7 @@
 #prisma 4.0
 def package "luce-usd" {
     str owner = "dymokomi"
-    str version = "0.4.1"
+    str version = "0.4.2"
     str kind = "package"
     str language = "luce-base"
     str readme = "README.md"
@@ -19,7 +19,7 @@ def package "luce-usd" {
     }
     def dependency "luce-compress" {
         str owner = "dymokomi"
-        str version = "^0.2.5"
+        str version = "^0.3.0"
         str path = "../luce-compress"
     }
     def dependency "luce-cad" {
