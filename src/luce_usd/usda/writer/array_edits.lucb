@@ -1,0 +1,59 @@
+## Array edits as Vt_ArrayEditStreamImpl prints them (arrayEdit.cpp):
+## `edit [a; b; ...]` on one line, inserts at 0 and at the end as prepend
+## and append, literals as the attribute's elements. Only string, token,
+## asset and path expression edits raise the file to usda 1.2: the others
+## are printed through TfStringify, which requests no upgrade.
+
+extend Writer:
+    mutating func array_edit_text(value: const Value*) -> !:
+        let edit = value.array_edit() else return
+        match edit.kind:
+            .string, .token, .asset, .path_expression: self.need_version(2)
+            _: discard(0)
+        var steps = Growing[EditInstruction]()
+        defer steps.close()
+        try edit.instructions(&steps)
+        try self.put("edit [")
+        for at in 0..<steps.count:
+            if at > 0: try self.put("; ")
+            let step = steps.items[at]
+            match step.op:
+                .write_literal, .write_ref:
+                    try self.put("write ")
+                    try self.edit_operand(edit, step.first, step.op == EditOp.write_ref)
+                    try self.put(" to ")
+                    try self.edit_index(step.second)
+                .insert_literal, .insert_ref:
+                    let reference = step.op == EditOp.insert_ref
+                    if step.second == 0 or step.second == end_index:
+                        try self.put("prepend " if step.second == 0 else "append ")
+                        try self.edit_operand(edit, step.first, reference)
+                    else:
+                        try self.put("insert ")
+                        try self.edit_operand(edit, step.first, reference)
+                        try self.put(" at ")
+                        try self.edit_index(step.second)
+                .erase_ref:
+                    try self.put("erase ")
+                    try self.edit_index(step.first)
+                _:
+                    let word = "minsize " if step.op == EditOp.min_size or step.op == EditOp.min_size_fill else ("maxsize " if step.op == EditOp.max_size else "resize ")
+                    try self.put(word)
+                    try self.integer(step.first)
+                    if step.op == EditOp.min_size_fill or step.op == EditOp.set_size_fill:
+                        try self.put(" fill ")
+                        try self.edit_operand(edit, step.second, false)
+        try self.byte(']')
+
+    ## A literal (by its index) or `[index]`.
+    mutating func edit_operand(edit: const ArrayEdit*, index: i64, reference: bool) -> !:
+        if reference:
+            try self.edit_index(index)
+            return
+        if index < 0 or index >= (i64)edit.literal_count(): error(errors.invalid, "an array edit literal out of range")
+        try self.element(edit.kind, &edit.literal((usize)index)[0])
+
+    mutating func edit_index(index: i64) -> !:
+        try self.byte('[')
+        try self.integer(index)
+        try self.byte(']')

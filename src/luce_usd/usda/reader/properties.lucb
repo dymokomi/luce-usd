@@ -201,7 +201,7 @@ extend Reader:
         if self.keyword("AnimationBlock"): return Value.marker(ValueKind.animation_block)
         # A path reference is a path value, whatever the attribute's type.
         if self.peek() == '<': return Value.scalar(ValueKind.path, (u64)try self.path_ref())
-        if self.sees("edit"): error(errors.invalid, self.where("array edits are not supported yet"))
+        if self.sees("edit"): return try self.array_edit_value(kind, array)
         if kind == ValueKind.value: error(errors.invalid, self.where("found an authored opinion for an opaque attribute"))
         if kind == ValueKind.empty:
             var recorded = Growing[u8]()

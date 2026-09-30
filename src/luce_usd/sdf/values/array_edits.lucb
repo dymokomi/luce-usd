@@ -1,0 +1,191 @@
+## Array edits as layers hold them, after OpenUSD's VtArrayEdit
+## (pxr/base/vt: arrayEdit.h, arrayEditOps.h, arrayEditBuilder.*): literal
+## elements, deduplicated, and a list of instructions over the weaker
+## array (write, insert, erase, minsize, resize, maxsize). Instructions are
+## kept in Vt_ArrayEditOps' own encoding, which crates store as is: an op
+## word (count in the low 56 bits, op in the high 8) followed by the
+## arguments of `count` repetitions of that op.
+
+## Vt_ArrayEditOps::Op.
+pub enum EditOp as u8:
+    write_literal = 0
+    write_ref = 1
+    insert_literal = 2
+    insert_ref = 3
+    erase_ref = 4
+    min_size = 5
+    min_size_fill = 6
+    set_size = 7
+    set_size_fill = 8
+    max_size = 9
+
+## One past the end, for inserts (Vt_ArrayEditOps::EndIndex).
+pub let end_index: i64 = -9223372036854775807 - 1
+
+## Arguments one instruction of `op` takes.
+pub func edit_arity(op: EditOp) -> usize:
+    match op:
+        .write_literal, .write_ref, .insert_literal, .insert_ref, .min_size_fill, .set_size_fill: return 2
+        _: return 1
+
+## One instruction.
+pub struct EditInstruction:
+    pub var op: EditOp
+    pub var first: i64
+    pub var second: i64
+
+## An array edit (shared, like the other composites).
+pub struct ArrayEdit:
+    var users: @usize
+    ## The element kind (token, double, vec3d...).
+    pub var kind: ValueKind
+    ## Literal elements, element_bytes(kind) each.
+    pub var literals: Growing[u8]
+    pub var ops: Growing[i64]
+    ## Where the last op word is, for repeats (Vt_ArrayEditOpsBuilder).
+    var last_op: usize
+
+    pub static func create(kind: ValueKind) -> ArrayEdit*!:
+        let made = try new ArrayEdit(users = 1, kind = kind, literals = Growing[u8](), ops = Growing[i64](), last_op = 0) in memory.heap
+        return made
+
+    pub func literal_count() -> usize:
+        let size = element_bytes(self.kind)
+        return self.literals.count // size if size > 0 else 0
+
+    ## Literal `index`'s bytes.
+    pub func literal(index: usize) -> const u8[]:
+        let size = element_bytes(self.kind)
+        return self.literals.view()[index * size..<(index + 1) * size]
+
+    ## The index of a literal with these bytes, added when new
+    ## (_FindOrAddLiteral).
+    pub mutating func add_literal(bytes: const u8[]) -> i64!:
+        let count = self.literal_count()
+        for index in 0..<count:
+            if (str)self.literal(index) == (str)bytes: return (i64)index
+        for byte in bytes: try self.literals.push(byte)
+        return (i64)count
+
+    ## Append an instruction, counted into the previous op word when it is
+    ## the same op (Vt_ArrayEditOpsBuilder::AddOp).
+    pub mutating func add_op(op: EditOp, first: i64, second: i64) -> !:
+        let repeated = self.ops.count > 0 and (u8)((u64)self.ops.items[self.last_op] >> 56) == (u8)op
+        if repeated:
+            self.ops.items[self.last_op] += 1
+        else:
+            self.last_op = self.ops.count
+            try self.ops.push((i64)(((u64)(u8)op << 56) | 1))
+        try self.ops.push(first)
+        if edit_arity(op) == 2: try self.ops.push(second)
+
+    ## The instructions in order (ForEach, no normalization).
+    pub func instructions(out: Growing[EditInstruction]*) -> !:
+        out.clear()
+        var at: usize = 0
+        while at < self.ops.count:
+            let word = (u64)self.ops.items[at]
+            let code = (u8)(word >> 56)
+            if code > 9: error(errors.invalid, "an array edit with an unknown instruction")
+            let op = (EditOp)code
+            let count = (usize)(word & 0xFFFFFFFFFFFFFF)
+            let arity = edit_arity(op)
+            at += 1
+            if count > (self.ops.count - at) // arity: error(errors.invalid, "an array edit missing instruction arguments")
+            for _ in 0..<count:
+                try out.push(EditInstruction(op = op, first = self.ops.items[at], second = self.ops.items[at + 1] if arity == 2 else -1))
+                at += arity
+
+## Free an array edit whose last owner released it.
+func destroy_array_edit(edit: ArrayEdit*):
+    edit.literals.close()
+    edit.ops.close()
+    free(edit) in memory.heap
+
+func same_array_edits(x: const ArrayEdit*, y: const ArrayEdit*) -> bool:
+    if x.kind != y.kind or x.literals.count != y.literals.count or x.ops.count != y.ops.count: return false
+    if (str)x.literals.view() != (str)y.literals.view(): return false
+    for at in 0..<x.ops.count:
+        if x.ops.items[at] != y.ops.items[at]: return false
+    return true
+
+## `edit` applied to the array `weaker` (its elements' bytes, `count` of
+## them) into `out` (VtArrayEdit::_ApplyEdits): invalid instructions (an
+## index out of range) are skipped; new elements are zero, the element
+## type's default.
+pub func apply_edit(edit: const ArrayEdit*, weaker: const u8[], out: Growing[u8]*) -> !:
+    let size = element_bytes(edit.kind)
+    out.clear()
+    try out.assign(weaker)
+    var steps = Growing[EditInstruction]()
+    defer steps.close()
+    try edit.instructions(&steps)
+    let literals = (i64)edit.literal_count()
+    for step in steps.view():
+        let count = (i64)(out.count // size)
+        match step.op:
+            .write_literal:
+                let target = reference(step.second, count) else continue
+                if step.first < 0 or step.first >= literals: continue
+                put_element(out, target, edit.literal((usize)step.first), size)
+            .write_ref:
+                let source = reference(step.first, count) else continue
+                let target = reference(step.second, count) else continue
+                if source != target:
+                    for byte in 0..<size: out.items[(usize)target * size + byte] = out.items[(usize)source * size + byte]
+            .insert_literal:
+                let target = insertion(step.second, count) else continue
+                if step.first < 0 or step.first >= literals: continue
+                try insert_element(out, target, edit.literal((usize)step.first), size)
+            .insert_ref:
+                let source = reference(step.first, count) else continue
+                let target = insertion(step.second, count) else continue
+                var copied: u8[128] = ---
+                for byte in 0..<size: copied[byte] = out.items[(usize)source * size + byte]
+                try insert_element(out, target, copied[..<size], size)
+            .erase_ref:
+                let target = reference(step.first, count) else continue
+                let from_at = (usize)target * size
+                for byte in from_at..<out.count - size: out.items[byte] = out.items[byte + size]
+                out.count -= size
+            _:
+                # The size instructions.
+                if step.first < 0: continue
+                let fill = step.op == EditOp.min_size_fill or step.op == EditOp.set_size_fill
+                if fill and (step.second < 0 or step.second >= literals): continue
+                let wanted = step.first
+                var new_count = count
+                if step.op == EditOp.max_size: new_count = wanted if count > wanted else count
+                elif step.op == EditOp.set_size or step.op == EditOp.set_size_fill: new_count = wanted
+                else: new_count = wanted if count < wanted else count
+                if new_count < count: out.count = (usize)new_count * size
+                while (i64)(out.count // size) < new_count:
+                    if fill:
+                        for byte in edit.literal((usize)step.second): try out.push(byte)
+                    else:
+                        try out.extend(out.count + size, 0)
+
+## An element index (negative from the end), if in range.
+func reference(index: i64, count: i64) -> i64?:
+    let at = index + count if index < 0 else index
+    if at >= 0 and at < count: return at
+    return none
+
+## An insertion index (end_index or negative from the end), if in range.
+func insertion(index: i64, count: i64) -> i64?:
+    var at = count if index == end_index else index
+    if at < 0: at += count
+    if at >= 0 and at <= count: return at
+    return none
+
+func put_element(out: Growing[u8]*, index: i64, bytes: const u8[], size: usize):
+    for byte in 0..<size: out.items[(usize)index * size + byte] = bytes[byte]
+
+func insert_element(out: Growing[u8]*, index: i64, bytes: const u8[], size: usize) -> !:
+    try out.extend(out.count + size, 0)
+    var at = out.count
+    let start = (usize)index * size
+    while at - size > start:
+        at -= 1
+        out.items[at] = out.items[at - size]
+    for byte in 0..<size: out.items[start + byte] = bytes[byte]

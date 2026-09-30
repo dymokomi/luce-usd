@@ -8,8 +8,8 @@
 ## - bytes in the shared column `data`: an array (`count` elements, laid out
 ##   as value_types.element_bytes says), a larger scalar (a vector, a
 ##   quaternion or a matrix), or a vector-shaped metadata value (below);
-## - a shared composite in `object`: a dictionary, a list op, time samples
-##   or a spline (splines.lucb).
+## - a shared composite in `object`: a dictionary, a list op, time samples,
+##   a spline (splines.lucb) or an array edit (array_edits.lucb).
 ##
 ## Vector-shaped metadata in `data`: path, token and string vectors are u32
 ## ids; double vectors f64; layer offset vectors (offset f64, scale f64)
@@ -117,6 +117,12 @@ pub struct Value:
         if self.kind != ValueKind.time_samples: return none
         let object = self.object else return none
         return (const TimeSamples*)object
+
+    ## An array edit value's contents.
+    pub func array_edit() -> const ArrayEdit*?:
+        if self.kind != ValueKind.array_edit: return none
+        let object = self.object else return none
+        return (const ArrayEdit*)object
 
     ## A spline value's contents.
     pub func spline() -> const Spline*?:
@@ -299,6 +305,8 @@ func destroy(kind: ValueKind, object: void*):
             destroy(ValueKind.dictionary, object)
         .spline:
             destroy_spline((Spline*)object)
+        .array_edit:
+            destroy_array_edit((ArrayEdit*)object)
         _:
             if not is_list_op(kind): trap("a value composite of an unknown kind")
             let list = (ListOp*)object
@@ -334,6 +342,8 @@ pub func same(left: const Value*, right: const Value*) -> bool:
             return true
         .spline:
             return same_splines((const Spline*)first, (const Spline*)second)
+        .array_edit:
+            return same_array_edits((const ArrayEdit*)first, (const ArrayEdit*)second)
         .time_samples:
             let x = (const TimeSamples*)first
             let y = (const TimeSamples*)second

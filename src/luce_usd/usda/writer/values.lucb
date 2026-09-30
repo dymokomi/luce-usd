@@ -44,6 +44,9 @@ extend Writer:
             .animation_block:
                 try self.put("AnimationBlock")
                 return
+            .array_edit:
+                try self.array_edit_text(value)
+                return
             .token_vector, .string_vector:
                 try self.byte('[')
                 let ids = value.ids()

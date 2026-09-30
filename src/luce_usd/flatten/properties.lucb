@@ -1,9 +1,10 @@
 ## Properties flattened (_CopyProperty): an attribute keeps its composed
 ## type, custom, variability and metadata, the time samples or spline of
 ## its strongest value opinion when that opinion is one (moved into stage
-## time), its strongest default when any opinion authors one, and its
-## connections in stage namespace as an explicit list; a relationship keeps
-## its metadata and its targets likewise.
+## time), its strongest default when any opinion authors one (an array
+## edit composed over what it edits), and its connections in stage
+## namespace as an explicit list; a relationship keeps its metadata and its
+## targets likewise.
 
 extend Flattener:
     ## Flatten property `name` of the prim at `path` (output spec `prim`).
@@ -94,12 +95,14 @@ extend Flattener:
         # An animation block is no default: a weaker one shows through, and
         # with none the default is blocked (attr.Get fails, SdfValueBlock).
         var blocked = false
-        for opinion in opinions:
+        for at in 0..<opinions.length:
+            let opinion = opinions[at]
             let found = composer.layers.layer(opinion.layer).get(opinion.spec, keys.default) else continue
             if found.kind == ValueKind.animation_block:
                 blocked = true
                 continue
-            try self.out.set(spec, keys.default, try self.value_to_stage(index, opinion, found))
+            if composes(found): try self.out.set(spec, keys.default, try self.composed_edits(index, opinions[at..]))
+            else: try self.out.set(spec, keys.default, try self.value_to_stage(index, opinion, found))
             blocked = false
             break
         if blocked: try self.out.set(spec, keys.default, Value.marker(ValueKind.value_block))
@@ -111,10 +114,59 @@ extend Flattener:
         var owner = Value.of_object(ValueKind.time_samples, (void*)made)
         errdefer owner.release()
         for at in 0..<samples.count():
-            try made.put(offset.apply(samples.times.items[at]), try self.value_to_stage(index, opinion, &samples.values.items[at]))
+            let sample = &samples.values.items[at]
+            # An edited sample composes over the empty background.
+            if composes(sample):
+                let background = Value.marker(ValueKind.empty)
+                try made.put(offset.apply(samples.times.items[at]), try edited(sample, &background))
+            else: try made.put(offset.apply(samples.times.items[at]), try self.value_to_stage(index, opinion, sample))
         return owner
+
+    ## The strongest default, an array edit, composed over the weaker
+    ## defaults (VtValue's ComposeOver): edits stack down to an array, or to
+    ## the empty background.
+    mutating func composed_edits(index: const PrimIndex*, opinions: const Opinion[]) -> Value!:
+        let keys = &self.out.keys
+        var stack = Growing[const Value*]()
+        defer stack.close()
+        var base = Value.marker(ValueKind.empty)
+        defer base.release()
+        for opinion in opinions:
+            let found = self.composer.layers.layer(opinion.layer).get(opinion.spec, keys.default) else continue
+            if composes(found):
+                try stack.push(found)
+                continue
+            if found.array: base = try self.value_to_stage(index, opinion, found)
+            break
+        var result = try edited(stack.items[stack.count - 1], &base)
+        var at = stack.count - 1
+        while at > 0:
+            at -= 1
+            let stronger = try edited(stack.items[at], &result)
+            result.release()
+            result = stronger
+        return result
 
     ## An attribute value in stage terms (_MakeResolvedAssetPathsValue and
     ## Usd_ApplyLayerOffsetToValue): asset paths anchored, time codes moved.
     mutating func value_to_stage(index: const PrimIndex*, opinion: Opinion, value: const Value*) -> Value!:
         return try self.to_stage(index, opinion, value)
+
+## Whether a value is an array edit flattening composes (asset edits stay
+## edits, as UsdStage's flatten leaves them).
+func composes(value: const Value*) -> bool:
+    let edit = value.array_edit() else return false
+    return edit.kind != ValueKind.asset
+
+## The edit in `value` applied to `weaker` (an array of its kind; the empty
+## array otherwise).
+func edited(value: const Value*, weaker: const Value*) -> Value!:
+    let edit = value.array_edit() else return value.share()
+    var bytes = Growing[u8]()
+    defer bytes.close()
+    var none_found: u8[]
+    var source: const u8[] = none_found
+    if weaker.kind == edit.kind and weaker.array: source = weaker.bytes()
+    try apply_edit(edit, source, &bytes)
+    let size = element_bytes(edit.kind)
+    return Value.of_array(edit.kind, bytes.count // size, try Column[u8].copy_of(bytes.view()))

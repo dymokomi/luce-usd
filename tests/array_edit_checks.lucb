@@ -1,0 +1,58 @@
+## Array edits (sdf/values array_edits.lucb): the usda text of
+## testSdfParsing's 227_arrayEdits read and printed back as usdcat prints
+## it, a crate round trip, and edits applied as UsdStage's flatten applies
+## them over an empty array.
+import memory
+from usd_kernel import Names, Value, ValueKind, LayerData, read_usda, write_usda, read_usdc, write_usdc, apply_array_edit, same_value
+from geocore_growing import Growing
+
+let source = "#usda 1.2\n\nover \"foo\"\n{\n    int[] iattr = edit [\n        write [0] to [1]\n        write 123 to [0]\n        append [-1]\n        append 234\n        append 56\n        append 80\n        prepend [63]\n    ]\n    bool[] battr = edit [write true to [0]; write false to [1]; write [1] to [2]; write yes to [-1]; write no to [-2]; prepend 1; append 0; prepend [0]; append [1]; erase [3]; erase [3]; minsize 100 fill yes; resize 200 fill no; maxsize 150; minsize 300; maxsize 10]\n    string[] sattr = edit [minsize 4; append \"hello world\"; insert 'x' at [1]]\n}\n"
+
+let printed = "#usda 1.2\n\nover \"foo\"\n{\n    bool[] battr = edit [write 1 to [0]; write 0 to [1]; write [1] to [2]; write 1 to [-1]; write 0 to [-2]; prepend 1; append 0; prepend [0]; append [1]; erase [3]; erase [3]; minsize 100 fill 1; resize 200 fill 0; maxsize 150; minsize 300; maxsize 10]\n    int[] iattr = edit [write [0] to [1]; write 123 to [0]; append [-1]; append 234; append 56; append 80; prepend [63]]\n    string[] sattr = edit [minsize 4; append \"hello world\"; insert \"x\" at [1]]\n}\n\n"
+
+pub func exercise() -> !:
+    var names = try Names()
+    defer names.close()
+    var layer = try LayerData(&names)
+    defer layer.close()
+    try read_usda(source.bytes, &layer)
+    var out = Growing[u8]()
+    defer out.close()
+    try write_usda(&layer, &out)
+    assert((str)out.view() == printed)
+    var crate = Growing[u8]()
+    defer crate.close()
+    try write_usdc(&layer, &crate)
+    var back = try LayerData(&names)
+    defer back.close()
+    try read_usdc(crate.view(), &back)
+    out.clear()
+    try write_usda(&back, &out)
+    assert((str)out.view() == printed)
+    # Applied over nothing, as usdcat --flatten resolves them.
+    let ints = try applied(&names, &layer, "/foo.iattr")
+    assert(ints.length == 3 * 4)
+    assert(memory.read[i32]((void*)&ints[0]) == 234 and memory.read[i32]((void*)&ints[4]) == 56 and memory.read[i32]((void*)&ints[8]) == 80)
+    free(ints) in memory.heap
+    let bools = try applied(&names, &layer, "/foo.battr")
+    let expected: u8[10] = [1, 1, 0, 1, 1, 1, 1, 1, 1, 1]
+    assert(bools.length == 10)
+    for at in 0..<(usize)10: assert(bools[at] == expected[at])
+    free(bools) in memory.heap
+    let strings = try applied(&names, &layer, "/foo.sattr")
+    assert(strings.length == 6 * 4)
+    assert(names.text_of(memory.read[u32]((void*)&strings[4])) == "x" and names.text_of(memory.read[u32]((void*)&strings[20])) == "hello world")
+    free(strings) in memory.heap
+
+## The default edit of `path` applied to an empty array (the caller frees).
+func applied(names: Names*, layer: const LayerData*, path: str) -> u8[]!:
+    let spec = layer.find(try names.parse_path(path)) else trap("attribute")
+    let value = layer.get(spec, layer.keys.default) else trap("default")
+    let edit = value.array_edit() else trap("edit")
+    var bytes = Growing[u8]()
+    defer bytes.close()
+    var empty: u8[]
+    try apply_array_edit(edit, empty, &bytes)
+    let result = try alloc u8[bytes.count] in memory.heap
+    for at in 0..<bytes.count: result[at] = bytes.items[at]
+    return result

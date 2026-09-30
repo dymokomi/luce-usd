@@ -58,6 +58,9 @@ pub type TangentAlgorithm = values.TangentAlgorithm
 pub let settle_spline = splines.settle
 pub let evaluate_spline = splines.evaluate
 pub let offset_spline = splines.offset_spline
+pub type ArrayEdit = values.ArrayEdit
+pub type EditOp = values.EditOp
+pub let apply_array_edit = values.apply_edit
 
 import luce_usd.sdf.expressions as expressions
 pub type Evaluated = expressions.Evaluated

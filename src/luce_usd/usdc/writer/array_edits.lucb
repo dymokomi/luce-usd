@@ -1,0 +1,27 @@
+## Crate array edits (CrateFile's PackArrayEdit): the identity edit inlined
+## as payload 0, otherwise the literals and the instruction words written
+## as arrays, their two reps and a false 'isDense' byte; the file becomes
+## at least 0.14.0.
+
+## The ValueRep bit marking an array edit.
+let array_edit_bit: u64 = 1 << 60
+
+extend CrateWriter:
+    mutating func pack_array_edit(value: const Value*) -> u64!:
+        let edit = value.array_edit() else error(errors.invalid, "an array edit value without an edit")
+        self.require(14)
+        let base = ((u64)(u8)edit.kind << 48) | array_edit_bit
+        if edit.ops.count == 0: return base
+        # Written plainly (not shared by column: these columns are temporary).
+        var literals = Value.of_array(edit.kind, edit.literal_count(), try Column[u8].copy_of(edit.literals.view()))
+        defer literals.release()
+        var ops = Value.of_array(ValueKind.int64, edit.ops.count, try Column[u8].copy_of(u8[]((u8*)edit.ops.items.data, edit.ops.count * 8)))
+        defer ops.release()
+        let literals_rep = try self.write_plain(&literals) if literals.count > 0 else array_bit | ((u64)(u8)edit.kind << 48)
+        let ops_rep = try self.write_plain(&ops)
+        let at = self.tell()
+        try self.put_u64(literals_rep)
+        try self.put_u64(ops_rep)
+        let dense: u8[1] = [0]
+        try self.put_bytes(dense[..<1])
+        return base | at

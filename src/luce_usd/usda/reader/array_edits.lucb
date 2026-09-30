@@ -1,0 +1,93 @@
+## Array edits, `edit [ ... ]` (the grammar's ArrayEditValue and its
+## instructions; VtArrayEditBuilder's calls in textFileFormatParser.cpp):
+## prepend, append, write ... to, insert ... at, erase, minsize, resize and
+## maxsize, separated by `;` or line ends. An operand is a literal element
+## or `[index]` into the array being edited.
+
+extend Reader:
+    ## `edit [...]` for an array attribute of `kind`.
+    mutating func array_edit_value(kind: ValueKind, array: bool) -> Value!:
+        if not array: error(errors.invalid, self.where("an array edit needs an array type"))
+        discard(self.keyword("edit"))
+        try self.skip_inline()
+        try self.expect('[', "expected '[' to open an array edit")
+        let edit = try ArrayEdit.create(kind)
+        var value = Value.of_object(ValueKind.array_edit, (void*)edit)
+        errdefer value.release()
+        try self.skip_all()
+        while self.peek() != ']':
+            try self.edit_instruction(edit)
+            try self.skip_line()
+            let byte = self.peek()
+            if byte == ']': break
+            if byte != ';' and byte != '\n' and byte != '\r': error(errors.invalid, self.where("expected ';' or a line end between array edits"))
+            self.at += 1
+            try self.skip_all()
+        try self.expect(']', "expected ']' to close an array edit")
+        return value
+
+    ## One ArrayEditInstruction.
+    mutating func edit_instruction(edit: ArrayEdit*) -> !:
+        if self.keyword("prepend") or self.sees("append"):
+            let at_end = self.keyword("append")
+            try self.skip_inline()
+            let target = end_index if at_end else 0
+            if let source = try self.edit_reference(): try edit.add_op(EditOp.insert_ref, source, target)
+            else: try edit.add_op(EditOp.insert_literal, try self.edit_literal(edit), target)
+            return
+        if self.keyword("write") or self.sees("insert"):
+            let insert = self.keyword("insert")
+            try self.skip_inline()
+            let source = try self.edit_reference()
+            var literal: i64 = 0
+            if source == none: literal = try self.edit_literal(edit)
+            try self.skip_inline()
+            if not self.keyword("at" if insert else "to"): error(errors.invalid, self.where("expected 'at' or 'to' in an array edit"))
+            try self.skip_inline()
+            let target = try self.edit_reference() else error(errors.invalid, self.where("expected [index] in an array edit"))
+            if let from_index = source:
+                try edit.add_op(EditOp.insert_ref if insert else EditOp.write_ref, from_index, target)
+            else:
+                try edit.add_op(EditOp.insert_literal if insert else EditOp.write_literal, literal, target)
+            return
+        if self.keyword("erase"):
+            try self.skip_inline()
+            let target = try self.edit_reference() else error(errors.invalid, self.where("expected [index] after erase"))
+            try edit.add_op(EditOp.erase_ref, target, -1)
+            return
+        var op = EditOp.max_size
+        if self.keyword("minsize"): op = EditOp.min_size
+        elif self.keyword("resize"): op = EditOp.set_size
+        elif not self.keyword("maxsize"): error(errors.invalid, self.where("expected an array edit instruction"))
+        try self.skip_inline()
+        let number = try self.number()
+        if number.class == NumberClass.real: error(errors.invalid, self.where("an array edit size must be an integer"))
+        let size = number.signed if number.class == NumberClass.signed else (i64)number.unsigned
+        if size < 0: error(errors.invalid, self.where("an array edit size cannot be negative"))
+        let before = self.at
+        try self.skip_inline()
+        if op != EditOp.max_size and self.keyword("fill"):
+            try self.skip_inline()
+            let fill = try self.edit_literal(edit)
+            try edit.add_op(EditOp.min_size_fill if op == EditOp.min_size else EditOp.set_size_fill, size, fill)
+            return
+        self.at = before
+        try edit.add_op(op, size, -1)
+
+    ## `[index]`, if one is next.
+    mutating func edit_reference() -> i64?!:
+        if self.peek() != '[': return none
+        self.at += 1
+        try self.skip_inline()
+        let number = try self.number()
+        if number.class == NumberClass.real: error(errors.invalid, self.where("an array edit index must be an integer"))
+        try self.skip_inline()
+        try self.expect(']', "expected ']' after an array edit index")
+        return number.signed if number.class == NumberClass.signed else (i64)number.unsigned
+
+    ## A literal element, its index among the edit's literals.
+    mutating func edit_literal(edit: ArrayEdit*) -> i64!:
+        var bytes: u8[128] = ---
+        let size = element_bytes(edit.kind)
+        try self.element(edit.kind, &bytes[0])
+        return try edit.add_literal(bytes[..<size])

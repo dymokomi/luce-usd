@@ -16,7 +16,7 @@ import luce_usd.errors as errors
 import luce_usd.ar as ar
 from luce_usd.sdf.names import Names, PathKind, absolute_root, empty_path
 from luce_usd.sdf.layer_data import LayerData, Spec, SpecType, FieldKeys
-from luce_usd.sdf.values import Value, Dictionary, ListOp, ListItem, ListPart, TimeSamples, is_list_op, specifier_def, specifier_over, specifier_class, variability_varying, variability_uniform
+from luce_usd.sdf.values import Value, Dictionary, ListOp, ListItem, ListPart, TimeSamples, apply_edit, is_list_op, specifier_def, specifier_over, specifier_class, variability_varying, variability_uniform
 from luce_usd.sdf.value_types import ValueKind, scalar_of, element_bytes
 from luce_usd.sdf.list_ops import compose_list_ops, explicit_list
 from luce_usd.dictionary_order import dictionary_less

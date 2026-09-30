@@ -1,0 +1,28 @@
+## Crate array edits (CrateFile's UnpackArrayEdit): a rep of the element
+## type with the array-edit bit; payload 0 is the identity edit, otherwise
+## it points at the literals' array rep, the instructions' int64 array rep
+## and a former 'isDense' bool.
+
+extend Crate:
+    mutating func array_edit_at(rep: u64) -> Value!:
+        let kind = (ValueKind)rep_type(rep)
+        if element_bytes(kind) == 0: error(errors.invalid, "a crate array edit of a type that cannot form arrays")
+        let edit = try ArrayEdit.create(kind)
+        var value = Value.of_object(ValueKind.array_edit, (void*)edit)
+        errdefer value.release()
+        let payload = rep_payload(rep)
+        if payload == 0: return value
+        var literals = try self.value(try self.u64_at(payload))
+        defer literals.release()
+        var ops = try self.value(try self.u64_at(payload + 8))
+        defer ops.release()
+        if literals.kind != kind or not literals.array: error(errors.invalid, "a crate array edit whose literals are of another type")
+        if ops.kind != ValueKind.int64 or not ops.array: error(errors.invalid, "a crate array edit without int64 instructions")
+        try edit.literals.assign(literals.bytes())
+        let words = ops.bytes()
+        for index in 0..<ops.count: try edit.ops.push(memory.read[i64]((void*)&words[index * 8]))
+        # Check the instruction stream once, as it is read.
+        var steps = Growing[EditInstruction]()
+        defer steps.close()
+        try edit.instructions(&steps)
+        return value

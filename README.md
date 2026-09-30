@@ -10,10 +10,10 @@ what is ported.
 
 Status: **M12 in progress** (splines done; CAD as NurbsPatch next). The Sdf
 data model; usda, usdc and usdz read and written as OpenUSD does them
-(against OpenUSD's own test corpus, 2,050 of 2,056 text layers print
+(against OpenUSD's own test corpus, 2,054 of 2,056 text layers print
 byte-identical to `usdcat`, every crate and package reads identically, and
-2,051 layers written as crates read back identically; array edits are the
-gap); attribute splines (Ts: reading, writing, layer offsets, evaluation);
+2,055 layers written as crates read back identically); attribute splines
+(Ts: reading, writing, layer offsets, evaluation) and array edits;
 composition (sublayers,
 references, payloads, variants, inherits, specializes, relocates,
 instancing, expression variables; 147 of OpenUSD's 151 Pcp museum cases

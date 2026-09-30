@@ -12,7 +12,7 @@ let most_depth: usize = 64
 extend Crate:
     ## The value `rep` holds (arrays included, decoded here).
     mutating func value(rep: u64) -> Value!:
-        if rep_array_edit(rep): error(errors.unsupported, "crate array edits are not supported yet")
+        if rep_array_edit(rep): return try self.array_edit_at(rep)
         if rep_array(rep): return try self.array(rep)
         let kind = rep_type(rep)
         let payload = rep_payload(rep)

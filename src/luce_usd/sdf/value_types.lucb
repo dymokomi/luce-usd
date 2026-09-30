@@ -79,6 +79,9 @@ pub enum ValueKind as u8:
     ## Not a crate kind: a single path (a relationship's default), its id in
     ## `bits`.
     path = 202
+    ## Not a crate kind: an array edit (VtArrayEdit) in `object`; its
+    ## element kind is the ArrayEdit's (crates flag the element kind's rep).
+    array_edit = 203
 
 ## How geometry treats a value type's values (SdfValueRoleNames).
 pub enum Role as u8:

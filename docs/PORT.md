@@ -20,6 +20,7 @@ record; statuses change as milestones land.
 | M10 | `usd/variantSets.cpp` (GetNames, GetVariantNames, SetVariantSelection in the session layer), `usd/stage.cpp` (load rules) | `pcp/session.lucb`, `pcp/summary.lucb`, `Usd.load(variants, payloads)`, `Usd.composition` | done: the luced-3d File node shows the stage (layers, prims, instances), menus for its first variant sets, a variant selections text and payload globs |
 | M11 | performance pass (Kitchen Set) | | done: compose and flatten 150 to 110 ms; export 6.2 s to 75 ms (edge attributes' marked edges found once, not per prim); usda writing 556 to 160 ms (every mid-sized array formatted together on the pool) |
 | M12 (splines) | `ts/splineData.*`, `knotData.cpp` (auto-ease tangents), `regressionPreventer.cpp` (KeepRatio), `eval.cpp` (value evaluation, loops, extrapolation), `binary.cpp` (crate blob), `sdf/textFileFormatParser` and `fileIO_Common.cpp` (spline text), `usd/stage.cpp` (spline resolution and Flatten), `usd/valueUtils.h` (layer offsets) | `sdf/values/splines.lucb`, `sdf/splines/`, `usda/reader/splines.lucb`, `usda/writer/splines.lucb`, `usdc/reader/splines.lucb`, `usdc/writer/splines.lucb` | done: every testenv spline layer prints as usdcat does (usda 1.1 and 1.3 upgrades included), reads and writes as crates, flattens into stage time; evaluation matches testTsSplineEval; imports evaluate splines at the load's time |
+| M12 (array edits) | `vt/arrayEdit*` (VtArrayEdit, its builder, ops and _ApplyEdits), `sdf/textFileFormatParser` (ArrayEditValue), `crateFile.cpp` (PackArrayEdit), `usd/stage.cpp` (edits composed in Flatten) | `sdf/values/array_edits.lucb`, `usda/reader/array_edits.lucb`, `usda/writer/array_edits.lucb`, `usdc/*/array_edits.lucb` | done: `edit [...]` read and printed as usdcat prints it (1.2 upgrades as OpenUSD requests them), crates at 0.14.0, edits applied over what they edit when flattening |
 
 ## Not ported, and why
 
@@ -39,12 +40,12 @@ Measured with the local driver (docs/PARITY.md) against OpenUSD v26.08.
 
 | Suite | Score | Known gaps |
 |---|---|---|
-| usda (all testenv `.usda` usdcat accepts) | 2,050 / 2,056 byte-identical | array edits (`edit [...]`) are refused; path expression values are not re-anchored to their prim |
+| usda (all testenv `.usda` usdcat accepts) | 2,054 / 2,056 byte-identical | path expression values are not re-anchored to their prim |
 | usdc (testenv `.usdc`) | 30 / 30 byte-identical | |
-| usdc-corpus (each testenv `.usda` written as `.usdc` by usdcat) | 2,036 / 2,040 | the array edit files |
-| usdc-write (each testenv `.usda` written as `.usdc` by luce-usd, read by usdcat) | 2,051 / 2,056 (layers OpenUSD cannot write as crates either count as agreeing) | array edits; path expression anchoring |
+| usdc-corpus (each testenv `.usda` written as `.usdc` by usdcat) | 2,040 / 2,040 | |
+| usdc-write (each testenv `.usda` written as `.usdc` by luce-usd, read by usdcat) | 2,055 / 2,056 (layers OpenUSD cannot write as crates either count as agreeing) | path expression anchoring |
 | usdz (testenv `.usdz` usdcat opens) | 51 / 51 byte-identical | |
-| usdz-write (each testenv `.usda` written as `.usdz` by luce-usd) | 2,051 / 2,056 read back identically; 0 fail usdchecker's RootPackageValidator/UsdzPackageValidator | the usdc-write gaps |
-| flatten (each testenv `.usda` and museum root, usdcat --flatten) | 1,983 / 2,078 byte-identical (prototypes numbered as with USD_ASSIGN_PROTOTYPES_DETERMINISTICALLY) | value clips; array edits; path expressions mapped into prototypes |
+| usdz-write (each testenv `.usda` written as `.usdz` by luce-usd) | 2,055 / 2,056 read back identically; 0 fail usdchecker's RootPackageValidator/UsdzPackageValidator | the usdc-write gaps |
+| flatten (each testenv `.usda` and museum root, usdcat --flatten) | 1,986 / 2,078 byte-identical (prototypes numbered as with USD_ASSIGN_PROTOTYPES_DETERMINISTICALLY) | value clips; path expressions mapped into prototypes |
 | museum (testPcpMuseum composition results, 151 cases) | 147 / 151 identical to the baselines | two `_graph` cases print Pcp's graph dump; BasicInherits and SubrootReferenceAndVariants, whose root layers OpenUSD v26.08 itself refuses to read |
-| sdf-parsing (testSdfParsing) | 74 printed as expected, 113 bad files rejected, 3 differ | the array-edit file; two baselines made with a test plugin's metadata registered |
+| sdf-parsing (testSdfParsing) | 75 printed as expected, 113 bad files rejected, 2 differ | two baselines made with a test plugin's metadata registered |
