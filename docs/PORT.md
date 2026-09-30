@@ -17,8 +17,8 @@ record; statuses change as milestones land.
 | M7 | (luced-3d: File rows, Export node) | luced-3d `usd_nodes.luc` | done: the File node reads USD with its options, the Export node writes USD, OBJ or prism by extension, `luced-3d --import` smoke checks installed builds |
 | M8 | `pcp/layerStack.cpp`, `mapFunction.cpp`, `primIndex.cpp` (references, payloads), `ar/` (filesystem, packages), `usd/stage.cpp` (Flatten) | `pcp/`, `flatten/`, `ar.lucb` | done |
 | M9 | `pcp/primIndex.cpp` (task queue, variants, inherits, specializes, implied classes, relocations), `strengthOrdering.cpp`, `layerStack.cpp` (relocations, expression variables), `instancing.cpp`, `instanceKey.cpp`, `expressionVariables.cpp`, `sdf/variableExpression*.cpp`, `usd/instanceCache.cpp`, `usd/primDefinition.cpp`, `usd/stage.cpp` (prototypes and built-in properties in Flatten) | `pcp/`, `flatten/`, `sdf/expressions.lucb`, `prim_definitions.lucb`, `schema_table.lucb` | done: 147 of 151 museum cases compose as OpenUSD's baselines; Kitchen Set flattens byte-identical to usdcat (its instanced version up to usdcat's run-to-run prototype numbering) and loads in about 0.2 s, instances as instances; value clips are left for later |
-| M10 | (luced-3d composition rows) | | planned |
-| M11 | performance pass (Kitchen Set) | | planned |
+| M10 | `usd/variantSets.cpp` (GetNames, GetVariantNames, SetVariantSelection in the session layer), `usd/stage.cpp` (load rules) | `pcp/session.lucb`, `pcp/summary.lucb`, `Usd.load(variants, payloads)`, `Usd.composition` | done: the luced-3d File node shows the stage (layers, prims, instances), menus for its first variant sets, a variant selections text and payload globs |
+| M11 | performance pass (Kitchen Set) | | done: compose and flatten 150 to 110 ms; export 6.2 s to 75 ms (edge attributes' marked edges found once, not per prim); usda writing 556 to 160 ms (every mid-sized array formatted together on the pool) |
 
 ## Not ported, and why
 

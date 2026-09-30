@@ -49,6 +49,18 @@ struct MeshExport:
     var tokens: GeomTokens
     var options: const ExportOptions*
     var warnings: Warnings*
+    ## Edge attributes' marked edges, found once for all the parts.
+    var marked: Growing[MarkedEdges]
+
+    mutating func close():
+        for at in 0..<self.marked.count: self.marked.items[at].edges.close()
+        self.marked.close()
+
+## The edges an edge attribute marks: a group's members, a crease's sharp
+## edges (sharpness above 0).
+struct MarkedEdges:
+    var attribute: i64
+    var edges: Growing[u32]
 
 ## Write `mesh` into the author's layer: prims at its `path` texts under
 ## `base` (absolute_root, or a prototype's prim), else at `fallback`.
@@ -56,7 +68,8 @@ func export_mesh(mesh: const Mesh*, author: Author*, base: u32, fallback: u32, o
     var parts = Growing[MeshPart]()
     defer close_parts(&parts)
     try split_faces(mesh, author, base, fallback, options.split, &parts)
-    var work = MeshExport(mesh = mesh, author = author, tokens = try GeomTokens.of(author.names), options = options, warnings = warnings)
+    var work = MeshExport(mesh = mesh, author = author, tokens = try GeomTokens.of(author.names), options = options, warnings = warnings, marked = Growing[MarkedEdges]())
+    defer work.close()
     # Each part's numbers point numbers, stamped per part.
     var numbers = try Column[i32].filled((usize)mesh.point_count(), -1)
     defer numbers.release()

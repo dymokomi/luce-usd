@@ -162,8 +162,10 @@ extend Composer:
             let node = order.items[at]
             let entry = index.node(node)
             if not entry.contributes(): continue
-            var map = try index.map_to_root(self.names, node)
+            # The node's map to the root, made once it has an opinion.
+            var map = MapFunction.identity()
             defer map.close()
+            var mapped_yet = false
             let property = try self.names.property(entry.path, name)
             let layers = self.stacks.stack(entry.stack).layers.view()
             var position = layers.length
@@ -173,6 +175,11 @@ extend Composer:
                 let spec = data.find(property) else continue
                 let field = data.get(spec, data.keys.connection_paths if connections else data.keys.target_paths) else continue
                 let list = field.list_op() else continue
+                if not mapped_yet:
+                    let made = try index.map_to_root(self.names, node)
+                    map.close()
+                    map = made
+                    mapped_yet = true
                 # Translate this layer's opinion into the root namespace, then apply it.
                 var translated = try ListOp.create()
                 var owner = Value.of_object(ValueKind.path_list_op, (void*)translated)

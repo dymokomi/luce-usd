@@ -1,0 +1,110 @@
+## Numeric arrays formatted before the walk, together on luce-geocore's
+## pool. A layer of many small meshes (Kitchen Set's thousands of prims)
+## never holds one array long enough for format_array's chunks, yet its
+## arrays are most of the text; formatting them all at once spreads them
+## over the cores, and the walk copies each array's text in place.
+
+## Arrays shorter than this format as the walk meets them.
+let preformat_elements: usize = 64
+
+## The layer's arrays formatted ahead, by the address of their elements.
+struct Preformatted:
+    ## Element addresses, ascending, and each one's text (no brackets).
+    var keys: Growing[usize]
+    var texts: Growing[Growing[u8]]
+
+    func init():
+        self.keys = Growing[usize]()
+        self.texts = Growing[Growing[u8]]()
+
+    mutating func close():
+        for at in 0..<self.texts.count: self.texts.items[at].close()
+        self.texts.close()
+        self.keys.close()
+
+    ## The text of the array whose elements are `bytes`, if formatted ahead.
+    func find(bytes: const u8[]) -> const u8[]?:
+        if self.keys.count == 0 or bytes.length == 0: return none
+        let key = (usize)bytes.data
+        var low: usize = 0
+        var high = self.keys.count
+        while low < high:
+            let middle = (low + high) // 2
+            if self.keys.items[middle] < key: low = middle + 1
+            else: high = middle
+        if low < self.keys.count and self.keys.items[low] == key: return self.texts.items[low].view()
+        return none
+
+    ## Format every field's numeric array of `preformat_elements` to
+    ## `parallel_elements` elements in `layer`.
+    mutating func gather(layer: const LayerData*) -> !:
+        var found = Growing[Pending]()
+        defer found.close()
+        for index in 0..<layer.spec_count():
+            for field in layer.spec(index).fields.view():
+                let value = &field.value
+                if not value.array or not numeric(value.kind): continue
+                if value.count < preformat_elements or value.count > parallel_elements: continue
+                try found.push(Pending(key = (usize)value.bytes().data, kind = value.kind, bytes = value.bytes(), count = value.count))
+        if found.count == 0: return
+        sort_pending(found.items[..<found.count])
+        # One text per distinct array (a shared column formats once).
+        var distinct: usize = 0
+        for at in 0..<found.count:
+            if distinct > 0 and found.items[distinct - 1].key == found.items[at].key: continue
+            found.items[distinct] = found.items[at]
+            distinct += 1
+        found.count = distinct
+        try self.keys.reserve(distinct)
+        try self.texts.reserve(distinct)
+        for at in 0..<distinct:
+            try self.keys.push(found.items[at].key)
+            try self.texts.push(Growing[u8]())
+        var job = PreformatJob(pending = found.items[..<distinct], texts = self.texts.items[..<distinct], failed = false)
+        pool.run(distinct, preformat_one, (void*)&job)
+        if job.failed.load(): error(memory.exhausted, "out of memory formatting arrays")
+
+## An array waiting to be formatted.
+struct Pending:
+    var key: usize
+    var kind: ValueKind
+    var bytes: const u8[]
+    var count: usize
+
+struct PreformatJob:
+    var pending: Pending[]
+    var texts: Growing[u8][]
+    var failed: @bool
+
+func preformat_one(context: void*?, index: usize):
+    let raw = context else return
+    let job = (PreformatJob*)raw
+    let item = job.pending[index]
+    format_elements(item.kind, item.bytes, 0, item.count, &job.texts[index]) catch failure:
+        job.failed.store(true)
+
+## Ascending by address (heap sort: no recursion, no scratch).
+func sort_pending(items: Pending[]):
+    var count = items.length
+    if count < 2: return
+    var start = count // 2
+    while start > 0:
+        start -= 1
+        sift_down(items, start, count)
+    while count > 1:
+        count -= 1
+        let top = items[0]
+        items[0] = items[count]
+        items[count] = top
+        sift_down(items, 0, count)
+
+func sift_down(items: Pending[], from_index: usize, count: usize):
+    var root = from_index
+    while root * 2 + 1 < count:
+        var child = root * 2 + 1
+        if child + 1 < count and items[child].key < items[child + 1].key: child += 1
+        if items[root].key >= items[child].key: return
+        let swap = items[root]
+        items[root] = items[child]
+        items[child] = swap
+        root = child

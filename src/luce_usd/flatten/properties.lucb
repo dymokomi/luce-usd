@@ -102,7 +102,7 @@ extend Flattener:
 
     ## Time samples in stage time, their values moved too.
     mutating func samples_to_stage(index: const PrimIndex*, opinion: Opinion, samples: const TimeSamples*) -> Value!:
-        let offset = try self.layer_offset(index, opinion)
+        let offset = self.layer_offset(index, opinion)
         let made = try TimeSamples.create()
         var owner = Value.of_object(ValueKind.time_samples, (void*)made)
         errdefer owner.release()

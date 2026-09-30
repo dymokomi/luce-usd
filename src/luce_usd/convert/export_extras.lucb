@@ -11,6 +11,25 @@ func local_point(part: const MeshPart*, numbers: const i32[], point: usize) -> i
     if at < 0 or (usize)at >= part.points.count or part.points.items[(usize)at] != (i32)point: return -1
     return at
 
+extend MeshExport:
+    ## The edges edge attribute `attribute` marks, found on first use: the
+    ## parts each take theirs from the list rather than every edge.
+    mutating func marked_edges(attribute: i64) -> const u32[]!:
+        for list in self.marked.view():
+            if list.attribute == attribute: return list.edges.view()
+        var edges = Growing[u32]()
+        errdefer edges.close()
+        let entry = try attribute_entry(self.mesh, attribute)
+        if entry.is_group():
+            let bits = Bits.of_bytes(entry.data.view(), entry.elements)
+            for edge in 0..<entry.elements:
+                if bits.get(edge): try edges.push((u32)edge)
+        else:
+            for edge in 0..<entry.elements:
+                if entry.number(edge, 0) > 0.0: try edges.push((u32)edge)
+        try self.marked.push(MarkedEdges(attribute = attribute, edges = edges))
+        return self.marked.items[self.marked.count - 1].edges.view()
+
 ## Every face, point and edge group but `hole` as a GeomSubset of the part.
 func write_subsets(work: MeshExport*, part: const MeshPart*, spec: usize, numbers: const i32[]) -> !:
     let mesh = work.mesh
@@ -35,8 +54,7 @@ func write_subsets(work: MeshExport*, part: const MeshPart*, spec: usize, number
             .edge:
                 element = "edge"
                 let pairs = try edge_span(mesh)
-                for edge in 0..<pairs.length // 2:
-                    if not bits.get(edge): continue
+                for edge in try work.marked_edges((i64)index):
                     let a = local_point(part, numbers, (usize)pairs[edge * 2])
                     let b = local_point(part, numbers, (usize)pairs[edge * 2 + 1])
                     if a < 0 or b < 0: continue
@@ -93,9 +111,8 @@ func write_subdivision(work: MeshExport*, part: const MeshPart*, spec: usize, nu
     if crease >= 0:
         let pairs = try edge_span(mesh)
         let entry = try attribute_entry(mesh, crease)
-        for edge in 0..<pairs.length // 2:
+        for edge in try work.marked_edges(crease):
             let sharpness = entry.number(edge, 0)
-            if sharpness <= 0.0: continue
             let a = local_point(part, numbers, (usize)pairs[edge * 2])
             let b = local_point(part, numbers, (usize)pairs[edge * 2 + 1])
             if a < 0 or b < 0: continue

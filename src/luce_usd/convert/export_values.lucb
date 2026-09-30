@@ -40,7 +40,8 @@ func vector_name(role: Role, color: str, point: str, normal: str, vector: str, p
         _: return plain
 
 ## The attribute's elements `elements` (global indices) as a USD array of
-## `kind`.
+## `kind`. A part's elements mostly repeat a text, so each text's token is
+## reused while the string index stays the same.
 func gathered_value(names: Names*, entry: const Attribute*, kind: ValueKind, elements: const i32[]) -> Value!:
     let size = element_bytes(kind)
     var column = try Column[u8].allocate(elements.length * size)
@@ -49,17 +50,29 @@ func gathered_value(names: Names*, entry: const Attribute*, kind: ValueKind, ele
     let data = entry.data.view()
     let single = (u8)entry.storage == 1
     let width = entry.width
-    for at in 0..<elements.length:
-        let element = 0 if single else (usize)elements[at]
-        match entry.kind:
-            .int8:
+    match entry.kind:
+        .int8:
+            for at in 0..<elements.length:
+                let element = 0 if single else (usize)elements[at]
                 for k in 0..<width: memory.write[i32]((void*)&out[(at * width + k) * 4], (i32)(i8)data[element * width + k])
-            .boolean:
+        .boolean:
+            for at in 0..<elements.length:
+                let element = 0 if single else (usize)elements[at]
                 out[at] = (u8)(data[element // 8] >> (u8)(element % 8)) & 1
-            .text:
-                let token = try names.token(entry.text_at(element))
-                memory.write[u32]((void*)&out[at * 4], token)
-            _: memory.copy(out[at * size..<at * size + size], data[element * size..<element * size + size], size)
+        .text:
+            var last_index: i32 = -2
+            var last_token: u32 = 0
+            for at in 0..<elements.length:
+                let element = 0 if single else (usize)elements[at]
+                let index = memory.read[i32]((void*)&data[element * 4])
+                if index != last_index:
+                    last_token = try names.token(entry.text_at(element))
+                    last_index = index
+                memory.write[u32]((void*)&out[at * 4], last_token)
+        _:
+            for at in 0..<elements.length:
+                let element = 0 if single else (usize)elements[at]
+                memory.copy(out[at * size..<at * size + size], data[element * size..<element * size + size], size)
     return Value.of_array(kind, elements.length, column.take())
 
 ## Every element of an attribute as a USD array of `kind`: its own column

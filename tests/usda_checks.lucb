@@ -182,8 +182,9 @@ func fixture(name: str) -> !:
         print((str)out.view())
     assert((str)out.view() == (str)expected)
 
-## Arrays past the parallel threshold read and write through the fast
-## paths, the same as small ones.
+## Arrays past the parallel threshold, and many mid-sized ones formatted
+## together before the walk, read and write through the fast paths the
+## same as small ones.
 pub func large_arrays() -> !:
     var text = Growing[u8]()
     defer text.close()
@@ -197,7 +198,14 @@ pub func large_arrays() -> !:
     for index in 0..<count:
         if index > 0: try put(&text, ", ")
         try put(&text, try format(digits, f"({index}, -{index}.5, 0.25)"))
-    try put(&text, "]\n}\n\n")
+    try put(&text, "]\n}\n")
+    for prim in 0..<(usize)40:
+        try put(&text, try format(digits, f"\ndef Mesh \"mid{prim}\"\n{{\n    float[] widths = ["))
+        for index in 0..<(usize)(64 + prim * 7):
+            if index > 0: try put(&text, ", ")
+            try put(&text, try format(digits, f"{prim * 1000 + index}"))
+        try put(&text, "]\n}\n")
+    try put(&text, "\n")
     var names = try Names()
     defer names.close()
     var layer = try LayerData(&names)

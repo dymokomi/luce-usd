@@ -64,6 +64,11 @@ extend Writer:
         let size = element_bytes(value.kind)
         if size == 0: error(errors.unsupported, "a value this writer cannot print")
         if value.array and numeric(value.kind):
+            if let text = self.preformatted.find(value.bytes()):
+                try self.byte('[')
+                try put_bytes(self.out, text)
+                try self.byte(']')
+                return
             try format_array(value.kind, value.bytes(), value.count, self.out)
             return
         if value.array:

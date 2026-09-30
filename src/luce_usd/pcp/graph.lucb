@@ -93,6 +93,17 @@ pub struct PrimIndex:
             at = parent.parent
         return made
 
+    ## A node's time offset to the root's (the offset of map_to_root),
+    ## without composing the path maps.
+    pub func offset_to_root(node: u32) -> Offset:
+        var offset = self.nodes.items[(usize)node].map_to_parent.offset
+        var at = self.nodes.items[(usize)node].parent
+        while at >= 0:
+            let parent = &self.nodes.items[(usize)at]
+            offset = parent.map_to_parent.offset.times(offset)
+            at = parent.parent
+        return offset
+
     ## Add `node` (taken) as a child of `parent`, among its siblings by
     ## strength; its index.
     pub mutating func insert_child(names: const Names*, parent: u32, node: Node) -> u32!:

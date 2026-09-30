@@ -11,6 +11,8 @@
 ## prims.lucb       prims, their metadata and bodies, variant sets, variants
 ## properties.lucb  attributes, relationships, connections and targets
 ## values.lucb      values: scalars, tuples, arrays, dictionaries, list ops
+## arrays.lucb      numeric arrays, long ones in parallel chunks
+## preformat.lucb   the layer's other arrays, formatted together ahead
 import memory
 import luce_usd.errors as errors
 import luce_usd.usda.numbers as numbers
@@ -25,7 +27,10 @@ from geocore_growing import Growing
 
 ## Append `layer` as usda text to `out`.
 pub func write_usda(layer: const LayerData*, out: Growing[u8]*) -> !:
-    var writer = Writer(layer = layer, names = layer.names, keys = layer.keys, out = out)
+    var preformatted = Preformatted()
+    defer preformatted.close()
+    try preformatted.gather(layer)
+    var writer = Writer(layer = layer, names = layer.names, keys = layer.keys, out = out, preformatted = &preformatted)
     try writer.write_layer()
 
 struct Writer:
@@ -33,6 +38,7 @@ struct Writer:
     var names: Names*
     var keys: FieldKeys
     var out: Growing[u8]*
+    var preformatted: const Preformatted*
 
     mutating func put(text: str) -> !:
         try self.out.reserve(self.out.count + text.length)

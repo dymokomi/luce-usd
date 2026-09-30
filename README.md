@@ -18,7 +18,8 @@ instancing, expression variables; 147 of OpenUSD's 151 Pcp museum cases
 compose identically, and the four left print Pcp's graph dumps or read
 layers OpenUSD itself refuses); and stages converted to and from luce-geocore `GeometrySet`s
 (docs/MAPPING.md), scene-graph instances as instances. Pixar's Kitchen Set
-flattens byte-identical to `usdcat` and loads in about 0.2 s (docs/PORT.md).
+flattens byte-identical to `usdcat`, loads in about 0.2 s and exports as
+usda in about 0.25 s (docs/BENCHMARKS.md).
 
 ## Luce API
 
@@ -31,6 +32,10 @@ print(Usd.warnings())                           # what the last load left out
 Usd.save(geometry, "out.usdz", root = "geo")    # .usda, .usdc, .usd or .usdz
 Usd.convert("in.usda", "out.usdc")              # layer to layer, nothing lost
 print(Usd.info("chair.usdc"))                   # format, units, prims by type
+let clean = Usd.load("Kitchen_set.usd", variants = "/Kitchen_set/Props_grp/North_grp/NorthWall_grp/NailA_1{modelingVariant=NailB}",
+                     payloads = "/Kitchen_set/Arch_grp*")   # session selections, payload globs
+print(Usd.composition("Kitchen_set.usd"))       # layers, prims, instances, variant sets
+Usd.flatten("Kitchen_set.usd", "flat.usda")     # the composed stage, as usdcat --flatten
 ```
 
 ## Exports

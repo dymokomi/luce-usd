@@ -129,7 +129,7 @@ extend Flattener:
                 let evaluated = try self.evaluated_asset(index, opinion, value.as_token())
                 return Value.scalar(ValueKind.asset, (u64)(try self.anchor_asset(evaluated, opinion.layer)))
             .time_code:
-                let offset = try self.layer_offset(index, opinion)
+                let offset = self.layer_offset(index, opinion)
                 if value.array:
                     let times = f64[]((f64*)value.bytes().data, value.count)
                     var column = try Column[u8].allocate(value.count * 8)
@@ -149,11 +149,9 @@ extend Flattener:
             _: return value.share()
 
     ## The offset from the opinion's layer into stage time.
-    mutating func layer_offset(index: const PrimIndex*, opinion: Opinion) -> Offset!:
-        var map = try index.map_to_root(self.names, opinion.node)
-        defer map.close()
+    func layer_offset(index: const PrimIndex*, opinion: Opinion) -> Offset:
         let stack = self.composer.stacks.stack(index.node(opinion.node).stack)
-        return map.offset.times(stack.offsets.items[opinion.position])
+        return index.offset_to_root(opinion.node).times(stack.offsets.items[opinion.position])
 
     ## An asset array with its paths anchored, up to the first empty one
     ## (SdfAnchorAssetPaths stops there).
