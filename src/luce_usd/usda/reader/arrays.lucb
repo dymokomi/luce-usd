@@ -6,6 +6,7 @@
 ## malformed element) sends the array back to the general parser, which
 ## reads it the same way and reports any error.
 import geocore_parallel as pool
+import strings
 
 ## Text per parallel chunk.
 let chunk_bytes: usize = 262144
@@ -196,7 +197,7 @@ func skip_blanks(data: const u8[], origin: usize, stop: usize) -> usize:
 ## Parse the number at `at` into a scalar of `kind` at `out`; the offset
 ## after it, or 0 when the text is not a number the fast path takes.
 ## Numbers read as the general parser reads them: with '.', 'e' or 'E' as
-## a double (then narrowed), otherwise as an integer.
+## a double (std's scan_f64, then narrowed), otherwise as an integer.
 func number_into(data: const u8[], origin: usize, stop: usize, kind: ValueKind, out: u8*) -> usize:
     var at = origin
     let negative = at < stop and data[at] == '-'
@@ -204,58 +205,20 @@ func number_into(data: const u8[], origin: usize, stop: usize, kind: ValueKind, 
     let digits_start = at
     var mantissa: u64 = 0
     var digits: usize = 0
-    var real = false
-    var scale: i64 = 0
     while at < stop and data[at] >= '0' and data[at] <= '9':
-        if digits < 19:
-            mantissa = mantissa * 10 + (u64)(data[at] - '0')
-            if mantissa != 0: digits += 1
-        else:
+        if digits == 19: return 0
+        mantissa = mantissa * 10 + (u64)(data[at] - '0')
+        if mantissa != 0: digits += 1
+        at += 1
+    if at < stop and (data[at] == '.' or data[at] == 'e' or data[at] == 'E'):
+        if at == digits_start and data[at] != '.': return 0
+        let (value, length) = strings.scan_f64(data[origin..<stop]) catch failure:
             return 0
-        at += 1
-    let whole = at - digits_start
-    if at < stop and data[at] == '.':
-        real = true
-        at += 1
-        while at < stop and data[at] >= '0' and data[at] <= '9':
-            if digits < 19:
-                mantissa = mantissa * 10 + (u64)(data[at] - '0')
-                if mantissa != 0: digits += 1
-            elif data[at] != '0':
-                return 0
-            else:
-                # A trailing zero past 19 digits changes nothing but the scale.
-                scale += 1
-            scale -= 1
-            at += 1
-        if whole == 0 and at == digits_start + 1: return 0
-    elif whole == 0:
-        return 0
-    if at < stop and (data[at] == 'e' or data[at] == 'E'):
-        real = true
-        at += 1
-        let down = at < stop and data[at] == '-'
-        if at < stop and (data[at] == '-' or data[at] == '+'): at += 1
-        var exponent: i64 = 0
-        var count: usize = 0
-        while at < stop and data[at] >= '0' and data[at] <= '9':
-            if count == 6: return 0
-            exponent = exponent * 10 + (i64)(data[at] - '0')
-            count += 1
-            at += 1
-        if count == 0: return 0
-        scale += -exponent if down else exponent
-    # The number must end here.
-    if at < stop and not (data[at] == ',' or data[at] == ')' or data[at] == ' ' or data[at] == '\t' or data[at] == '\n' or data[at] == '\r' or data[at] == ']'): return 0
-    if real:
-        var value: f64 = 0.0
-        if let fast = fast_decimal(mantissa, scale, negative): value = fast
-        else:
-            value = numbers.parse_f64(data[origin..<at]) catch failure:
-                recover 0.0
-            if value != value: return 0
+        at = origin + length
+        if not ended(data, at, stop): return 0
         store_real(kind, value, out) else return 0
         return at
+    if at == digits_start or not ended(data, at, stop): return 0
     # An integer: "-0" reads as the double -0.
     if negative and mantissa == 0:
         store_real(kind, -0.0, out) else return 0
@@ -263,12 +226,9 @@ func number_into(data: const u8[], origin: usize, stop: usize, kind: ValueKind, 
     store_integer(kind, mantissa, negative, out) else return 0
     return at
 
-## Clinger's fast path for mantissa * 10^scale, or none.
-func fast_decimal(mantissa: u64, scale: i64, negative: bool) -> f64?:
-    if mantissa > 9007199254740992 or scale < -22 or scale > 22: return none
-    var value = (f64)mantissa
-    value = value * numbers.exact_power(scale) if scale >= 0 else value / numbers.exact_power(-scale)
-    return -value if negative else value
+## Whether a number ending at `at` ends there: at the end or a delimiter.
+func ended(data: const u8[], at: usize, stop: usize) -> bool:
+    return at == stop or data[at] == ',' or data[at] == ')' or data[at] == ' ' or data[at] == '\t' or data[at] == '\n' or data[at] == '\r' or data[at] == ']'
 
 ## Store a double as `kind` (floats narrow, integers truncate in range).
 func store_real(kind: ValueKind, value: f64, out: u8*) -> unit?:

@@ -32,11 +32,11 @@ func format_numeric(kind: ValueKind, at: const u8*, out: Growing[u8]*) -> !:
     var text: u8[32] = ---
     match kind:
         .float:
-            let length = numbers.format_float(memory.read[f32]((void*)at), text)
+            let length = try numbers.format_float(memory.read[f32]((void*)at), text)
             try put_bytes(out, text[..<length])
             return
         .double, .time_code:
-            let length = numbers.format_double(memory.read[f64]((void*)at), text)
+            let length = try numbers.format_double(memory.read[f64]((void*)at), text)
             try put_bytes(out, text[..<length])
             return
         .int:
@@ -68,7 +68,7 @@ func format_numeric(kind: ValueKind, at: const u8*, out: Growing[u8]*) -> !:
                 try out.push('(')
                 for column in 0..<rows:
                     if column > 0: try put_bytes(out, ", ".bytes)
-                    let length = numbers.format_double(memory.read[f64]((void*)(at + (row * rows + column) * 8)), text)
+                    let length = try numbers.format_double(memory.read[f64]((void*)(at + (row * rows + column) * 8)), text)
                     try put_bytes(out, text[..<length])
                 try out.push(')')
             try put_bytes(out, " )".bytes)

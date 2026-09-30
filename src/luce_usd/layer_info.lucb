@@ -58,5 +58,5 @@ func line(out: Growing[u8]*, key: str, value: str) -> !:
 
 func number_line(out: Growing[u8]*, key: str, value: f64) -> !:
     var buffer: u8[32]
-    let count = numbers.format_double(value, buffer[..<32])
+    let count = try numbers.format_double(value, buffer[..<32])
     try line(out, key, (str)buffer[..<count])
