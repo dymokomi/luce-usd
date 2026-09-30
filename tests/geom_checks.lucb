@@ -376,6 +376,35 @@ func same_instances(first: const GeometrySet*, second: const GeometrySet*) -> !:
         assert(near(ta.x, tb.x) and near(ta.z, tb.z) and math.abs(ra.z - rb.z) < 2e-3)
         assert((try first.instance_visible(at)) == (try second.instance_visible(at)))
 
+## Faces of any size: big_face.usda holds a 1000-corner star (alternating
+## radii 1 and 0.8, so every other corner is concave), once right-handed and
+## once left-handed. Each stays one face, both clip into 998 triangles
+## covering the star's area and facing its way, and they survive a trip.
+pub func big_face() -> !:
+    try round_trip("big_face.usda", same_big_faces)
+
+func same_big_faces(first: const GeometrySet*, second: const GeometrySet*) -> !:
+    try check_big_faces(set_mesh(first) else trap("no mesh"))
+    try check_big_faces(set_mesh(second) else trap("no mesh"))
+
+func check_big_faces(mesh: const Mesh*) -> !:
+    assert(mesh.face_count() == 2 and (try mesh.face_size(0)) == 1000 and (try mesh.face_size(1)) == 1000)
+    let triangles = triangle_span(mesh)
+    let corners = corner_span(mesh)
+    assert(triangles.length == 2 * 998 * 3)
+    for face in 0..<(usize)2:
+        # The left-handed copy is reversed, so it faces -z.
+        let sign = 1.0 if face == 0 else -1.0
+        var area: f64 = 0.0
+        for at in face * 998..<face * 998 + 998:
+            let a = try mesh.point((i64)corners[(usize)triangles[at * 3]])
+            let b = try mesh.point((i64)corners[(usize)triangles[at * 3 + 1]])
+            let c = try mesh.point((i64)corners[(usize)triangles[at * 3 + 2]])
+            let twice = ((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) * sign
+            assert(twice >= 0.0)
+            area += twice / 2.0
+        assert(math.abs(area - 2.5132576) < 1e-4)
+
 ## N-gons stay n-gons: a concave face is ear clipped (no display triangle
 ## covers its notch), a self-intersecting one displays as a fan, and a face
 ## without an area is kept with a zero normal and a warning.

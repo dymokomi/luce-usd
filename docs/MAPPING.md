@@ -41,8 +41,8 @@ segments, extrapolation and loops).
 - **Faces** keep their corners: n-gons stay n-gons. Faces with fewer than
   3 corners are dropped. A face without an area (its points coincide or lie
   on a line) is kept with a zero normal, and counted in a warning; a
-  self-intersecting face displays as a fan. A face of more than 256 corners
-  skips its prim.
+  self-intersecting face displays as a fan. Faces may have any number of
+  corners.
 - **Primvars** become attributes by interpolation:
 
   | USD interpolation | Attribute domain |

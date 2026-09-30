@@ -107,8 +107,7 @@ func collect_meshes(stage: Stage*, gathered: const Gathered*, warnings: Warnings
     for index in 0..<build.sources.count:
         var source = build.sources.items[index]
         if source.bad != 0:
-            let message = "Skipped a mesh with faces of more than 256 corners: " if source.bad == 2 else "Skipped a mesh whose faceVertexIndices do not match its points and faceVertexCounts: "
-            try warnings.add_path(message, stage.names, source.path)
+            try warnings.add_path("Skipped a mesh whose faceVertexIndices do not match its points and faceVertexCounts: ", stage.names, source.path)
             source.release()
             continue
         build.sources.items[kept] = source
@@ -129,8 +128,8 @@ func mesh_arrays(stage: Stage*, gprim: const Gprim*) -> (Value, Value, Value)!:
 struct CheckWork:
     var sources: MeshSource[]
 
-## Counts in 0..=256 summing to the indices, and indices naming points:
-## bad 2 for a face of more than 256 corners, 1 for anything else.
+## Counts of at least 0 summing to the indices, and indices naming points
+## (bad 1 otherwise). Faces may have any number of corners.
 func check_source(context: void*?, index: usize):
     let work = (CheckWork*)(context else return)
     let source = &work.sources[index]
@@ -138,9 +137,6 @@ func check_source(context: void*?, index: usize):
     for count in ints_of(&source.counts):
         if count < 0:
             source.bad = 1
-            return
-        if count > 256:
-            source.bad = 2
             return
         total += (usize)count
     if total != source.corner_count:

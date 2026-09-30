@@ -149,6 +149,8 @@ pub func main(arguments: str[]) -> i32!:
     try geom_checks.scene_instances()
     inject(&tracker, every, geom_checks.scene_instances)
     inject(&tracker, every, geom_checks.folded_faces)
+    try geom_checks.big_face()
+    inject(&tracker, every, geom_checks.big_face)
     try geom_checks.shapes()
     settle(&tracker, "shapes")
     try geom_checks.curves_and_points()
