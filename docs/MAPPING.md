@@ -93,13 +93,15 @@ segments, extrapolation and loops).
     to the prototype's parent.
   - Each instance is a row: its position, orientation and scale, then the
     instancer's transform. A sheared row takes the nearest rotation and
-    scale, with a warning.
+    scale, with a warning. A `primvars:path` of one string per instance
+    becomes the rows' `path` attribute.
   - With `flatten = true`, instances are baked into the other components
     instead.
 - **Scene-graph instances.** A composed stage is flattened as UsdStage
   flattens it: instances sharing composition share one prototype.
   - Each prototype is loaded once; its paths are relative to the prototype.
-  - Each instance is a row placed by its world transform.
+  - Each instance is a row placed by its world transform; its prim's path
+    is the row attribute `path`.
   - Constant primvars inherited from an instance's ancestors do not reach
     its prototype's prims (they would differ per instance).
   - With `flatten = true`, each instance holds its own copy of its
@@ -155,7 +157,8 @@ Other details:
   - other NURBS as NurbsCurves, with explicit knots;
   - Catmull-Rom as pinned catmullRom.
 - **Instances** become a PointInstancer whose prototypes sit under its
-  `Prototypes` scope.
+  `Prototypes` scope; the rows' `path` attribute becomes `primvars:path`
+  (vertex interpolation), so a trip keeps each instance's path.
 - **CAD** (luce-cad models) becomes one NurbsPatch per face, under the prim
   the face's path names (else `cad` under the root prim):
   - the support converted exactly: a plane as a bilinear patch over its trim

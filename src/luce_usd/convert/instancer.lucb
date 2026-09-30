@@ -5,7 +5,9 @@
 ## instancer's world transform (design §2.4); a scene instance by its world
 ## transform). geocore rows are
 ## translation, XYZ rotation and scale; a sheared placement takes the
-## nearest one, with a warning. "Flatten everything" instead places the
+## nearest one, with a warning. Each row's `path` row attribute is its
+## instance prim's path (from the import's anchor), or for a point
+## instancer's rows its `primvars:path`, when it has one per instance. "Flatten everything" instead places the
 ## prototypes' gprims once per instance among the other gprims.
 
 ## Instancers nest at most this deep (a prototype holding its instancer).
@@ -93,6 +95,8 @@ func import_instances(stage: Stage*, gathered: const Gathered*, options: const I
     if not any: return none
     let instances = try new_instances()
     errdefer close_instances(instances)
+    var paths = RowPaths()
+    defer paths.close()
     # Scene prototypes imported so far and their prototype slots.
     var roots = Growing[u32]()
     defer roots.close()
@@ -117,6 +121,8 @@ func import_instances(stage: Stage*, gathered: const Gathered*, options: const I
                 try slots.push(slot)
             let placement = placement_of(&gprim.world, &sheared_scene)
             try instances.add_instance(slot, &placement, true)
+            try write_element_path(stage.names, gprim.path, gathered.anchor, &paths.text)
+            try paths.add_text()
             continue
         if gprim.kind != GprimKind.instancer: continue
         if depth >= most_depth:
@@ -129,18 +135,56 @@ func import_instances(stage: Stage*, gathered: const Gathered*, options: const I
         let base = instances.prototype_count()
         for prototype in rows.prototypes.view():
             discard(try instances.add_prototype(try import_root(stage, prototype, options, warnings, depth + 1)))
+        var named = try stage.value(gprim.path, try stage.names.token("primvars:path"))
+        defer named.release()
+        let has_names = named.array and named.count == rows.proto.count and (named.kind == ValueKind.string or named.kind == ValueKind.token)
         var sheared = false
         for at in 0..<rows.proto.count:
             let proto = rows.proto.items[at]
             if proto < 0 or (usize)proto >= rows.prototypes.count: continue
             let placement = placement_of(&rows.matrices.items[at], &sheared)
             try instances.add_instance(base + (usize)proto, &placement, rows.visible.items[at])
+            if has_names: try paths.add(stage.names.text_of(u32[]((u32*)named.bytes().data, named.count)[at]))
+            else: try paths.add("")
         if sheared: try warnings.add_path("Some instances are sheared; they take the nearest translation, rotation and scale: ", stage.names, gprim.path)
     if sheared_scene: try warnings.add("Some instances are sheared; they take the nearest translation, rotation and scale")
     if instances.count() == 0:
         close_instances(instances)
         return none
+    if paths.named:
+        var column = try paths.table.finish()
+        defer column.release()
+        try instances.put_attribute(try Attribute.text("path", Domain.point, paths.values.count, column, paths.values.view()))
     return instances
+
+## Rows' paths being gathered: a text per row.
+struct RowPaths:
+    var table: TableBuilder
+    var values: Growing[i32]
+    ## Scratch for a path being written.
+    var text: Growing[u8]
+    ## Whether any row has a path.
+    var named: bool
+
+    func init():
+        self.table = TableBuilder()
+        self.values = Growing[i32]()
+        self.text = Growing[u8]()
+        self.named = false
+
+    mutating func add(path: str) -> !:
+        try self.values.push(try self.table.intern(path))
+        if path.length > 0: self.named = true
+
+    ## The path in `text`.
+    mutating func add_text() -> !:
+        try self.values.push(try self.table.intern((str)self.text.view()))
+        if self.text.count > 0: self.named = true
+
+    mutating func close():
+        self.table.close()
+        self.values.close()
+        self.text.close()
 
 func close_instances(instances: Instances*):
     let close = instances_component().close

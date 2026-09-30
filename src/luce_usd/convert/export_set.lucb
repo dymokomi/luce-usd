@@ -49,7 +49,8 @@ func export_into(set: const GeometrySet*, author: Author*, base: u32, home: u32,
             try warnings.add((str)line.view())
 
 ## Instances as a PointInstancer at `path`: prototypes as children of
-## `path`/Prototypes, one row per instance.
+## `path`/Prototypes, one row per instance; the rows' `path` attribute as
+## `primvars:path` (a string per instance, vertex interpolation).
 func export_instances(instances: const Instances*, author: Author*, path: u32, options: const ExportOptions*, warnings: Warnings*, depth: usize) -> !:
     let names = author.names
     let tokens = try GeomTokens.of(names)
@@ -96,6 +97,11 @@ func export_instances(instances: const Instances*, author: Author*, path: u32, o
     discard(try author.attribute(path, spec, "scales", "float3[]", false, try array_of(ValueKind.vec3f, count, u8[]((u8*)scales.items.data, count * 12))))
     if invisible_rows.count > 0:
         discard(try author.attribute(path, spec, "invisibleIds", "int64[]", false, try array_of(ValueKind.int64, invisible_rows.count, u8[]((u8*)invisible_rows.items.data, invisible_rows.count * 8))))
+    let found = instances.store().find("path", (i64)(u8)Domain.point)
+    if found >= 0 and instances.store().entry((usize)found).kind == DataType.text:
+        let value = try whole_value(names, instances.store().entry((usize)found), ValueKind.string)
+        let attribute = try author.attribute(path, spec, "primvars:path", "string[]", false, value)
+        try author.token_field(attribute, tokens.interpolation, "vertex")
 
 func push3(out: Growing[f32]*, value: Vector3) -> !:
     try out.push((f32)value.x)
