@@ -22,6 +22,11 @@ def package "luce-usd" {
         str version = "^0.2.5"
         str path = "../luce-compress"
     }
+    def dependency "luce-cad" {
+        str owner = "dymokomi"
+        str version = "^0.4.1"
+        str path = "../luce-cad"
+    }
     def dependency "luce-std" {
         str owner = "dymokomi"
         str version = "^0.1.0"

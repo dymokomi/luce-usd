@@ -1,0 +1,126 @@
+## A set's CAD models written as NurbsPatch prims (UsdGeomNurbsPatch): one
+## per face, the exact support (cad_patches.lucb) with the face's trim
+## loops as order-2 trim curves, under the prim its face path names (else
+## under `home`). Trim loops are polylines sampled at the display
+## tessellation's edge stations for `cad_divisions`, so the exported trims
+## match what the viewport draws; exact trim curves come later.
+
+## The divisions trims are sampled for (the display tessellation's default).
+let cad_divisions: i64 = 16
+
+## Every face of the set's CAD models, as NurbsPatch prims.
+func export_cad(set: const GeometrySet*, author: Author*, base: u32, home: u32, warnings: Warnings*) -> !:
+    let names = author.names
+    let nurbs = try names.token("NurbsPatch")
+    let tokens = try GeomTokens.of(names)
+    var uv = Growing[Vector3]()
+    defer uv.close()
+    var sizes = Growing[i64]()
+    defer sizes.close()
+    var name = Growing[u8]()
+    defer name.close()
+    var written: usize = 0
+    var skipped: usize = 0
+    for reference in set_models(set):
+        let model = reference.value()
+        for face in 0..<model.face_count():
+            var support = try face_support(model, face)
+            defer support.close()
+            face_trim_uv(model, face, cad_divisions, &uv, &sizes) catch failure:
+                if failure.code == memory.exhausted: error(failure.code, failure.message)
+                skipped += 1
+                continue
+            var patch = patch_of(&support, uv.view(), sizes.view()) catch failure:
+                if failure.code == memory.exhausted: error(failure.code, failure.message)
+                skipped += 1
+                continue
+            defer patch.close()
+            var parent = try prim_path_of(names, base, try model.face_path(face))
+            if parent == empty_path: parent = home
+            name.clear()
+            try name.assign("face_".bytes)
+            try append_count(&name, written)
+            let path = try names.child(parent, try names.token((str)name.view()))
+            try write_patch(author, path, nurbs, tokens.xform, &patch)
+            written += 1
+    if skipped > 0:
+        var line = Growing[u8]()
+        defer line.close()
+        try append_count(&line, skipped)
+        for byte in " CAD faces whose trims could not be charted were left out".bytes: try line.push(byte)
+        try warnings.add((str)line.view())
+
+## One NurbsPatch prim.
+func write_patch(author: Author*, path: u32, nurbs: u32, xform: u32, patch: const Patch*) -> !:
+    let spec = try author.define(path, nurbs, xform)
+    let count = patch.points.count
+    var points = Growing[f32]()
+    defer points.close()
+    var low: f64[3] = [math.infinity, math.infinity, math.infinity]
+    var high: f64[3] = [-math.infinity, -math.infinity, -math.infinity]
+    for point in patch.points.view():
+        let xyz: f64[3] = [point.x, point.y, point.z]
+        for k in 0..<(usize)3:
+            try points.push((f32)xyz[k])
+            low[k] = math.min(low[k], xyz[k])
+            high[k] = math.max(high[k], xyz[k])
+    let extent: f32[6] = [(f32)low[0], (f32)low[1], (f32)low[2], (f32)high[0], (f32)high[1], (f32)high[2]]
+    discard(try author.attribute(path, spec, "extent", "float3[]", false, try array_of(ValueKind.vec3f, 2, u8[]((u8*)&extent[0], 24))))
+    if not patch.right_handed:
+        discard(try author.attribute(path, spec, "orientation", "token", true, Value.scalar(ValueKind.token, (u64)(try author.names.token("leftHanded")))))
+    discard(try author.attribute(path, spec, "points", "point3f[]", false, try array_of(ValueKind.vec3f, count, u8[]((u8*)points.items.data, count * 12))))
+    discard(try author.attribute(path, spec, "pointWeights", "double[]", false, try array_of(ValueKind.double, count, u8[]((u8*)patch.weights.items.data, count * 8))))
+    discard(try author.attribute(path, spec, "uVertexCount", "int", false, Value.scalar(ValueKind.int, (u64)patch.nu)))
+    discard(try author.attribute(path, spec, "vVertexCount", "int", false, Value.scalar(ValueKind.int, (u64)patch.nv)))
+    discard(try author.attribute(path, spec, "uOrder", "int", false, Value.scalar(ValueKind.int, (u64)patch.order_u)))
+    discard(try author.attribute(path, spec, "vOrder", "int", false, Value.scalar(ValueKind.int, (u64)patch.order_v)))
+    discard(try author.attribute(path, spec, "uKnots", "double[]", false, try array_of(ValueKind.double, patch.knots_u.count, u8[]((u8*)patch.knots_u.items.data, patch.knots_u.count * 8))))
+    discard(try author.attribute(path, spec, "vKnots", "double[]", false, try array_of(ValueKind.double, patch.knots_v.count, u8[]((u8*)patch.knots_v.items.data, patch.knots_v.count * 8))))
+    let u_range: f64[2] = [patch.knots_u.items[patch.order_u - 1], patch.knots_u.items[patch.nu]]
+    let v_range: f64[2] = [patch.knots_v.items[patch.order_v - 1], patch.knots_v.items[patch.nv]]
+    discard(try author.attribute(path, spec, "uRange", "double2", false, try Value.of_bytes(ValueKind.vec2d, u8[]((u8*)&u_range[0], 16))))
+    discard(try author.attribute(path, spec, "vRange", "double2", false, try Value.of_bytes(ValueKind.vec2d, u8[]((u8*)&v_range[0], 16))))
+    try write_trims(author, path, spec, patch)
+
+## The trim loops as closed order-2 curves, one per loop:
+## trimCurve:counts, orders, vertexCounts, knots, ranges and points.
+func write_trims(author: Author*, path: u32, spec: usize, patch: const Patch*) -> !:
+    let loops = patch.loops.count
+    if loops == 0: return
+    var counts = Growing[i32]()
+    defer counts.close()
+    var orders = Growing[i32]()
+    defer orders.close()
+    var vertex_counts = Growing[i32]()
+    defer vertex_counts.close()
+    var knots = Growing[f64]()
+    defer knots.close()
+    var ranges = Growing[f64]()
+    defer ranges.close()
+    var points = Growing[f64]()
+    defer points.close()
+    var start: usize = 0
+    for loop in patch.loops.view():
+        let size = (usize)loop
+        try counts.push(1)
+        try orders.push(2)
+        # Closed: the first point again at the end.
+        try vertex_counts.push((i32)(size + 1))
+        try knots.push(0.0)
+        for at in 0..<size + 1: try knots.push((f64)at)
+        try knots.push((f64)size)
+        try ranges.push(0.0)
+        try ranges.push((f64)size)
+        for at in 0..<size + 1:
+            let point = patch.trims.items[start + at % size]
+            try points.push(point.x)
+            try points.push(point.y)
+            try points.push(1.0)
+        start += size
+    let curves = counts.count
+    discard(try author.attribute(path, spec, "trimCurve:counts", "int[]", false, try array_of(ValueKind.int, loops, u8[]((u8*)counts.items.data, loops * 4))))
+    discard(try author.attribute(path, spec, "trimCurve:orders", "int[]", false, try array_of(ValueKind.int, curves, u8[]((u8*)orders.items.data, curves * 4))))
+    discard(try author.attribute(path, spec, "trimCurve:vertexCounts", "int[]", false, try array_of(ValueKind.int, curves, u8[]((u8*)vertex_counts.items.data, curves * 4))))
+    discard(try author.attribute(path, spec, "trimCurve:knots", "double[]", false, try array_of(ValueKind.double, knots.count, u8[]((u8*)knots.items.data, knots.count * 8))))
+    discard(try author.attribute(path, spec, "trimCurve:ranges", "double2[]", false, try array_of(ValueKind.vec2d, curves, u8[]((u8*)ranges.items.data, curves * 16))))
+    discard(try author.attribute(path, spec, "trimCurve:points", "double3[]", false, try array_of(ValueKind.vec3d, points.count // 3, u8[]((u8*)points.items.data, points.count * 8))))

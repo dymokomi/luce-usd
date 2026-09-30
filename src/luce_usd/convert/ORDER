@@ -16,5 +16,7 @@ export_values.lucb
 export_extras.lucb
 export_elements.lucb
 export_curves.lucb
+cad_patches.lucb
+export_cad.lucb
 export_set.lucb
 load.lucb

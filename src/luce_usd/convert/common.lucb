@@ -22,6 +22,8 @@ from geocore import Vector3, Mesh
 from geocore_kernel import Float3, Attribute, AttributeStore, Domain, DataType, Role, TableBuilder, GeometrySet, assembled, put_attribute, mesh_dispose, set_put, set_put_detail, empty_set, dispose_set, mesh_component, BitsBuilder, edge_bits_from_pairs, PointCloud, cloud_assembled, points_component, Curves, curves_assembled, curves_type, Instances, new_instances, instances_component, Placement
 from geocore_kernel import set_component_count, set_component, set_detail, cloud_store, cloud_positions, cloud_origin, curves_origin, CurveSettings, KnotMode, Bits, edge_span, point_span, offset_span, corner_span, mesh_origin, attribute_entry
 from geocore_growing import Growing
+from cad_geometry import cad_component, set_models
+from cad_exact import FaceSupport, face_support, face_trim_uv
 from geocore_shared import Column
 
 ## What an import does.

@@ -1,0 +1,166 @@
+## CAD faces exported as NurbsPatch prims (convert/export_cad.lucb): every
+## face of luce-cad's analytic solids (planes, a cylinder, a pointed cone
+## and a frustum, a sphere, a torus) becomes one patch whose rational net,
+## evaluated at every trim point, lies on the solid's surface, and whose
+## outer trim loop runs counterclockwise in the patch's parameters.
+import interop
+import ownership
+import math
+import memory
+from geocore import Vector3, GeometrySet
+from cad_solids import CadSolids
+from cad_geometry import CadGeometry, set_models
+from cad import CadModel
+from usd_kernel import Names, LayerData, Value, ValueKind, SpecType, export_set, ExportOptions, Warnings
+from geocore_growing import Growing
+
+## Run once before the heap is counted: the cycle collector keeps its
+## candidate and garbage buffers for the thread's lifetime.
+pub func warm() -> !:
+    try export_solid(1)
+    ownership.collect()
+
+pub func exercise() -> !:
+    # Released CAD models wait for the cycle collector (they hold references).
+    defer ownership.collect()
+    for which in 0..<6: try export_solid(which)
+
+## A sphere (poles and arcs) made once, its tessellation records made by
+## one export, so failing allocations test the export alone.
+local var prepared: interop.Reference[GeometrySet]? = none
+
+pub func prepare() -> !:
+    let solid = try made(4)
+    defer solid.release()
+    let set = try CadGeometry.of_model(solid)
+    prepared = set
+    try export_set_of(set, 4, solid.value().face_count())
+
+pub func export_prepared() -> !:
+    let set = prepared else trap("prepare first")
+    let parts = set_models(try set.get())
+    try export_set_of(set, 4, parts[0].value().face_count())
+
+pub func release_prepared():
+    if let set = prepared: set.release()
+    prepared = none
+    ownership.collect()
+
+func export_solid(which: i64) -> !:
+    let solid = try made(which)
+    defer solid.release()
+    let set = try CadGeometry.of_model(solid)
+    defer set.release()
+    try export_set_of(set, which, solid.value().face_count())
+
+## Export `set` (solid `which`, `faces` faces) and check every patch.
+func export_set_of(set: interop.Reference[GeometrySet], which: i64, faces: i64) -> !:
+    var names = try Names()
+    defer names.close()
+    var layer = try LayerData(&names)
+    defer layer.close()
+    var warnings = Warnings()
+    defer warnings.close()
+    let options = ExportOptions(split = true, precise = false)
+    try export_set(try set.get(), &layer, "geo", &options, &warnings)
+    assert(warnings.text.count == 0)
+    let nurbs = try names.token("NurbsPatch")
+    var patches: i64 = 0
+    for index in 0..<layer.spec_count():
+        let spec = layer.spec(index)
+        if spec.kind != SpecType.prim: continue
+        let type_name = spec.get(layer.keys.type_name) else continue
+        if type_name.as_token() != nurbs: continue
+        patches += 1
+        try check_patch(&names, &layer, spec.path, which)
+    assert(patches == faces)
+
+func made(which: i64) -> interop.Reference[CadModel]!:
+    if which == 0: return try CadSolids.box(1.0, 2.0, 3.0)
+    if which == 1: return try CadSolids.cylinder(1.0, 2.0)
+    if which == 2: return try CadSolids.cone(1.0, 2.0, 0.0)
+    if which == 3: return try CadSolids.cone(1.0, 2.0, 0.5)
+    if which == 4: return try CadSolids.sphere(1.5)
+    return try CadSolids.torus(2.0, 0.5)
+
+## How far `p` is from solid `which`'s surface.
+func off_surface(which: i64, p: Vector3) -> f64:
+    let radial = math.sqrt(p.x * p.x + p.z * p.z)
+    if which == 0: return math.abs(math.max(math.abs(p.x) / 0.5, math.max(math.abs(p.y) / 1.0, math.abs(p.z) / 1.5)) - 1.0)
+    if which == 4: return math.abs(math.sqrt(radial * radial + p.y * p.y) - 1.5)
+    if which == 5: return math.abs(math.sqrt((radial - 2.0) * (radial - 2.0) + p.y * p.y) - 0.5)
+    # Cylinder and cones along +Y over y in [-1, 1]: radius 1 at the base.
+    let top = 1.0 if which == 1 else (0.0 if which == 2 else 0.5)
+    let side_radius = 1.0 + (top - 1.0) * (p.y + 1.0) * 0.5
+    let side = math.abs(radial - side_radius) if p.y >= -1.000001 and p.y <= 1.000001 else 1e9
+    let bottom = math.abs(p.y + 1.0) if radial <= 1.000001 else 1e9
+    let lid = math.abs(p.y - 1.0) if radial <= top + 0.000001 else 1e9
+    return math.min(side, math.min(bottom, lid))
+
+func check_patch(names: Names*, layer: const LayerData*, prim: u32, which: i64) -> !:
+    let nu = (usize)(try field(names, layer, prim, "uVertexCount")).as_int()
+    let nv = (usize)(try field(names, layer, prim, "vVertexCount")).as_int()
+    let order_u = (usize)(try field(names, layer, prim, "uOrder")).as_int()
+    let order_v = (usize)(try field(names, layer, prim, "vOrder")).as_int()
+    let points = (try field(names, layer, prim, "points")).bytes()
+    let weights = doubles(try field(names, layer, prim, "pointWeights"))
+    let knots_u = doubles(try field(names, layer, prim, "uKnots"))
+    let knots_v = doubles(try field(names, layer, prim, "vKnots"))
+    assert(points.length == nu * nv * 12 and weights.length == nu * nv)
+    assert(knots_u.length == nu + order_u and knots_v.length == nv + order_v)
+    let trims = doubles(try field(names, layer, prim, "trimCurve:points"))
+    let counts = (try field(names, layer, prim, "trimCurve:vertexCounts")).bytes()
+    assert(trims.length > 0)
+    # Every trim point on the surface.
+    var at: usize = 0
+    while at < trims.length:
+        let p = try evaluate(points, weights, knots_u, knots_v, nu, nv, order_u, order_v, trims[at], trims[at + 1])
+        if off_surface(which, p) > 0.00002: print(f"solid {which}: trim point ({trims[at]}, {trims[at + 1]}) is {off_surface(which, p)} off")
+        assert(off_surface(which, p) <= 0.00002)
+        at += 3
+    # The outer loop counterclockwise.
+    let first = (usize)memory.read[i32]((void*)&counts[0])
+    var area = 0.0
+    for k in 0..<first - 1:
+        area += trims[k * 3] * trims[(k + 1) * 3 + 1] - trims[(k + 1) * 3] * trims[k * 3 + 1]
+    assert(area > 0.0)
+
+func field(names: Names*, layer: const LayerData*, prim: u32, name: str) -> const Value*!:
+    let spec = layer.find(try names.property(prim, try names.token(name))) else trap("a NurbsPatch attribute is missing")
+    return layer.get(spec, layer.keys.default) else trap("a NurbsPatch attribute has no value")
+
+func doubles(value: const Value*) -> const f64[]:
+    let bytes = value.bytes()
+    return f64[]((f64*)bytes.data, bytes.length // 8)
+
+## The rational patch at (u, v): points U fastest, Cox-de Boor bases.
+func evaluate(points: const u8[], weights: const f64[], knots_u: const f64[], knots_v: const f64[], nu: usize, nv: usize, order_u: usize, order_v: usize, u: f64, v: f64) -> Vector3!:
+    var sum = Vector3()
+    var total = 0.0
+    for j in 0..<nv:
+        let bv = basis(knots_v, j, order_v, v, nv)
+        if bv == 0.0: continue
+        for i in 0..<nu:
+            let bu = basis(knots_u, i, order_u, u, nu)
+            if bu == 0.0: continue
+            let index = j * nu + i
+            let w = weights[index] * bu * bv
+            let x = (f64)memory.read[f32]((void*)&points[index * 12])
+            let y = (f64)memory.read[f32]((void*)&points[index * 12 + 4])
+            let z = (f64)memory.read[f32]((void*)&points[index * 12 + 8])
+            sum = sum.add(Vector3(x, y, z).multiply_scalar(w))
+            total += w
+    return sum.multiply_scalar(1.0 / total)
+
+## B-spline basis N(i, order) at t; the domain's last knot counts as inside.
+func basis(knots: const f64[], i: usize, order: usize, t: f64, count: usize) -> f64:
+    if order == 1:
+        let last = knots[count]
+        if t == last and knots[i + 1] == last and knots[i] < last: return 1.0
+        return 1.0 if knots[i] <= t and t < knots[i + 1] else 0.0
+    var value = 0.0
+    let left = knots[i + order - 1] - knots[i]
+    if left > 0.0: value += (t - knots[i]) / left * basis(knots, i, order - 1, t, count)
+    let right = knots[i + order] - knots[i + 1]
+    if right > 0.0: value += (knots[i + order] - t) / right * basis(knots, i + 1, order - 1, t, count)
+    return value

@@ -8,12 +8,13 @@ a gradual rewrite of Pixar's [OpenUSD](https://github.com/PixarAnimationStudios/
 UsdGeom) and each names the OpenUSD sources it ports. `docs/PORT.md` tracks
 what is ported.
 
-Status: **M12 in progress** (splines done; CAD as NurbsPatch next). The Sdf
+Status: **M12 done** (splines, array edits, CAD faces as NurbsPatch). The Sdf
 data model; usda, usdc and usdz read and written as OpenUSD does them
 (against OpenUSD's own test corpus, 2,054 of 2,056 text layers print
 byte-identical to `usdcat`, every crate and package reads identically, and
 2,055 layers written as crates read back identically); attribute splines
-(Ts: reading, writing, layer offsets, evaluation) and array edits;
+(Ts: reading, writing, layer offsets, evaluation) and array edits; CAD
+models (luce-cad) exported as NurbsPatch prims;
 composition (sublayers,
 references, payloads, variants, inherits, specializes, relocates,
 instancing, expression variables; 147 of OpenUSD's 151 Pcp museum cases

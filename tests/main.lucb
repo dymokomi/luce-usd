@@ -17,6 +17,7 @@ import geom_checks
 import pcp_checks
 import spline_checks
 import array_edit_checks
+import cad_checks
 
 ## Counts live blocks and fails the allocation after `remaining` more.
 struct Tracker: memory.Allocator:
@@ -75,6 +76,7 @@ func inject(tracker: Tracker*, stages: usize, check: func() -> unit!):
 pub func main(arguments: str[]) -> i32!:
     # Start the pool first: its starting threads free blocks in the current heap.
     geocore_parallel.warm()
+    try cad_checks.warm()
     let previous = memory.heap
     var tracker = Tracker(previous, 0, none, sync.Mutex())
     memory.heap = &tracker
@@ -119,6 +121,15 @@ pub func main(arguments: str[]) -> i32!:
     inject(&tracker, every, spline_checks.round_trips)
     try array_edit_checks.exercise()
     settle(&tracker, "array edits")
+    try cad_checks.exercise()
+    settle(&tracker, "CAD patches")
+    memory.heap = previous
+    try cad_checks.prepare()
+    memory.heap = &tracker
+    inject(&tracker, every, cad_checks.export_prepared)
+    memory.heap = previous
+    cad_checks.release_prepared()
+    memory.heap = &tracker
     inject(&tracker, every, array_edit_checks.exercise)
     try usdz_checks.exercise()
     settle(&tracker, "usdz")

@@ -1,5 +1,6 @@
 ## A GeometrySet written as a layer (design §2.9): each component's prims
-## under the paths its elements name, else under the root prim; instances
+## under the paths its elements name, else under the root prim; CAD faces
+## as NurbsPatch prims (export_cad.lucb); instances
 ## as a PointInstancer whose prototypes are its children under Prototypes;
 ## the stage's up axis and units from the set's usd.* detail (Y and meters
 ## when absent), and the first root prim as the default prim.
@@ -33,6 +34,8 @@ func export_into(set: const GeometrySet*, author: Author*, base: u32, home: u32,
             try export_points((const PointCloud*)component.data, author, base, try names.child(home, try names.token("points")), options, warnings)
         elif kind == curves_type():
             try export_curves((const Curves*)component.data, author, base, try names.child(home, try names.token("curves")), options, warnings)
+        elif kind == &cad_component:
+            try export_cad(set, author, base, try names.child(home, try names.token("cad")), warnings)
         elif kind == instances_component():
             if depth >= most_export_depth:
                 try warnings.add("Instances nested more than 16 deep were left out")
@@ -41,7 +44,7 @@ func export_into(set: const GeometrySet*, author: Author*, base: u32, home: u32,
         else:
             var line = Growing[u8]()
             defer line.close()
-            try line.assign("Left out the component USD has no form for (tessellate CAD before exporting): ".bytes)
+            try line.assign("Left out the component USD has no form for: ".bytes)
             for byte in kind.name.bytes: try line.push(byte)
             try warnings.add((str)line.view())
 

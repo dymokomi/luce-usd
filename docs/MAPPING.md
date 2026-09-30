@@ -156,6 +156,18 @@ Other details:
   - Catmull-Rom as pinned catmullRom.
 - **Instances** become a PointInstancer whose prototypes sit under its
   `Prototypes` scope.
+- **CAD** (luce-cad models) becomes one NurbsPatch per face, under the prim
+  the face's path names (else `cad` under the root prim):
+  - the support converted exactly: a plane as a bilinear patch over its trim
+    box; cylinders, cones, spheres and tori as rational quadratic surfaces of
+    revolution (arcs of at most 90 degrees); B-spline supports keep their
+    net and knots;
+  - trims as closed order-2 `trimCurve` loops in the patch's parameters,
+    sampled at the display tessellation's edge stations (outer loop
+    counterclockwise, holes clockwise); a pointed cone closes through its
+    apex, a hemisphere through its pole;
+  - `orientation` is `leftHanded` where the face's normal opposes the
+    surface's.
 - **Stage metadata.** `upAxis` and `metersPerUnit` come from the set's
   `usd.*` detail, defaulting to Y and 1. The first root prim becomes the
   `defaultPrim`.
@@ -173,5 +185,7 @@ Other details:
 - **Unconverted prims.** Materials, shaders, cameras, lights, skeletons and
   composition arcs are not converted. `Usd.convert` keeps them, since it
   works on layers.
-- **Components with no USD form.** CAD, volumes and SDFs are left out.
-  Tessellate CAD before saving.
+- **Components with no USD form.** Volumes and SDFs are left out.
+- **CAD.** Faces are written as independent NurbsPatch prims: shared edges
+  and the B-rep's topology are not, trims are polylines (exact trim curves
+  come later), and NurbsPatch prims are not imported yet.

@@ -1,0 +1,241 @@
+## CAD faces as rational B-spline patches (UsdGeomNurbsPatch's form): a
+## face's support (luce-cad's cad_exact) converted exactly and its trim
+## loops carried into the patch's parameters.
+##
+## - A plane is a bilinear patch over its trim loops' bounding box.
+## - Cylinders, cones, spheres and tori are surfaces of revolution: a
+##   rational quadratic circle (arcs of at most 90 degrees, knots at the arc
+##   ends' angles) swept along the profile (a line for cylinders and cones,
+##   circle arcs for spheres and tori), weights multiplied.
+## - A B-spline support keeps its net, transposed to U fastest.
+##
+## Trim points stay exact at the arc ends; inside an arc, an angle maps to
+## its rational parameter by the arc's stereographic parametrization,
+## tan((angle - middle) / 2) / tan(span / 4) = 2s - 1.
+
+## A patch in USD's layout: points U fastest (index v * nu + u).
+struct Patch:
+    var nu: usize
+    var nv: usize
+    var order_u: usize
+    var order_v: usize
+    var knots_u: Growing[f64]
+    var knots_v: Growing[f64]
+    var points: Growing[Vector3]
+    var weights: Growing[f64]
+    ## Trim loops in the patch's parameters, and each loop's point count.
+    var trims: Growing[Vector3]
+    var loops: Growing[i64]
+    ## Whether the face's normal is the patch's (du x dv).
+    var right_handed: bool
+
+    static func empty() -> Patch:
+        return Patch(nu = 0, nv = 0, order_u = 0, order_v = 0, knots_u = Growing[f64](), knots_v = Growing[f64](), points = Growing[Vector3](),
+                     weights = Growing[f64](), trims = Growing[Vector3](), loops = Growing[i64](), right_handed = true)
+
+    mutating func close():
+        self.knots_u.close()
+        self.knots_v.close()
+        self.points.close()
+        self.weights.close()
+        self.trims.close()
+        self.loops.close()
+
+## A rational curve in a plane (the u circle, or a profile): control
+## points' two coordinates, weights, knots and order, and how its
+## parameter follows the chart coordinate.
+struct Profile:
+    var a: Growing[f64]
+    var b: Growing[f64]
+    var weights: Growing[f64]
+    var knots: Growing[f64]
+    var order: usize
+    ## Arcs: the first angle, the arc count and each arc's span (0: linear).
+    var start: f64
+    var arcs: usize
+    var span: f64
+
+    static func empty() -> Profile:
+        return Profile(a = Growing[f64](), b = Growing[f64](), weights = Growing[f64](), knots = Growing[f64](), order = 2, start = 0.0, arcs = 0, span = 0.0)
+
+    mutating func close():
+        self.a.close()
+        self.b.close()
+        self.weights.close()
+        self.knots.close()
+
+    mutating func push(a: f64, b: f64, weight: f64) -> !:
+        try self.a.push(a)
+        try self.b.push(b)
+        try self.weights.push(weight)
+
+    ## The parameter of chart coordinate `value` (an angle for arcs).
+    func parameter(value: f64) -> f64:
+        if self.arcs == 0: return value
+        var arc = (usize)math.max(0.0, math.floor((value - self.start) / self.span))
+        if arc >= self.arcs: arc = self.arcs - 1
+        let first = self.start + (f64)arc * self.span
+        let middle = first + self.span * 0.5
+        let s = (1.0 + math.tan((value - middle) * 0.5) / math.tan(self.span * 0.25)) * 0.5
+        return first + math.clamp(s, 0.0, 1.0) * self.span
+
+## A line from (a0, b0) at `low` to (a1, b1) at `high` (order 2).
+func line_profile(a0: f64, b0: f64, a1: f64, b1: f64, low: f64, high: f64) -> Profile!:
+    var made = Profile.empty()
+    errdefer made.close()
+    try made.push(a0, b0, 1.0)
+    try made.push(a1, b1, 1.0)
+    try made.knots.assign([low, low, high, high][..<4])
+    return made
+
+## A circle arc of `radius` about (ca, cb) from angle `low` to `high`, as
+## rational quadratic arcs of at most 90 degrees; knots at the arc ends.
+func arc_profile(ca: f64, cb: f64, radius: f64, low: f64, high: f64) -> Profile!:
+    var made = Profile.empty()
+    errdefer made.close()
+    let sweep = high - low
+    let arcs = (usize)math.max(1.0, math.ceil(sweep / (math.pi * 0.5) - 0.000000001))
+    let span = sweep / (f64)arcs
+    made.order = 3
+    made.start = low
+    made.arcs = arcs
+    made.span = span
+    let middle_weight = math.cos(span * 0.5)
+    try made.push(ca + radius * math.cos(low), cb + radius * math.sin(low), 1.0)
+    try made.knots.push(low)
+    try made.knots.push(low)
+    try made.knots.push(low)
+    for arc in 0..<arcs:
+        let first = low + (f64)arc * span
+        let middle = first + span * 0.5
+        let last = first + span
+        try made.push(ca + radius * math.cos(middle) / middle_weight, cb + radius * math.sin(middle) / middle_weight, middle_weight)
+        try made.push(ca + radius * math.cos(last), cb + radius * math.sin(last), 1.0)
+        try made.knots.push(last)
+        try made.knots.push(last)
+    try made.knots.push(high)
+    return made
+
+## The patch of a face: its support in patch form and its trims carried
+## over. `uv` and `sizes` are the face's trim loops in the support's chart.
+func patch_of(support: const FaceSupport*, uv: const Vector3[], sizes: const i64[]) -> Patch!:
+    var patch = Patch.empty()
+    errdefer patch.close()
+    patch.right_handed = support.sense
+    if uv.length == 0: error(errors.invalid, "a CAD face without trim loops")
+    var low = uv[0]
+    var high = uv[0]
+    for point in uv:
+        low = Vector3(math.min(low.x, point.x), math.min(low.y, point.y), 0.0)
+        high = Vector3(math.max(high.x, point.x), math.max(high.y, point.y), 0.0)
+    let kind = support.kind
+    if high.x - low.x <= 0.0 or high.y - low.y <= 0.0: error(errors.invalid, "a CAD face with an empty trim domain")
+    if kind == 0:
+        var u_line = try line_profile(0.0, 0.0, 1.0, 0.0, low.x, high.x)
+        defer u_line.close()
+        var v_curve = try line_profile(0.0, 0.0, 0.0, 1.0, low.y, high.y)
+        defer v_curve.close()
+        try plane_patch(support, &patch, &u_line, &v_curve, low, high)
+        try carry_trims(&patch, &u_line, &v_curve, uv, sizes)
+    elif kind == 1 or kind == 2 or kind == 4 or kind == 5:
+        var u_circle = try arc_profile(0.0, 0.0, 1.0, low.x, high.x)
+        defer u_circle.close()
+        var profile = try revolved_profile(support, low.y, high.y)
+        defer profile.close()
+        try revolution_patch(support, &patch, &u_circle, &profile)
+        try carry_trims(&patch, &u_circle, &profile, uv, sizes)
+    elif kind == 3:
+        try spline_patch(support, &patch, uv, sizes)
+    else:
+        error(errors.unsupported, "a CAD support this export does not know")
+    return patch
+
+## The (radius, height) profile of a surface of revolution over chart
+## coordinate v in [low, high].
+func revolved_profile(support: const FaceSupport*, low: f64, high: f64) -> Profile!:
+    if support.kind == 1: return try line_profile(support.radius, low, support.radius, high, low, high)
+    if support.kind == 2:
+        let slope = math.tan(support.angle)
+        return try line_profile(support.radius + low * slope, low, support.radius + high * slope, high, low, high)
+    if support.kind == 4: return try arc_profile(0.0, 0.0, support.radius, low, high)
+    return try arc_profile(support.radius, 0.0, support.angle, low, high)
+
+## Points from (u, v) profile coordinates in the support's frame, placed.
+func placed_point(support: const FaceSupport*, x: f64, y: f64, z: f64) -> Vector3:
+    let unplaced = support.origin.add(support.x.multiply_scalar(x)).add(support.y.multiply_scalar(y)).add(support.z.multiply_scalar(z))
+    return support.placement.transform_point(unplaced)
+
+func plane_patch(support: const FaceSupport*, patch: Patch*, u_line: const Profile*, v_curve: const Profile*, low: Vector3, high: Vector3) -> !:
+    patch.nu = 2
+    patch.nv = 2
+    patch.order_u = 2
+    patch.order_v = 2
+    try patch.knots_u.assign(u_line.knots.view())
+    try patch.knots_v.assign(v_curve.knots.view())
+    for v in [low.y, high.y]:
+        for u in [low.x, high.x]:
+            try patch.points.push(placed_point(support, u, v, 0.0))
+            try patch.weights.push(1.0)
+
+## The u circle swept along the profile: P = radius * circle + height * z.
+func revolution_patch(support: const FaceSupport*, patch: Patch*, u_circle: const Profile*, profile: const Profile*) -> !:
+    patch.nu = u_circle.a.count
+    patch.nv = profile.a.count
+    patch.order_u = u_circle.order
+    patch.order_v = profile.order
+    try patch.knots_u.assign(u_circle.knots.view())
+    try patch.knots_v.assign(profile.knots.view())
+    for j in 0..<patch.nv:
+        let radius = profile.a.items[j]
+        let height = profile.b.items[j]
+        for i in 0..<patch.nu:
+            try patch.points.push(placed_point(support, radius * u_circle.a.items[i], radius * u_circle.b.items[i], height))
+            try patch.weights.push(u_circle.weights.items[i] * profile.weights.items[j])
+
+## A B-spline support: its net (u-major in luce-cad) transposed; trims
+## from the normalized knot domain into knot values.
+func spline_patch(support: const FaceSupport*, patch: Patch*, uv: const Vector3[], sizes: const i64[]) -> !:
+    patch.nu = (usize)support.nu
+    patch.nv = (usize)support.nv
+    patch.order_u = (usize)support.du + 1
+    patch.order_v = (usize)support.dv + 1
+    try patch.knots_u.assign(support.knots_u.view())
+    try patch.knots_v.assign(support.knots_v.view())
+    for v in 0..<patch.nv:
+        for u in 0..<patch.nu:
+            try patch.points.push(support.placement.transform_point(support.points.items[u * patch.nv + v]))
+            try patch.weights.push(support.weights.items[u * patch.nv + v] if support.weights.count > 0 else 1.0)
+    let u_low = support.knots_u.items[(usize)support.du]
+    let u_span = support.knots_u.items[(usize)support.nu] - u_low
+    let v_low = support.knots_v.items[(usize)support.dv]
+    let v_span = support.knots_v.items[(usize)support.nv] - v_low
+    try patch.trims.reserve(uv.length)
+    for point in uv: try patch.trims.push(Vector3(u_low + point.x * u_span, v_low + point.y * v_span, 0.0))
+    try patch.loops.assign(sizes)
+    try orient_loops(patch)
+
+## Chart trims into the patch's parameters.
+func carry_trims(patch: Patch*, u: const Profile*, v: const Profile*, uv: const Vector3[], sizes: const i64[]) -> !:
+    try patch.trims.reserve(uv.length)
+    for point in uv: try patch.trims.push(Vector3(u.parameter(point.x), v.parameter(point.y), 0.0))
+    try patch.loops.assign(sizes)
+    try orient_loops(patch)
+
+## The first loop counterclockwise and the others clockwise in (u, v), the
+## usual convention for an outer boundary and its holes.
+func orient_loops(patch: Patch*) -> !:
+    var start: usize = 0
+    for at in 0..<patch.loops.count:
+        let count = (usize)patch.loops.items[at]
+        var area = 0.0
+        for k in 0..<count:
+            let p = patch.trims.items[start + k]
+            let q = patch.trims.items[start + (k + 1) % count]
+            area += p.x * q.y - q.x * p.y
+        let wanted_positive = at == 0
+        if (area > 0.0) != wanted_positive:
+            for k in 0..<count // 2:
+                let swap = patch.trims.items[start + k]
+                patch.trims.items[start + k] = patch.trims.items[start + count - 1 - k]
+                patch.trims.items[start + count - 1 - k] = swap
+        start += count
