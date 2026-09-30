@@ -1,7 +1,7 @@
 ## Properties flattened (_CopyProperty): an attribute keeps its composed
-## type, custom, variability and metadata, the time samples of its
-## strongest value opinion when that opinion is time samples (moved into
-## stage time), its strongest default when any opinion authors one, and its
+## type, custom, variability and metadata, the time samples or spline of
+## its strongest value opinion when that opinion is one (moved into stage
+## time), its strongest default when any opinion authors one, and its
 ## connections in stage namespace as an explicit list; a relationship keeps
 ## its metadata and its targets likewise.
 
@@ -85,6 +85,10 @@ extend Flattener:
                 let samples = found.time_samples() else break
                 if samples.count() == 0: continue
                 try self.out.set(spec, keys.time_samples, try self.samples_to_stage(index, opinion, samples))
+                break
+            if let found = data.get(opinion.spec, keys.spline):
+                let offset = self.layer_offset(index, opinion)
+                try self.out.set(spec, keys.spline, try offset_spline(found, offset.offset, offset.scale))
                 break
             if data.get(opinion.spec, keys.default) != none: break
         # An animation block is no default: a weaker one shows through, and

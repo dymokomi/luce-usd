@@ -8,7 +8,8 @@ import memory
 import luce_usd.errors as errors
 from luce_usd.sdf.names import Names, absolute_root, empty_path
 from luce_usd.sdf.layer_data import LayerData, Spec, SpecType, FieldKeys
-from luce_usd.sdf.values import Value, ListPart, TimeSamples, specifier_def
+from luce_usd.sdf.values import Value, ListPart, TimeSamples, Spline, specifier_def
+from luce_usd.sdf.splines import evaluate
 from luce_usd.sdf.value_types import ValueKind, scalar_of
 from luce_usd.geom_tokens import GeomTokens
 from geocore_growing import Growing

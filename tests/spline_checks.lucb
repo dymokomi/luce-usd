@@ -1,0 +1,120 @@
+## Splines (sdf.splines, sdf.values splines.lucb): evaluation against the
+## expected values of OpenUSD's testTsSplineEval.cpp, extrapolation and
+## loops, layer offsets, and usda and crate round trips of a spline layer.
+import math
+import memory
+from usd_kernel import Names, Value, ValueKind, Spline, Knot, CurveType, Interpolation, ExtrapolationMode, Extrapolation, LoopParams, TangentAlgorithm, settle_spline, evaluate_spline, offset_spline, LayerData, read_usda, write_usda, read_usdc, write_usdc, same_value
+from geocore_growing import Growing
+
+## A dual-valued knot as testTsSplineEval's CreateKnot makes it.
+func knot(time: f64, next: Interpolation, pre_value: f64, value: f64, pre_width: f64, pre_slope: f64, post_width: f64, post_slope: f64) -> Knot:
+    var made = Knot.at(time)
+    made.next = next
+    made.pre_value = pre_value
+    made.dual = true
+    made.value = value
+    made.pre_width = pre_width
+    made.pre_slope = pre_slope
+    made.post_width = post_width
+    made.post_slope = post_slope
+    return made
+
+func near(found: f64?, expected: f64?) -> bool:
+    let want = expected else return found == none
+    let got = found else return false
+    return math.abs(got - want) <= 0.000000001 * math.max(1.0, math.abs(want))
+
+## TestSplineEval<double>: a held, a blocked, a linear and a curved segment,
+## Bezier then Hermite.
+pub func evaluation() -> !:
+    let spline = try Spline.create(ValueKind.double)
+    var owner = Value.of_object(ValueKind.spline, (void*)spline)
+    defer owner.release()
+    try spline.put(knot(0.0, Interpolation.held, 5.0, 10.0, 1.0, 1.0, 1.0, -1.0))
+    try spline.put(knot(4.0, Interpolation.value_block, 3.0, 6.0, 1.0, 1.0, 1.0, -1.0))
+    try spline.put(knot(8.0, Interpolation.linear, 8.0, 8.0, 1.0, 1.0, 1.0, -2.0))
+    try spline.put(knot(12.0, Interpolation.curve, 0.0, 4.0, 1.0, 1.0, 2.0, 1.0))
+    try spline.put(knot(16.0, Interpolation.linear, 8.0, 10.0, 2.0, 0.0, 1.0, -1.0))
+    settle_spline(spline)
+    let flat_times: f64[7] = [0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0]
+    # NaN: no value (the value-blocked segment).
+    let flat_values: f64[7] = [10.0, 10.0, math.nan, math.nan, 8.0, 4.0, 4.0]
+    let bezier_values: f64[5] = [4.0, 5.195309037843946, 6.75, 7.771738865743875, 10.0]
+    let hermite_values: f64[5] = [4.0, 5.1875, 6.5, 7.5625, 10.0]
+    for curve in [CurveType.bezier, CurveType.hermite]:
+        spline.curve = curve
+        settle_spline(spline)
+        for at in 0..<(usize)7:
+            let expected: f64? = none if math.is_nan(flat_values[at]) else flat_values[at]
+            assert(near(evaluate_spline(spline, flat_times[at]), expected))
+        for at in 0..<(usize)5:
+            let expected = bezier_values[at] if curve == CurveType.bezier else hermite_values[at]
+            assert(near(evaluate_spline(spline, 12.0 + (f64)at), expected))
+    # Extrapolation: held before, sloped after; a repeating loop.
+    spline.curve = CurveType.bezier
+    spline.pre = Extrapolation.of(ExtrapolationMode.held)
+    spline.post = Extrapolation.of(ExtrapolationMode.sloped)
+    spline.post.slope = 0.5
+    assert(near(evaluate_spline(spline, -3.0), 5.0))
+    assert(near(evaluate_spline(spline, 20.0), 12.0))
+    spline.post = Extrapolation.of(ExtrapolationMode.loop_reset)
+    assert(near(evaluate_spline(spline, 18.0), 10.0))
+    spline.post = Extrapolation.of(ExtrapolationMode.value_block)
+    assert(evaluate_spline(spline, 20.0) == none)
+
+## Linear knots under inner loops and repeat extrapolation, a layer offset,
+## and custom data.
+pub func loops_and_offsets() -> !:
+    let spline = try Spline.create(ValueKind.float)
+    var owner = Value.of_object(ValueKind.spline, (void*)spline)
+    defer owner.release()
+    var first = Knot.at(0.0)
+    first.next = Interpolation.linear
+    try spline.put(first)
+    var second = Knot.at(10.0)
+    second.value = 5.0
+    second.next = Interpolation.linear
+    try spline.put(second)
+    spline.post = Extrapolation.of(ExtrapolationMode.loop_repeat)
+    settle_spline(spline)
+    assert(near(evaluate_spline(spline, 5.0), 2.5))
+    # One repeat later, the values rise by the loop's 5.
+    assert(near(evaluate_spline(spline, 15.0), 7.5))
+    spline.loops = LoopParams(proto_start = 0.0, proto_end = 10.0, pre_loops = 0, post_loops = 1, value_offset = 1.0)
+    spline.post = Extrapolation.of(ExtrapolationMode.held)
+    # The echo of the prototype's one knot shadows the knot at 10 (value 1,
+    # the loop's offset): between them the line runs from 0 to 1.
+    assert(near(evaluate_spline(spline, 5.0), 0.5))
+    assert(near(evaluate_spline(spline, 15.0), 1.5))
+    var moved = try offset_spline(&owner, 100.0, 2.0)
+    defer moved.release()
+    let shifted = moved.spline() else trap("spline")
+    assert(shifted.knots.items[1].time == 120.0 and shifted.loops.proto_end == 120.0)
+    assert(near(evaluate_spline(shifted, 110.0), 0.5))
+
+## A spline layer read, written and read back as usda and as a crate.
+pub func round_trips() -> !:
+    let text = "#usda 1.1\n\ndef Xform \"P\"\n{\n    double a.spline = {\n        bezier,\n        pre: linear,\n        post: sloped(0.57),\n        loop: (15, 25, 0, 2, 11.7),\n        7: 5.5 & 7.21; pre (0, 0); post held,\n        15: 8.18; post curve (2, 0, autoEase); { string comment = \"climb!\" },\n        21: 7.5; pre (2, 0, autoEase); post curve (1.1, -1.4),\n    }\n    half b.spline = {\n        hermite,\n        1: 8; pre (0); post curve (4),\n        6: 20; pre (2); post curve (2),\n    }\n}\n\n"
+    var names = try Names()
+    defer names.close()
+    var layer = try LayerData(&names)
+    defer layer.close()
+    try read_usda(text.bytes, &layer)
+    var out = Growing[u8]()
+    defer out.close()
+    try write_usda(&layer, &out)
+    assert((str)out.view() == text)
+    var crate = Growing[u8]()
+    defer crate.close()
+    try write_usdc(&layer, &crate)
+    var back = try LayerData(&names)
+    defer back.close()
+    try read_usdc(crate.view(), &back)
+    out.clear()
+    try write_usda(&back, &out)
+    assert((str)out.view() == text)
+    let spec = layer.find(try names.parse_path("/P.a")) else trap("a")
+    let original = layer.get(spec, layer.keys.spline) else trap("spline")
+    let read_spec = back.find(try names.parse_path("/P.a")) else trap("a")
+    let read = back.get(read_spec, back.keys.spline) else trap("spline")
+    assert(same_value(original, read))

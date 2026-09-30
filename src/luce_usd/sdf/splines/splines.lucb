@@ -1,0 +1,12 @@
+## What Ts does with spline data (pxr/base/ts). The data itself is in
+## sdf.values (splines.lucb).
+##
+## Fragments, in ORDER:
+##
+## tangents.lucb  algorithmic tangents and anti-regression, as TsSpline
+##                applies them whenever knots are set
+## offsets.lucb   splines moved in time by a layer offset
+## evaluate.lucb  a spline's value at a time
+import math
+from luce_usd.sdf.values import Value, Spline, Knot, CurveType, Interpolation, ExtrapolationMode, Extrapolation, LoopParams, TangentAlgorithm, typed_as
+from luce_usd.sdf.value_types import ValueKind

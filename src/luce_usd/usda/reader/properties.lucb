@@ -1,6 +1,6 @@
 ## Attributes and relationships, after the grammar's PropertySpec: an
 ## attribute declaration with a default value (or None, AnimationBlock) and
-## metadata, `.timeSamples`, `.connect` and list-op connections; a
+## metadata, `.timeSamples`, `.spline` (splines.lucb), `.connect` and list-op connections; a
 ## relationship with its targets, metadata and list-op targets. Target and
 ## connection paths expand against the owning prim, and each target or
 ## connection that is set explicitly or added gets its own spec, as Sdf's
@@ -182,7 +182,9 @@ extend Reader:
                 try self.connections(path, spec, ListPart.explicit, prim)
                 return
             if self.keyword("spline"):
-                error(errors.invalid, self.where("attribute splines are not supported yet"))
+                try self.assignment()
+                try self.spline(spec, kind, array)
+                return
             error(errors.invalid, self.where("expected timeSamples, connect or spline"))
         if self.peek() == '=':
             try self.assignment()

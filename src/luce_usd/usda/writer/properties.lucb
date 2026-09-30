@@ -1,6 +1,6 @@
 ## Attributes and relationships (Sdf_WriteAttribute, Sdf_WriteRelationship
 ## and their helpers): the declaration line with the default value and the
-## metadata section, then `.timeSamples`, `.connect` and list-edited
+## metadata section, then `.timeSamples`, `.spline`, `.connect` and list-edited
 ## connections; a relationship's explicit targets on its line, list-edited
 ## targets on their own lines.
 
@@ -18,12 +18,13 @@ extend Writer:
         if let value = attribute.get(self.keys.comment): comment = self.text(value.as_token())
         let default = attribute.get(self.keys.default)
         let samples = attribute.get(self.keys.time_samples)
+        let spline = attribute.get(self.keys.spline)
         let connections = attribute.get(self.keys.connection_paths)
         var fields = Growing[u32]()
         defer fields.close()
         try self.metadata_fields(attribute, attribute_extra, &fields)
         let info = comment.length > 0 or fields.count > 0
-        if info or default != none or custom or (connections == none and samples == none):
+        if info or default != none or custom or (connections == none and samples == none and spline == none):
             try self.indent(indent)
             if custom: try self.put("custom ")
             if uniform: try self.put("uniform ")
@@ -77,6 +78,16 @@ extend Writer:
             try self.put(name)
             try self.put(".timeSamples = {\n")
             try self.time_samples(indent, value)
+            try self.indent(indent)
+            try self.put("}\n")
+        if let value = spline:
+            try self.indent(indent)
+            if uniform: try self.put("uniform ")
+            try self.put(type_text)
+            try self.byte(' ')
+            try self.put(name)
+            try self.put(".spline = {\n")
+            try self.spline_body(indent, value)
             try self.indent(indent)
             try self.put("}\n")
         if let value = connections:

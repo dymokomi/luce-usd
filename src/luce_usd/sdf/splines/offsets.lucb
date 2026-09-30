@@ -1,0 +1,68 @@
+## Splines moved in time by a layer offset, after
+## Ts_TypedSplineData::ApplyOffsetAndScale (splineData.h), as
+## Usd_ApplyLayerOffsetToValue moves them into stage time: absolute times
+## (knots, loop prototypes, loop boundaries) scale and shift, tangent
+## widths scale, slopes divide by the scale; a time-valued spline's values
+## move like times instead. A negative scale mirrors the knots.
+
+## The spline `value` holds, moved by `scale` then `offset`, as a new value.
+pub func offset_spline(value: const Value*, offset: f64, scale: f64) -> Value!:
+    let source = value.spline() else return value.share()
+    if offset == 0.0 and scale == 1.0: return value.share()
+    let spline = try source.copy()
+    var made = Value.of_object(ValueKind.spline, (void*)spline)
+    errdefer made.release()
+    if scale < 0.0:
+        let swap = spline.pre
+        spline.pre = spline.post
+        spline.post = swap
+    if spline.pre.is_looping() and spline.pre.has_boundary: spline.pre.boundary = spline.pre.boundary * scale + offset
+    if spline.post.is_looping() and spline.post.has_boundary: spline.post.boundary = spline.post.boundary * scale + offset
+    if spline.loops.proto_end > spline.loops.proto_start:
+        spline.loops.proto_start = spline.loops.proto_start * scale + offset
+        spline.loops.proto_end = spline.loops.proto_end * scale + offset
+    if scale < 0.0: mirror(spline)
+    let time_valued = spline.kind == ValueKind.time_code
+    for at in 0..<spline.knots.count:
+        let knot = &spline.knots.items[at]
+        knot.time = knot.time * scale + offset
+        knot.pre_width = knot.pre_width * math.abs(scale)
+        knot.post_width = knot.post_width * math.abs(scale)
+        if time_valued:
+            knot.value = knot.value * scale + offset
+            knot.pre_value = knot.pre_value * scale + offset
+        else:
+            knot.pre_slope = spline.typed(knot.pre_slope / scale)
+            knot.post_slope = spline.typed(knot.post_slope / scale)
+    if not time_valued:
+        if spline.pre.mode == ExtrapolationMode.sloped: spline.pre.slope = spline.pre.slope / scale
+        if spline.post.mode == ExtrapolationMode.sloped: spline.post.slope = spline.post.slope / scale
+    return made
+
+## Reverse the knots for a negative scale: pre and post sides swap, and
+## each knot takes the interpolation of the knot that preceded it.
+func mirror(spline: Spline*):
+    let count = spline.knots.count
+    var index = count
+    # Walk from the last knot down, as Ts rebuilds them.
+    while index > 0:
+        index -= 1
+        let knot = &spline.knots.items[index]
+        if knot.dual:
+            let swap = knot.value
+            knot.value = knot.pre_value
+            knot.pre_value = swap
+        let width = knot.pre_width
+        knot.pre_width = knot.post_width
+        knot.post_width = width
+        let slope = knot.pre_slope
+        knot.pre_slope = knot.post_slope
+        knot.post_slope = slope
+        let algorithm = knot.pre_algorithm
+        knot.pre_algorithm = knot.post_algorithm
+        knot.post_algorithm = algorithm
+        knot.next = spline.knots.items[index - 1].next if index > 0 else Interpolation.held
+    for at in 0..<count // 2:
+        let swap = spline.knots.items[at]
+        spline.knots.items[at] = spline.knots.items[count - 1 - at]
+        spline.knots.items[count - 1 - at] = swap

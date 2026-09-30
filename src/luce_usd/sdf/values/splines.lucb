@@ -1,0 +1,192 @@
+## Attribute splines as layers hold them, after OpenUSD's TsSpline data
+## (pxr/base/ts: types.h, knotData.h, splineData.h): a value type, a curve
+## type, pre and post extrapolation, inner loop parameters and knots in
+## time order. Knot values and tangent slopes are kept as f64 rounded to
+## the spline's value type (double, float, half or time code), as Ts keeps
+## them typed; times and tangent widths are always double. The behaviour
+## (algorithmic tangents, anti-regression, evaluation) is in sdf.splines.
+
+## TsCurveType.
+pub enum CurveType as u8:
+    bezier = 0
+    hermite = 1
+
+## TsInterpMode: how the segment after a knot runs.
+pub enum Interpolation as u8:
+    value_block = 0
+    held = 1
+    linear = 2
+    curve = 3
+
+## TsExtrapMode.
+pub enum ExtrapolationMode as u8:
+    value_block = 0
+    held = 1
+    linear = 2
+    sloped = 3
+    loop_repeat = 4
+    loop_reset = 5
+    loop_oscillate = 6
+
+## TsTangentAlgorithm (`unset` is TsTangentAlgorithmNone).
+pub enum TangentAlgorithm as u8:
+    unset = 0
+    custom = 1
+    auto_ease = 2
+
+## TsExtrapolation: a mode, a slope for sloped, and an optional loop
+## boundary time for the looping modes.
+pub struct Extrapolation:
+    pub var mode: ExtrapolationMode
+    pub var slope: f64
+    pub var has_boundary: bool
+    pub var boundary: f64
+
+    pub static func of(mode: ExtrapolationMode) -> Extrapolation:
+        return Extrapolation(mode = mode, slope = 0.0, has_boundary = false, boundary = 0.0)
+
+    ## TsExtrapolation's ==: the mode, and the slope when sloped.
+    pub func equals(other: Extrapolation) -> bool:
+        return self.mode == other.mode and (self.mode != ExtrapolationMode.sloped or self.slope == other.slope)
+
+    pub func is_looping() -> bool:
+        return (u8)self.mode >= (u8)ExtrapolationMode.loop_repeat
+
+## TsLoopParams: an inner loop's prototype interval, echo counts and the
+## value offset each echo adds.
+pub struct LoopParams:
+    pub var proto_start: f64
+    pub var proto_end: f64
+    pub var pre_loops: i32
+    pub var post_loops: i32
+    pub var value_offset: f64
+
+    pub static func none_set() -> LoopParams:
+        return LoopParams(proto_start = 0.0, proto_end = 0.0, pre_loops = 0, post_loops = 0, value_offset = 0.0)
+
+    pub func is_set() -> bool:
+        return self.proto_start != 0.0 or self.proto_end != 0.0 or self.pre_loops != 0 or self.post_loops != 0 or self.value_offset != 0.0
+
+## One knot (Ts_TypedKnotData plus its custom data).
+pub struct Knot:
+    pub var time: f64
+    pub var value: f64
+    ## The value arriving from the left, when `dual`.
+    pub var pre_value: f64
+    pub var dual: bool
+    pub var next: Interpolation
+    pub var pre_width: f64
+    pub var pre_slope: f64
+    pub var pre_algorithm: TangentAlgorithm
+    pub var post_width: f64
+    pub var post_slope: f64
+    pub var post_algorithm: TangentAlgorithm
+    ## A dictionary value, or an empty one.
+    pub var custom: Value
+
+    ## A knot at `time` with Ts's defaults: held after it, no tangents.
+    pub static func at(time: f64) -> Knot:
+        return Knot(time = time, value = 0.0, pre_value = 0.0, dual = false, next = Interpolation.held,
+                    pre_width = 0.0, pre_slope = 0.0, pre_algorithm = TangentAlgorithm.unset,
+                    post_width = 0.0, post_slope = 0.0, post_algorithm = TangentAlgorithm.unset,
+                    custom = Value.marker(ValueKind.empty))
+
+    ## The value arriving from the left.
+    pub func left_value() -> f64:
+        return self.pre_value if self.dual else self.value
+
+## A spline value (shared, like the other composites).
+pub struct Spline:
+    var users: @usize
+    ## double, float, half or time_code.
+    pub var kind: ValueKind
+    pub var curve: CurveType
+    pub var pre: Extrapolation
+    pub var post: Extrapolation
+    pub var loops: LoopParams
+    pub var knots: Growing[Knot]
+
+    ## A new spline of value type `kind` with no knots and Ts's defaults.
+    pub static func create(kind: ValueKind) -> Spline*!:
+        let made = try new Spline(users = 1, kind = kind, curve = CurveType.bezier, pre = Extrapolation.of(ExtrapolationMode.held),
+                                  post = Extrapolation.of(ExtrapolationMode.held), loops = LoopParams.none_set(), knots = Growing[Knot]()) in memory.heap
+        return made
+
+    ## Add `knot` (its custom data taken) in time order; a knot at the same
+    ## time is replaced.
+    pub mutating func put(knot: Knot) -> !:
+        var owned = knot
+        var at = self.knots.count
+        while at > 0 and self.knots.items[at - 1].time > owned.time: at -= 1
+        if at > 0 and self.knots.items[at - 1].time == owned.time:
+            self.knots.items[at - 1].custom.release()
+            self.knots.items[at - 1] = owned
+            return
+        self.knots.push(owned) catch failure:
+            owned.custom.release()
+            error(failure.code, failure.message)
+        var index = self.knots.count - 1
+        while index > at:
+            self.knots.items[index] = self.knots.items[index - 1]
+            index -= 1
+        self.knots.items[at] = owned
+
+    ## A new spline (one owner) with the same data, sharing custom data.
+    pub func copy() -> Spline*!:
+        let made = try Spline.create(self.kind)
+        var owner = Value.of_object(ValueKind.spline, (void*)made)
+        errdefer owner.release()
+        made.curve = self.curve
+        made.pre = self.pre
+        made.post = self.post
+        made.loops = self.loops
+        try made.knots.reserve(self.knots.count)
+        for knot in self.knots.view():
+            var shared = knot
+            shared.custom = knot.custom.share()
+            try made.knots.push(shared)
+        owner.object = none
+        return made
+
+    ## TsKnotMap::HasCurveSegments: a curve segment between two knots.
+    pub func has_curve_segments() -> bool:
+        for at in 0..<self.knots.count:
+            if at + 1 < self.knots.count and self.knots.items[at].next == Interpolation.curve: return true
+        return false
+
+    ## `value` as the spline's value type holds it.
+    pub func typed(value: f64) -> f64:
+        return typed_as(self.kind, value)
+
+## `value` rounded to a spline value type.
+pub func typed_as(kind: ValueKind, value: f64) -> f64:
+    match kind:
+        .float: return (f64)(f32)value
+        # GfHalf takes a float.
+        .half: return (f64)(f16)(f32)value
+        _: return value
+
+## Free a spline whose last owner released it.
+func destroy_spline(spline: Spline*):
+    for at in 0..<spline.knots.count: spline.knots.items[at].custom.release()
+    spline.knots.close()
+    free(spline) in memory.heap
+
+## Whether two splines hold the same data (Ts_SplineData's ==, custom data
+## included).
+func same_splines(x: const Spline*, y: const Spline*) -> bool:
+    if x.kind != y.kind or x.curve != y.curve or not x.pre.equals(y.pre) or not x.post.equals(y.post): return false
+    if x.pre.has_boundary != y.pre.has_boundary or x.post.has_boundary != y.post.has_boundary: return false
+    if x.pre.boundary != y.pre.boundary or x.post.boundary != y.post.boundary: return false
+    let a = x.loops
+    let b = y.loops
+    if a.proto_start != b.proto_start or a.proto_end != b.proto_end or a.pre_loops != b.pre_loops or a.post_loops != b.post_loops or a.value_offset != b.value_offset: return false
+    if x.knots.count != y.knots.count: return false
+    for at in 0..<x.knots.count:
+        let p = &x.knots.items[at]
+        let q = &y.knots.items[at]
+        if p.time != q.time or p.value != q.value or p.dual != q.dual or (p.dual and p.pre_value != q.pre_value) or p.next != q.next: return false
+        if p.pre_width != q.pre_width or p.pre_slope != q.pre_slope or p.pre_algorithm != q.pre_algorithm: return false
+        if p.post_width != q.post_width or p.post_slope != q.post_slope or p.post_algorithm != q.post_algorithm: return false
+        if not same(&p.custom, &q.custom): return false
+    return true

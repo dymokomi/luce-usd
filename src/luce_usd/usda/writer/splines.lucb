@@ -1,0 +1,112 @@
+## Attribute splines as Sdf_FileIOUtility::WriteSpline writes them
+## (fileIO_Common.cpp): the curve type when it matters, extrapolations
+## other than held, inner loop parameters, then a line per knot with its
+## pre-value, value, tangents (a pre tangent where the segment before is a
+## curve, as the first knot's always is), the next interpolation and
+## custom data on one line.
+
+extend Writer:
+    ## The lines inside `name.spline = { ... }`.
+    mutating func spline_body(indent: usize, value: const Value*) -> !:
+        let spline = value.spline() else return
+        if spline.has_curve_segments() or spline.curve == CurveType.hermite:
+            try self.indent(indent + 1)
+            try self.put("bezier,\n" if spline.curve == CurveType.bezier else "hermite,\n")
+        try self.extrapolation(indent, "pre", spline.pre)
+        try self.extrapolation(indent, "post", spline.post)
+        if spline.loops.is_set():
+            let loops = spline.loops
+            try self.indent(indent + 1)
+            try self.put("loop: (")
+            try numbers.write_double(self.out, loops.proto_start)
+            try self.put(", ")
+            try numbers.write_double(self.out, loops.proto_end)
+            try self.put(", ")
+            try self.integer((i64)loops.pre_loops)
+            try self.put(", ")
+            try self.integer((i64)loops.post_loops)
+            try self.put(", ")
+            try numbers.write_double(self.out, loops.value_offset)
+            try self.put("),\n")
+        # The first knot has no segment before it, but its pre tangent is kept.
+        var interpolation = Interpolation.curve
+        let bezier = spline.curve == CurveType.bezier
+        for knot in spline.knots.view():
+            try self.indent(indent + 1)
+            try numbers.write_double(self.out, knot.time)
+            try self.byte(':')
+            if knot.dual:
+                try self.byte(' ')
+                try self.spline_number(spline.kind, knot.pre_value)
+                try self.put(" &")
+            try self.byte(' ')
+            try self.spline_number(spline.kind, knot.value)
+            if interpolation == Interpolation.curve:
+                try self.tangent(spline.kind, "pre", bezier, knot.pre_width, knot.pre_slope, knot.pre_algorithm)
+            interpolation = knot.next
+            if interpolation == Interpolation.curve:
+                try self.tangent(spline.kind, "post curve", bezier, knot.post_width, knot.post_slope, knot.post_algorithm)
+            else:
+                try self.put("; post ")
+                try self.put(interpolation_name(interpolation))
+            if let custom = knot.custom.dictionary():
+                if custom.count() > 0:
+                    try self.put("; ")
+                    try self.inline_dictionary(&knot.custom)
+            try self.put(",\n")
+
+    ## `pre: mode,` unless held.
+    mutating func extrapolation(indent: usize, label: str, extrapolation: Extrapolation) -> !:
+        if extrapolation.equals(Extrapolation.of(ExtrapolationMode.held)): return
+        try self.indent(indent + 1)
+        try self.put(label)
+        try self.put(": ")
+        try self.put(extrapolation_name(extrapolation.mode))
+        if extrapolation.mode == ExtrapolationMode.sloped:
+            try self.byte('(')
+            try numbers.write_double(self.out, extrapolation.slope)
+            try self.byte(')')
+        elif extrapolation.is_looping() and extrapolation.has_boundary:
+            self.need_version(3)
+            try self.byte('(')
+            try numbers.write_double(self.out, extrapolation.boundary)
+            try self.byte(')')
+        try self.put(",\n")
+
+    ## `; label (width, slope[, algorithm])`, Hermite without the width.
+    mutating func tangent(kind: ValueKind, label: str, bezier: bool, width: f64, slope: f64, algorithm: TangentAlgorithm) -> !:
+        try self.put("; ")
+        try self.put(label)
+        try self.put(" (")
+        if bezier:
+            try numbers.write_double(self.out, width)
+            try self.put(", ")
+        try self.spline_number(kind, slope)
+        if algorithm != TangentAlgorithm.unset:
+            self.need_version(1)
+            try self.put(", custom" if algorithm == TangentAlgorithm.custom else ", autoEase")
+        try self.byte(')')
+
+    ## A knot value or slope as TfStringify prints the spline's value type.
+    mutating func spline_number(kind: ValueKind, value: f64) -> !:
+        match kind:
+            .float: try numbers.write_float(self.out, (f32)value)
+            .half: try numbers.write_half(self.out, ((f16)(f32)value).bits())
+            _: try numbers.write_double(self.out, value)
+
+func interpolation_name(interpolation: Interpolation) -> str:
+    match interpolation:
+        .value_block: return "none"
+        .held: return "held"
+        .linear: return "linear"
+        _: return "curve"
+
+func extrapolation_name(mode: ExtrapolationMode) -> str:
+    match mode:
+        .value_block: return "none"
+        .held: return "held"
+        .linear: return "linear"
+        .sloped: return "sloped"
+        .loop_repeat: return "loop repeat"
+        .loop_reset: return "loop reset"
+        _: return "loop oscillate"

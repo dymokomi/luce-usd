@@ -1,0 +1,207 @@
+## Attribute splines, `name.spline = { ... }`, as OpenUSD's grammar
+## (textFileFormatParser.h, SplineValue and its items) and actions
+## (textFileFormatParser.cpp) read them: the curve type, pre and post
+## extrapolation, inner loop parameters, then knots `time: [pre &] value`
+## with `; pre (...)`, `; post interp [(...)]` and custom data. Values and
+## slopes take the attribute's value type; the knots then get Ts's
+## algorithmic tangents and anti-regression (sdf.splines).
+
+extend Reader:
+    ## `{ item, ... }` into the spec's spline field.
+    mutating func spline(spec: usize, kind: ValueKind, array: bool) -> !:
+        let supported = kind == ValueKind.double or kind == ValueKind.float or kind == ValueKind.half or kind == ValueKind.time_code
+        if array or not supported: error(errors.invalid, self.where("an unsupported spline value type"))
+        try self.skip_inline()
+        try self.expect('{', "expected '{' to open a spline")
+        let spline = try Spline.create(kind)
+        var value = Value.of_object(ValueKind.spline, (void*)spline)
+        errdefer value.release()
+        try self.skip_all()
+        if self.peek() != '}':
+            while true:
+                try self.spline_item(spline)
+                if not (try self.list_end('}')): break
+        try self.expect('}', "expected '}' to close a spline")
+        settle(spline)
+        try self.set_field(spec, self.keys.spline, value)
+
+    ## One SplineItem.
+    mutating func spline_item(spline: Spline*) -> !:
+        if self.keyword("bezier"):
+            spline.curve = CurveType.bezier
+            return
+        if self.keyword("hermite"):
+            spline.curve = CurveType.hermite
+            return
+        if self.sees("pre") or self.sees("post"):
+            let pre = self.keyword("pre")
+            if not pre: discard(self.keyword("post"))
+            try self.skip_inline()
+            try self.expect(':', "expected ':' after a spline extrapolation side")
+            try self.skip_inline()
+            let extrapolation = try self.extrapolation()
+            # TsSpline refuses looping with a boundary alongside inner loops.
+            if extrapolation.is_looping() and extrapolation.has_boundary and spline.loops.is_set():
+                error(errors.invalid, self.where("a spline loop boundary cannot be combined with inner loops"))
+            if pre: spline.pre = extrapolation
+            else: spline.post = extrapolation
+            return
+        if self.keyword("loop"):
+            try self.skip_inline()
+            try self.expect(':', "expected ':' after loop")
+            try self.skip_inline()
+            try self.expect('(', "expected '(' to open loop parameters")
+            var params: f64[5] = [0.0, 0.0, 0.0, 0.0, 0.0]
+            for at in 0..<(usize)5:
+                try self.skip_inline()
+                if at > 0:
+                    try self.expect(',', "expected ',' between loop parameters")
+                    try self.skip_inline()
+                params[at] = (try self.number()).as_double()
+            try self.skip_inline()
+            try self.expect(')', "expected ')' to close loop parameters")
+            if math.trunc(params[2]) != params[2] or math.trunc(params[3]) != params[3]:
+                error(errors.invalid, self.where("SplineLoopItem: Non-integer loop count"))
+            let loops = LoopParams(proto_start = params[0], proto_end = params[1], pre_loops = (i32)params[2], post_loops = (i32)params[3], value_offset = params[4])
+            let bounded = (spline.pre.is_looping() and spline.pre.has_boundary) or (spline.post.is_looping() and spline.post.has_boundary)
+            if loops.is_set() and bounded:
+                error(errors.invalid, self.where("inner loops cannot be combined with a spline loop boundary"))
+            spline.loops = loops
+            # Negative loop counts are ignored (SetInnerLoopParams).
+            if spline.loops.pre_loops < 0: spline.loops.pre_loops = 0
+            if spline.loops.post_loops < 0: spline.loops.post_loops = 0
+            return
+        try self.knot(spline)
+
+    ## SplineExtrapolationType.
+    mutating func extrapolation() -> Extrapolation!:
+        if self.keyword("none"): return Extrapolation.of(ExtrapolationMode.value_block)
+        if self.keyword("held"): return Extrapolation.of(ExtrapolationMode.held)
+        if self.keyword("linear"): return Extrapolation.of(ExtrapolationMode.linear)
+        if self.keyword("sloped"):
+            var made = Extrapolation.of(ExtrapolationMode.sloped)
+            made.slope = try self.parenthesized_number()
+            return made
+        if self.keyword("loop"):
+            try self.skip_inline()
+            var made = Extrapolation.of(ExtrapolationMode.loop_repeat)
+            if self.keyword("reset"): made.mode = ExtrapolationMode.loop_reset
+            elif self.keyword("oscillate"): made.mode = ExtrapolationMode.loop_oscillate
+            elif not self.keyword("repeat"): error(errors.invalid, self.where("expected repeat, reset or oscillate"))
+            let before = self.at
+            try self.skip_inline()
+            if self.peek() == '(':
+                made.boundary = try self.parenthesized_number()
+                made.has_boundary = true
+            else:
+                self.at = before
+            return made
+        error(errors.invalid, self.where("expected a spline extrapolation"))
+
+    ## `( number )` with inline padding.
+    mutating func parenthesized_number() -> f64!:
+        try self.skip_inline()
+        try self.expect('(', "expected '('")
+        try self.skip_inline()
+        let number = (try self.number()).as_double()
+        try self.skip_inline()
+        try self.expect(')', "expected ')'")
+        return number
+
+    ## SplineKnotItem: `time: [pre &] value` and its parameters. A knot at
+    ## a time already given is dropped (TsKnotMap::insert).
+    mutating func knot(spline: Spline*) -> !:
+        var made = Knot.at((try self.number()).as_double())
+        errdefer made.custom.release()
+        try self.skip_inline()
+        try self.expect(':', "expected ':' after a knot time")
+        try self.skip_inline()
+        let first = spline.typed((try self.number()).as_double())
+        try self.skip_inline()
+        made.value = first
+        if self.peek() == '&':
+            self.at += 1
+            try self.skip_inline()
+            made.pre_value = first
+            made.dual = true
+            made.value = spline.typed((try self.number()).as_double())
+            try self.skip_inline()
+        if self.peek() == ';':
+            self.at += 1
+            while true:
+                try self.skip_all()
+                if self.peek() == ',' or self.peek() == '}': break
+                try self.knot_parameter(spline, &made)
+                try self.skip_inline()
+                if self.peek() != ';': break
+                self.at += 1
+        for held in spline.knots.view():
+            if held.time == made.time:
+                made.custom.release()
+                return
+        try spline.put(made)
+
+    ## SplineKnotParam: a pre tangent, the post shaping, or custom data.
+    mutating func knot_parameter(spline: const Spline*, knot: Knot*) -> !:
+        if self.peek() == '{':
+            let custom = try self.dictionary_value()
+            knot.custom.release()
+            knot.custom = custom
+            if let found = custom.dictionary():
+                if found.count() == 0: knot.custom.release()
+            return
+        if self.keyword("pre"):
+            try self.separator()
+            let (width, slope, algorithm) = try self.tangent(spline)
+            knot.pre_width = width
+            knot.pre_slope = slope
+            knot.pre_algorithm = algorithm
+            return
+        if not self.keyword("post"): error(errors.invalid, self.where("expected pre, post or custom data after ';'"))
+        try self.separator()
+        if self.keyword("none"): knot.next = Interpolation.value_block
+        elif self.keyword("held"): knot.next = Interpolation.held
+        elif self.keyword("linear"): knot.next = Interpolation.linear
+        elif self.keyword("curve"): knot.next = Interpolation.curve
+        else: error(errors.invalid, self.where("expected none, held, linear or curve"))
+        let before = self.at
+        try self.skip_inline()
+        if self.peek() != '(':
+            self.at = before
+            return
+        # A tangent is set apart from the interpolation by a space or comment.
+        if self.at == before: error(errors.invalid, self.where("expected a space before a spline tangent"))
+        let (width, slope, algorithm) = try self.tangent(spline)
+        knot.post_width = width
+        knot.post_slope = slope
+        knot.post_algorithm = algorithm
+
+    ## TokenSeparator: at least one space or comment.
+    mutating func separator() -> !:
+        let before = self.at
+        try self.skip_inline()
+        if self.at == before: error(errors.invalid, self.where("expected a space"))
+
+    ## SplineTangent: `(width, slope[, algorithm])` or `(slope[, algorithm])`.
+    mutating func tangent(spline: const Spline*) -> (f64, f64, TangentAlgorithm)!:
+        try self.expect('(', "expected '(' to open a tangent")
+        try self.skip_inline()
+        var given: f64[2] = [0.0, 0.0]
+        var count: usize = 0
+        var algorithm = TangentAlgorithm.unset
+        while true:
+            if self.keyword("autoEase"): algorithm = TangentAlgorithm.auto_ease
+            elif self.keyword("custom"): algorithm = TangentAlgorithm.custom
+            elif self.keyword("none"): algorithm = TangentAlgorithm.unset
+            else:
+                if count == 2: error(errors.invalid, self.where("a tangent has at most a width and a slope"))
+                given[count] = (try self.number()).as_double()
+                count += 1
+            try self.skip_inline()
+            if self.peek() != ',': break
+            self.at += 1
+            try self.skip_inline()
+        try self.expect(')', "expected ')' to close a tangent")
+        if count == 0: error(errors.invalid, self.where("a tangent needs a slope"))
+        if count == 1: return (0.0, spline.typed(given[0]), algorithm)
+        return (given[0], spline.typed(given[1]), algorithm)

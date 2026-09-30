@@ -1,0 +1,107 @@
+## Algorithmic tangents and anti-regression, after TsSpline::SetKnots's
+## _UpdateAllTangents (spline.cpp), Ts_TypedKnotData::UpdateTangents
+## (knotData.cpp) and Ts_RegressionPreventerBatchAccess::ProcessSegment in
+## the default KeepRatio authoring mode (regressionPreventer.cpp).
+
+## Over-fixing and the regression test's tolerance (kWritePadding,
+## kReadPadding).
+let write_padding: f64 = 0.00001
+let read_padding: f64 = 0.000001
+
+## Update every knot's algorithmic tangents, then shorten the tangents of
+## Bezier segments that would make the curve run backwards in time.
+pub func settle(spline: Spline*):
+    let count = spline.knots.count
+    for at in 0..<count: update_tangents(spline, at)
+    if spline.curve != CurveType.bezier or count < 2: return
+    for at in 0..<count - 1: deregress(&spline.knots.items[at], &spline.knots.items[at + 1])
+
+## Ts_TypedKnotData::UpdateTangents for knot `at`: Hermite widths are a
+## third of the segment; auto-ease tangents blend the neighbours' slopes.
+func update_tangents(spline: Spline*, at: usize):
+    let count = spline.knots.count
+    let has_previous = at > 0
+    let has_next = at + 1 < count
+    let previous = spline.knots.items[at - 1] if has_previous else Knot.at(0.0)
+    let next = spline.knots.items[at + 1] if has_next else Knot.at(0.0)
+    let knot = &spline.knots.items[at]
+    for pre in [true, false]:
+        let algorithm = knot.pre_algorithm if pre else knot.post_algorithm
+        if algorithm != TangentAlgorithm.auto_ease:
+            if spline.curve == CurveType.hermite:
+                if pre and has_previous: knot.pre_width = (knot.time - previous.time) / 3.0
+                elif not pre and has_next: knot.post_width = (next.time - knot.time) / 3.0
+            continue
+        auto_ease(spline.kind, knot, previous, has_previous, next, has_next, pre)
+
+## _UpdateTangentAutoEase: Maya's Auto Ease.
+func auto_ease(kind: ValueKind, knot: Knot*, previous: Knot, has_previous: bool, next: Knot, has_next: bool, pre: bool):
+    if (pre and not has_previous) or (not pre and not has_next): return
+    let previous_time = previous.time if has_previous else 0.0
+    let next_time = next.time if has_next else 0.0
+    let discontinuity = not has_previous or not has_next or knot.dual or knot.next == Interpolation.value_block or previous.next == Interpolation.value_block
+    if discontinuity:
+        if pre:
+            knot.pre_slope = 0.0
+            knot.pre_width = (knot.time - previous_time) / 3.0
+        else:
+            knot.post_slope = 0.0
+            knot.post_width = (next_time - knot.time) / 3.0
+        return
+    let previous_slope = (knot.value - previous.value) / (knot.time - previous_time)
+    let next_slope = (next.left_value() - knot.value) / (next_time - knot.time)
+    var slope = 0.0
+    if previous_slope * next_slope > 0.0:
+        let f = (knot.time - previous_time) / (next_time - previous_time)
+        let u = f - 0.5
+        let g = 0.5 + u * (0.5 + 2.0 * u * u)
+        slope = previous_slope * (1.0 - g) + next_slope * g
+        if next_slope > 0.0: slope = math.min(slope, math.min(3.0 * next_slope, 3.0 * previous_slope))
+        else: slope = math.max(slope, math.max(3.0 * next_slope, 3.0 * previous_slope))
+    var width = ((knot.time - previous_time) if pre else (next_time - knot.time)) / 3.0
+    var typed = typed_as(kind, slope)
+    if not math.is_finite(typed):
+        # Keep the tangent's end where it was: a longer width, the largest slope.
+        let height = slope * width
+        typed = math.copysign(largest(kind), slope)
+        width = height / typed
+    if pre:
+        knot.pre_slope = typed
+        knot.pre_width = width
+    else:
+        knot.post_slope = typed
+        knot.post_width = width
+
+## The largest finite value of a spline value type.
+func largest(kind: ValueKind) -> f64:
+    match kind:
+        .float: return (f64)f32.bits(0x7F7FFFFF)
+        .half: return 65504.0
+        _: return f64.bits(0x7FEFFFFFFFFFFFFF)
+
+## ProcessSegment in KeepRatio mode: a regressive segment's tangents are
+## scaled along their ratio onto the edge of the non-regressive region.
+func deregress(start: Knot*, end: Knot*):
+    if start.next != Interpolation.curve: return
+    let interval = end.time - start.time
+    if not (interval > 0.0): return
+    let active = start.post_width / interval
+    let opposite = end.pre_width / interval
+    if not regressive(active, opposite): return
+    if active < read_padding:
+        end.pre_width = (1.0 - write_padding) * interval
+    elif opposite < read_padding:
+        start.post_width = (1.0 - write_padding) * interval
+    else:
+        let ratio = active / opposite
+        let adjusted = (math.sqrt(ratio) + ratio + 1.0) / (ratio * ratio + ratio + 1.0)
+        start.post_width = (ratio * adjusted - write_padding) * interval
+        end.pre_width = (adjusted - write_padding) * interval
+
+## _AreTanWidthsRegressive: normalized widths outside the ellipse (and
+## not both within the segment).
+func regressive(first: f64, second: f64) -> bool:
+    if first <= 1.0 and second <= 1.0: return false
+    let a = first + read_padding
+    let b = second + read_padding
+    return a * a + b * b - 2.0 * (a + b) + a * b + 1.0 > 0.0

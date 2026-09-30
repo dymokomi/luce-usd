@@ -24,6 +24,7 @@ from luce_usd.sdf.schema import find_field, applies_layer, applies_prim, applies
 from luce_usd.pcp import Composer, PrimIndex, Offset, InstanceKey
 from luce_usd.prim_definitions import Schemas, PropertyDefinition
 from luce_usd.sdf.expressions import is_expression, evaluate, ExpressionKind
+from luce_usd.sdf.splines import offset_spline
 from geocore_growing import Growing
 from geocore_shared import Column
 

@@ -27,8 +27,10 @@ Which prims load:
 - not the prototypes of a point instancer, which are placed by it.
 
 Values are read at the `time` argument. Without one, the layer's
-`startTimeCode` is used, else each attribute's first sample. Samples in
-between are interpolated linearly.
+`startTimeCode` is used, else each attribute's first sample (a spline's
+first knot). Samples in between are interpolated linearly; an attribute
+spline is evaluated as Ts evaluates it (held, linear, Bezier or Hermite
+segments, extrapolation and loops).
 
 `Usd.warnings()` lists what a load left out.
 

@@ -20,12 +20,14 @@
 ## values.lucb    ValueReps: inline values, dictionaries, list ops, time
 ##                samples and the other structured values
 ## arrays.lucb    arrays, compressed integers and floats, parallel decode
+## splines.lucb   spline values
 import memory
 import luce_usd.errors as errors
 import luce_usd.usdc.compression as compression
 from luce_usd.sdf.names import Names, PathKind, absolute_root, empty_path
 from luce_usd.sdf.layer_data import LayerData, SpecType
-from luce_usd.sdf.values import Value, Dictionary, ListOp, ListItem, ListPart, TimeSamples, variability_uniform
+from luce_usd.sdf.values import Value, Dictionary, ListOp, ListItem, ListPart, TimeSamples, Spline, Knot, CurveType, Interpolation, ExtrapolationMode, Extrapolation, TangentAlgorithm, variability_uniform
+from luce_usd.sdf.splines import settle
 from luce_usd.sdf.value_types import ValueKind, element_bytes, components, scalar_of
 from geocore_shared import Column
 from geocore_growing import Growing

@@ -1,0 +1,125 @@
+## Crate spline values (crateFile.cpp's Read<TsSpline>, and
+## Ts_BinaryDataAccess::_ParseV1_3 in pxr/base/ts/binary.cpp): a u64-sized
+## blob, then a map from knot times to custom data dictionaries. The blob:
+## two or three header bytes (format version, value type, curve type,
+## extrapolation modes, inner loops, loop boundaries), the sloped
+## extrapolations' slopes, the loop parameters, then the knots. The knots
+## then get Ts's algorithmic tangents and anti-regression.
+
+extend Crate:
+    mutating func spline_at(at: u64) -> Value!:
+        let size = try self.u64_at(at)
+        let blob = try self.bytes_at(at + 8, size)
+        var cursor = BlobCursor(data = blob, at = 0)
+        let spline = try Spline.create(ValueKind.double)
+        var value = Value.of_object(ValueKind.spline, (void*)spline)
+        errdefer value.release()
+        if size > 0: try read_blob(spline, &cursor)
+        if cursor.at != blob.length: error(errors.invalid, "a crate spline with bytes left over")
+        # Custom data by knot time.
+        var end = at + 8 + size
+        let count = try self.u64_at(end)
+        if count > (u64)self.data.length: error(errors.invalid, "a crate spline with too much custom data")
+        end += 8
+        for _ in 0..<count:
+            let time = try self.f64_at(end)
+            end += 8
+            var custom = try self.dictionary_at(&end)
+            var placed = false
+            for index in 0..<spline.knots.count:
+                if spline.knots.items[index].time == time and not placed:
+                    spline.knots.items[index].custom.release()
+                    spline.knots.items[index].custom = custom
+                    placed = true
+            if not placed: custom.release()
+        settle(spline)
+        return value
+
+## The spline blob's bytes, read in order.
+struct BlobCursor:
+    var data: const u8[]
+    var at: usize
+
+    mutating func take(count: usize) -> const u8[]!:
+        if count > self.data.length - self.at: error(errors.invalid, "a crate spline read past its end")
+        let bytes = self.data[self.at..<self.at + count]
+        self.at += count
+        return bytes
+
+    mutating func byte() -> u8!:
+        return (try self.take(1))[0]
+
+    mutating func double() -> f64!:
+        return memory.read[f64]((void*)&(try self.take(8))[0])
+
+    mutating func int32() -> i32!:
+        return memory.read[i32]((void*)&(try self.take(4))[0])
+
+    ## A knot value or slope in the spline's storage type.
+    mutating func typed(kind: ValueKind) -> f64!:
+        match kind:
+            .float: return (f64)memory.read[f32]((void*)&(try self.take(4))[0])
+            .half: return (f64)f16.bits(memory.read[u16]((void*)&(try self.take(2))[0]))
+            _: return try self.double()
+
+func read_blob(spline: Spline*, cursor: BlobCursor*) -> !:
+    let first = try cursor.byte()
+    let version = first & 0x0F
+    if version < 1 or version > 3: error(errors.unsupported, "a crate spline of an unknown format version")
+    let descriptor = ((first & 0x70) >> 4) if version > 2 else ((first & 0x30) >> 4)
+    match descriptor:
+        0: spline.kind = ValueKind.empty
+        1: spline.kind = ValueKind.double
+        2: spline.kind = ValueKind.float
+        3: spline.kind = ValueKind.half
+        4: spline.kind = ValueKind.time_code
+        _: error(errors.invalid, "a crate spline of an unknown value type")
+    # Before format 3, a time-valued spline set bit 6.
+    if version <= 2 and (first & 0x40) != 0: spline.kind = ValueKind.time_code
+    spline.curve = CurveType.hermite if (first & 0x80) != 0 else CurveType.bezier
+    let hermite = spline.curve == CurveType.hermite
+    let second = try cursor.byte()
+    if (second & 0x07) > 6 or ((second >> 3) & 0x07) > 6: error(errors.invalid, "a crate spline with an unknown extrapolation")
+    spline.pre = Extrapolation.of((ExtrapolationMode)(second & 0x07))
+    spline.post = Extrapolation.of((ExtrapolationMode)((second >> 3) & 0x07))
+    let loops = (second & 0x40) != 0
+    if version > 2:
+        let third = try cursor.byte()
+        if (third & 1) != 0:
+            spline.pre.boundary = try cursor.double()
+            spline.pre.has_boundary = true
+        if (third & 2) != 0:
+            spline.post.boundary = try cursor.double()
+            spline.post.has_boundary = true
+    if spline.pre.mode == ExtrapolationMode.sloped: spline.pre.slope = try cursor.double()
+    if spline.post.mode == ExtrapolationMode.sloped: spline.post.slope = try cursor.double()
+    if loops:
+        spline.loops.proto_start = try cursor.double()
+        spline.loops.proto_end = try cursor.double()
+        spline.loops.pre_loops = try cursor.int32()
+        spline.loops.post_loops = try cursor.int32()
+        spline.loops.value_offset = try cursor.double()
+    # An untyped spline (no knots) has no knot section.
+    if spline.kind == ValueKind.empty: return
+    let storage = spline.kind
+    let count = (usize)memory.read[u32]((void*)&(try cursor.take(4))[0])
+    if count > cursor.data.length: error(errors.invalid, "a crate spline with too many knots")
+    for _ in 0..<count:
+        let flags = try cursor.byte()
+        var knot = Knot.at(try cursor.double())
+        knot.dual = (flags & 1) != 0
+        knot.next = (Interpolation)((flags >> 1) & 3)
+        knot.value = try cursor.typed(storage)
+        if knot.dual: knot.pre_value = try cursor.typed(storage)
+        if not hermite:
+            knot.pre_width = try cursor.double()
+            knot.post_width = try cursor.double()
+        knot.pre_slope = try cursor.typed(storage)
+        knot.post_slope = try cursor.typed(storage)
+        if version > 1:
+            let algorithms = try cursor.byte()
+            if (algorithms & 0x0F) > 2 or (algorithms >> 4) > 2: error(errors.invalid, "a crate spline with an unknown tangent algorithm")
+            knot.pre_algorithm = (TangentAlgorithm)(algorithms & 0x0F)
+            knot.post_algorithm = (TangentAlgorithm)(algorithms >> 4)
+        # Knots are stored in time order; Ts keeps them as read.
+        try spline.knots.push(knot)

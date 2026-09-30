@@ -46,6 +46,19 @@ pub type ListPart = values.ListPart
 pub type TimeSamples = values.TimeSamples
 pub let same_value = values.same
 
+import luce_usd.sdf.splines as splines
+pub type Spline = values.Spline
+pub type Knot = values.Knot
+pub type CurveType = values.CurveType
+pub type Interpolation = values.Interpolation
+pub type ExtrapolationMode = values.ExtrapolationMode
+pub type Extrapolation = values.Extrapolation
+pub type LoopParams = values.LoopParams
+pub type TangentAlgorithm = values.TangentAlgorithm
+pub let settle_spline = splines.settle
+pub let evaluate_spline = splines.evaluate
+pub let offset_spline = splines.offset_spline
+
 import luce_usd.sdf.expressions as expressions
 pub type Evaluated = expressions.Evaluated
 pub type ExpressionKind = expressions.ExpressionKind

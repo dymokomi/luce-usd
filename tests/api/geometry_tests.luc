@@ -1,6 +1,6 @@
 ## Usd.load, save, convert, info and warnings as luced-3d calls them.
 from usd import Usd
-from geocore import invalid
+from geocore import invalid, Mesh
 
 pub func geometry_tests() -> unit!:
     let loaded = Usd.load("tests/fixtures/geom/meshes.usda")
@@ -23,6 +23,11 @@ pub func geometry_tests() -> unit!:
     assert((flat.mesh() else error(invalid, "no mesh")).face_count() == 7)
     let placed = Usd.load("tests/fixtures/geom/instancer.usda")
     assert(placed.instance_count() == 3)
+    # A spline-animated size: 2 halfway, 3 once held after its last knot.
+    let halfway = Usd.load("tests/fixtures/geom/spline_size.usda", time = 5.0, subdivide = false)
+    assert(largest_x(halfway.mesh() else error(invalid, "no mesh")) == 1.0)
+    let held = Usd.load("tests/fixtures/geom/spline_size.usda", time = 20.0, subdivide = false)
+    assert(largest_x(held.mesh() else error(invalid, "no mesh")) == 1.5)
 
 ## A composed stage: the museum's time-offset case loads through its
 ## references and sublayers, and flattens to a file.
@@ -50,3 +55,11 @@ func stage_option_tests() -> unit!:
     assert(Usd.composition(room) == "2\t7\t2\n/Room/Table\ttop\tquad\tquad|triangles\n")
     let composed = Usd.composition(room, variants = "/Room/Table{top=triangles}", payloads = "-")
     assert(composed == "1\t5\t2\n/Room/Table\ttop\ttriangles\tquad|triangles\n")
+
+func largest_x(mesh: Mesh) -> float!:
+    var most = -1000000.0
+    for at in 0..<mesh.point_count():
+        let x = mesh.point(at).x
+        if x > most:
+            most = x
+    return most

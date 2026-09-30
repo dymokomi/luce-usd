@@ -1,0 +1,92 @@
+## Crate spline values (crateFile.cpp's Write(TsSpline) and
+## Ts_BinaryDataAccess::GetBinaryData in pxr/base/ts/binary.cpp): the blob
+## in the lowest format that holds the spline (1; 2 with tangent
+## algorithms; 3 with loop boundaries or time code values), which raises
+## the file to crate 0.12.0, 0.13.0 or 0.15.0, then the knots' custom data
+## by time.
+
+extend CrateWriter:
+    mutating func pack_spline(value: const Value*) -> u64!:
+        let spline = value.spline() else error(errors.invalid, "a spline value without a spline")
+        let version = blob_version(spline)
+        self.require(12 if version == 1 else (13 if version == 2 else 15))
+        var blob = Growing[u8]()
+        defer blob.close()
+        try write_blob(spline, version, &blob)
+        let at = self.tell()
+        try self.put_u64((u64)blob.count)
+        try self.put_bytes(blob.view())
+        var customized: u64 = 0
+        for knot in spline.knots.view():
+            if let custom = knot.custom.dictionary():
+                if custom.count() > 0: customized += 1
+        try self.put_u64(customized)
+        for knot in spline.knots.view():
+            let custom = knot.custom.dictionary() else continue
+            if custom.count() == 0: continue
+            try self.put_f64(knot.time)
+            try self.write_dictionary(custom)
+        return rep_of(ValueKind.spline, at, false)
+
+## GetBinaryFormatVersion.
+func blob_version(spline: const Spline*) -> u8:
+    var version: u8 = 1
+    for knot in spline.knots.view():
+        if knot.pre_algorithm != TangentAlgorithm.unset or knot.post_algorithm != TangentAlgorithm.unset: version = 2
+    if (spline.pre.is_looping() and spline.pre.has_boundary) or (spline.post.is_looping() and spline.post.has_boundary): version = 3
+    if spline.kind == ValueKind.time_code: version = 3
+    return version
+
+func write_blob(spline: const Spline*, version: u8, out: Growing[u8]*) -> !:
+    var descriptor: u8 = 0
+    match spline.kind:
+        .double: descriptor = 1
+        .float: descriptor = 2
+        .half: descriptor = 3
+        .time_code: descriptor = 4
+        _: descriptor = 0
+    let hermite = spline.curve == CurveType.hermite
+    try out.push(version | (descriptor << 4) | ((u8)(u8)spline.curve << 7))
+    let loops = spline.loops.is_set()
+    try out.push((u8)spline.pre.mode | ((u8)spline.post.mode << 3) | ((u8)1 << 6 if loops else 0))
+    if version > 2:
+        let pre_boundary = spline.pre.is_looping() and spline.pre.has_boundary
+        let post_boundary = spline.post.is_looping() and spline.post.has_boundary
+        try out.push((1 if pre_boundary else 0) | (2 if post_boundary else 0))
+        if pre_boundary: try put_double(out, spline.pre.boundary)
+        if post_boundary: try put_double(out, spline.post.boundary)
+    if spline.pre.mode == ExtrapolationMode.sloped: try put_double(out, spline.pre.slope)
+    if spline.post.mode == ExtrapolationMode.sloped: try put_double(out, spline.post.slope)
+    if loops:
+        try put_double(out, spline.loops.proto_start)
+        try put_double(out, spline.loops.proto_end)
+        try put_raw(out, (u64)(u32)spline.loops.pre_loops, 4)
+        try put_raw(out, (u64)(u32)spline.loops.post_loops, 4)
+        try put_double(out, spline.loops.value_offset)
+    if descriptor == 0: return
+    try put_raw(out, (u64)spline.knots.count, 4)
+    for knot in spline.knots.view():
+        # Bit 3 is the knots' deprecated curve type, Bezier as Ts sets it.
+        try out.push((1 if knot.dual else 0) | ((u8)knot.next << 1))
+        try put_double(out, knot.time)
+        try put_typed(out, spline.kind, knot.value)
+        if knot.dual: try put_typed(out, spline.kind, knot.pre_value)
+        if not hermite:
+            try put_double(out, knot.pre_width)
+            try put_double(out, knot.post_width)
+        try put_typed(out, spline.kind, knot.pre_slope)
+        try put_typed(out, spline.kind, knot.post_slope)
+        if version > 1: try out.push((u8)knot.pre_algorithm | ((u8)knot.post_algorithm << 4))
+
+func put_double(out: Growing[u8]*, value: f64) -> !:
+    try put_raw(out, value.bits(), 8)
+
+## The low `count` bytes of `bits`, little-endian.
+func put_raw(out: Growing[u8]*, bits: u64, count: usize) -> !:
+    for index in 0..<count: try out.push((u8)((bits >> (u64)(index * 8)) & 0xFF))
+
+func put_typed(out: Growing[u8]*, kind: ValueKind, value: f64) -> !:
+    match kind:
+        .float: try put_raw(out, (u64)((f32)value).bits(), 4)
+        .half: try put_raw(out, (u64)((f16)(f32)value).bits(), 2)
+        _: try put_double(out, value)

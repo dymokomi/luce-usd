@@ -1,0 +1,12 @@
+#usda 1.0
+(
+    doc = "A cube whose size is a spline: 1 at time 0 to 3 at time 10, linear, held after."
+)
+
+def Cube "Box"
+{
+    double size.spline = {
+        0: 1; post linear,
+        10: 3; post held,
+    }
+}

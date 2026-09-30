@@ -3,8 +3,9 @@
 ## attribute with time samples takes the sample at the time, held before the
 ## first and after the last, and between two samples interpolates linearly
 ## when both are floating point values of one shape (quaternions are
-## normalized after); other values hold the earlier sample. Without samples
-## the default applies. Value blocks resolve to no value.
+## normalized after); other values hold the earlier sample. A spline is
+## evaluated (sdf.splines). Without either the default applies. Value
+## blocks resolve to no value.
 
 extend Stage:
     ## The value of attribute spec `attribute` at the stage's time (empty
@@ -13,9 +14,23 @@ extend Stage:
         if let field = attribute.get(self.keys.time_samples):
             if let samples = field.time_samples():
                 if samples.count() > 0: return try sample_at(samples, self.time)
+        if let field = attribute.get(self.keys.spline):
+            if let spline = field.spline():
+                if spline.knots.count > 0: return spline_at(spline, self.time)
         let found = attribute.get(self.keys.default) else return Value.marker(ValueKind.empty)
         if found.kind == ValueKind.value_block or found.kind == ValueKind.animation_block: return Value.marker(ValueKind.empty)
         return found.share()
+
+## A spline's value at `time` (`earliest`: its first knot's time), of the
+## spline's value type; empty where it has none (value blocks).
+func spline_at(spline: const Spline*, time: f64) -> Value:
+    let at = spline.knots.items[0].time if time == earliest else time
+    let found = evaluate(spline, at) else return Value.marker(ValueKind.empty)
+    match spline.kind:
+        .float: return Value.scalar(ValueKind.float, (u64)((f32)found).bits())
+        .half: return Value.scalar(ValueKind.half, (u64)((f16)(f32)found).bits())
+        .time_code: return Value.scalar(ValueKind.time_code, found.bits())
+        _: return Value.scalar(ValueKind.double, found.bits())
 
 ## The value of `samples` at `time`.
 func sample_at(samples: const TimeSamples*, time: f64) -> Value!:

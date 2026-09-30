@@ -109,7 +109,7 @@ extend Crate:
                 if inner.kind == ValueKind.unregistered_value_list_op: return inner
                 error(errors.invalid, "an unregistered crate value of an unexpected type")
             .spline:
-                error(errors.unsupported, "crate spline values are not supported yet")
+                return try self.spline_at(payload)
             _:
                 error(errors.unsupported, "a crate value type this reader does not know")
 

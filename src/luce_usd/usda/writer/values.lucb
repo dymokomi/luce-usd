@@ -170,14 +170,7 @@ extend Writer:
         let dictionary = value.dictionary() else return
         var order = Growing[usize]()
         defer order.close()
-        for index in 0..<dictionary.count(): try order.push(index)
-        for index in 1..<order.count:
-            let current = order.items[index]
-            var at = index
-            while at > 0 and byte_less(self.text(dictionary.keys.items[current]), self.text(dictionary.keys.items[order.items[at - 1]])):
-                order.items[at] = order.items[at - 1]
-                at -= 1
-            order.items[at] = current
+        try self.key_order(dictionary, &order)
         try self.put("{\n")
         var remaining = order.count
         for index in order.view():
@@ -213,6 +206,43 @@ extend Writer:
             try self.put("\n")
         try self.indent(indent)
         try self.put("}\n")
+
+    ## `{ type k = value; ... }` on one line (WriteDictionary with
+    ## multiLine false), as knot custom data is written.
+    mutating func inline_dictionary(value: const Value*) -> !:
+        let dictionary = value.dictionary() else return
+        var order = Growing[usize]()
+        defer order.close()
+        try self.key_order(dictionary, &order)
+        try self.put("{ ")
+        for at in 0..<order.count:
+            if at > 0: try self.put("; ")
+            let index = order.items[at]
+            let key = self.text(dictionary.keys.items[index])
+            let entry = &dictionary.values.items[index]
+            if entry.kind == ValueKind.dictionary:
+                try self.put("dictionary ")
+                try self.key(key)
+                try self.put(" = ")
+                try self.inline_dictionary(entry)
+                continue
+            try self.value_type(entry)
+            try self.byte(' ')
+            try self.key(key)
+            try self.put(" = ")
+            try self.value(entry)
+        try self.put(" }")
+
+    ## The dictionary's entry indices, by key in byte order (a std::map).
+    mutating func key_order(dictionary: const Dictionary*, order: Growing[usize]*) -> !:
+        for index in 0..<dictionary.count(): try order.push(index)
+        for index in 1..<order.count:
+            let current = order.items[index]
+            var at = index
+            while at > 0 and byte_less(self.text(dictionary.keys.items[current]), self.text(dictionary.keys.items[order.items[at - 1]])):
+                order.items[at] = order.items[at - 1]
+                at -= 1
+            order.items[at] = current
 
     ## A path expression value, or an array of them, without quotes.
     mutating func bare_expressions(value: const Value*) -> !:

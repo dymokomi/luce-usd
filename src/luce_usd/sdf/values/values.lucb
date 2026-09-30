@@ -8,7 +8,8 @@
 ## - bytes in the shared column `data`: an array (`count` elements, laid out
 ##   as value_types.element_bytes says), a larger scalar (a vector, a
 ##   quaternion or a matrix), or a vector-shaped metadata value (below);
-## - a shared composite in `object`: a dictionary, a list op or time samples.
+## - a shared composite in `object`: a dictionary, a list op, time samples
+##   or a spline (splines.lucb).
 ##
 ## Vector-shaped metadata in `data`: path, token and string vectors are u32
 ## ids; double vectors f64; layer offset vectors (offset f64, scale f64)
@@ -69,7 +70,7 @@ pub struct Value:
     pub static func of_ids(kind: ValueKind, count: usize, ids: const u32[]) -> Value!:
         return Value.of_records(kind, count, try Column[u8].copy_of(u8[]((u8*)ids.data, ids.length * 4)))
 
-    ## A composite (taken): a Dictionary*, ListOp* or TimeSamples*.
+    ## A composite (taken): a Dictionary*, ListOp*, TimeSamples* or Spline*.
     pub static func of_object(kind: ValueKind, object: void*) -> Value:
         return Value(kind = kind, array = false, count = 0, bits = 0, data = Column[u8](), object = object)
 
@@ -116,6 +117,12 @@ pub struct Value:
         if self.kind != ValueKind.time_samples: return none
         let object = self.object else return none
         return (const TimeSamples*)object
+
+    ## A spline value's contents.
+    pub func spline() -> const Spline*?:
+        if self.kind != ValueKind.spline: return none
+        let object = self.object else return none
+        return (const Spline*)object
 
     ## The u32 ids of a path, token or string vector.
     pub func ids() -> const u32[]:
@@ -290,6 +297,8 @@ func destroy(kind: ValueKind, object: void*):
         .unregistered_value:
             # An unregistered field's parsed dictionary.
             destroy(ValueKind.dictionary, object)
+        .spline:
+            destroy_spline((Spline*)object)
         _:
             if not is_list_op(kind): trap("a value composite of an unknown kind")
             let list = (ListOp*)object
@@ -323,6 +332,8 @@ pub func same(left: const Value*, right: const Value*) -> bool:
                 if x.keys.items[index] != y.keys.items[index]: return false
                 if not same(&x.values.items[index], &y.values.items[index]): return false
             return true
+        .spline:
+            return same_splines((const Spline*)first, (const Spline*)second)
         .time_samples:
             let x = (const TimeSamples*)first
             let y = (const TimeSamples*)second

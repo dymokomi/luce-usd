@@ -126,6 +126,8 @@ extend CrateWriter:
                 return try self.pack_list_op(value)
             .time_samples:
                 return try self.pack_time_samples(value)
+            .spline:
+                return try self.pack_spline(value)
             .unregistered_value:
                 # An unregistered value is written as a nested value.
                 let at = self.tell()
@@ -137,7 +139,7 @@ extend CrateWriter:
                     try self.write_nested(&inner)
                 return rep_of(kind, at, false)
             _:
-                error(errors.unsupported, "a value this crate writer cannot pack (splines, array edits, relationship defaults)")
+                error(errors.unsupported, "a value this crate writer cannot pack (array edits, relationship defaults)")
 
     ## A nested value (_Writer::Write(VtValue)): an int64 forward offset,
     ## the value's own bytes, then its rep at the offset's target.

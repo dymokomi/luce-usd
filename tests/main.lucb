@@ -15,6 +15,7 @@ import usdz_checks
 import expression_checks
 import geom_checks
 import pcp_checks
+import spline_checks
 
 ## Counts live blocks and fails the allocation after `remaining` more.
 struct Tracker: memory.Allocator:
@@ -110,6 +111,11 @@ pub func main(arguments: str[]) -> i32!:
     try usdc_checks.writes()
     settle(&tracker, "usdc writes")
     inject(&tracker, every, usdc_checks.writes)
+    try spline_checks.evaluation()
+    try spline_checks.loops_and_offsets()
+    try spline_checks.round_trips()
+    settle(&tracker, "splines")
+    inject(&tracker, every, spline_checks.round_trips)
     try usdz_checks.exercise()
     settle(&tracker, "usdz")
     inject(&tracker, every, usdz_checks.exercise)
