@@ -21,7 +21,7 @@ import luce_usd.ar as ar
 import luce_usd.layer_file as layer_file
 from luce_usd.sdf.names import Names, PathKind, absolute_root, relative_root, empty_path
 from luce_usd.sdf.layer_data import LayerData, Spec, SpecType, FieldKeys
-from luce_usd.sdf.values import Value, Dictionary, ListOp, ListItem, ListPart, PayloadRecord, same
+from luce_usd.sdf.values import Value, Dictionary, ListOp, ListItem, ListPart, PayloadRecord, same, specifier_over, specifier_def, specifier_class
 from luce_usd.sdf.expressions import is_expression, evaluate_to_string, evaluate, Evaluated, ExpressionKind
 from luce_usd.sdf.value_types import ValueKind
 from luce_usd.sdf.list_ops import apply_list_op, same_item

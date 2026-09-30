@@ -7,6 +7,8 @@
 struct LayerEntry:
     var identifier: Growing[u8]
     var layer: LayerData*?
+    ## Why a failed layer could not be read.
+    var problem: Growing[u8]
 
 ## Every layer a composition has opened.
 pub struct Layers:
@@ -20,6 +22,7 @@ pub struct Layers:
     pub mutating func close():
         for at in 0..<self.entries.count:
             self.entries.items[at].identifier.close()
+            self.entries.items[at].problem.close()
             release_layer(self.entries.items[at].layer)
         self.entries.close()
 
@@ -32,6 +35,27 @@ pub struct Layers:
     pub func layer(index: usize) -> const LayerData*:
         return self.entries.items[index].layer else trap("a failed layer")
 
+    ## How many layers were read from files (UsdStage::GetUsedLayers
+    ## without the anonymous ones).
+    pub func file_count() -> usize:
+        var count: usize = 0
+        for entry in self.entries.view():
+            let identifier = (str)entry.identifier.view()
+            let anonymous = identifier.length >= 5 and (str)identifier.bytes[..<5] == "anon:"
+            if entry.layer != none and not anonymous: count += 1
+        return count
+
+    ## Why the layer `identifier` names could not be read ("" when it was
+    ## read, or never tried).
+    pub func problem(identifier: str) -> str:
+        for entry in self.entries.view():
+            if (str)entry.identifier.view() == identifier: return (str)entry.problem.view()
+        return ""
+
+    ## Layer `index` to change (a session layer being authored).
+    pub mutating func editable(index: usize) -> LayerData*:
+        return self.entries.items[index].layer else trap("a failed layer")
+
     ## The layer `identifier` names, opened now if new; none when it cannot
     ## be read (running out of memory fails).
     pub mutating func find_or_open(identifier: str) -> usize?!:
@@ -42,7 +66,9 @@ pub struct Layers:
         storage[0] = LayerData(self.names) catch failure:
             free(storage) in memory.heap
             error(failure.code, failure.message)
-        let read = readable(identifier, storage.data) catch failure:
+        var problem = Growing[u8]()
+        let read = readable(identifier, storage.data, &problem) catch failure:
+            problem.close()
             storage[0].close()
             free(storage) in memory.heap
             error(failure.code, failure.message)
@@ -53,10 +79,12 @@ pub struct Layers:
         let opened: LayerData*? = storage.data if read else none
         name.assign(identifier.bytes) catch failure:
             name.close()
+            problem.close()
             release_layer(opened)
             error(failure.code, failure.message)
-        self.entries.push(LayerEntry(identifier = name, layer = opened)) catch failure:
+        self.entries.push(LayerEntry(identifier = name, layer = opened, problem = problem)) catch failure:
             name.close()
+            problem.close()
             release_layer(opened)
             error(failure.code, failure.message)
         return self.entries.count - 1 if read else none
@@ -72,7 +100,7 @@ pub struct Layers:
             name.close()
             release_layer(storage.data)
             error(failure.code, failure.message)
-        self.entries.push(LayerEntry(identifier = name, layer = storage.data)) catch failure:
+        self.entries.push(LayerEntry(identifier = name, layer = storage.data, problem = Growing[u8]())) catch failure:
             name.close()
             release_layer(storage.data)
             error(failure.code, failure.message)
@@ -91,11 +119,14 @@ pub struct Layers:
         return 24.0
 
 ## Whether the layer file reads; failures other than running out of
-## memory make it unreadable.
-func readable(identifier: str, layer: LayerData*) -> bool!:
-    if not ar.exists(identifier): return false
+## memory make it unreadable, and `problem` says why.
+func readable(identifier: str, layer: LayerData*, problem: Growing[u8]*) -> bool!:
+    if not ar.exists(identifier):
+        try problem.assign("no such file".bytes)
+        return false
     let found = layer_file.read_layer_file(identifier, layer) catch failure:
         if failure.code == memory.exhausted: error(failure.code, failure.message)
+        try problem.assign(failure.message.bytes)
         return false
     discard(found)
     return true

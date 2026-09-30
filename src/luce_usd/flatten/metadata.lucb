@@ -77,7 +77,7 @@ extend Flattener:
         for opinion in opinions:
             let found = self.composer.layers.layer(opinion.layer).get(opinion.spec, self.out.keys.specifier) else continue
             if found.bits == specifier_over: continue
-            if found.bits != specifier_class or not due_to_direct_inherit(index, opinion.node): return found.bits
+            if found.bits != specifier_class or not index.due_to_direct_inherit(opinion.node): return found.bits
             resolved = specifier_class
         return resolved
 
@@ -269,13 +269,4 @@ func valid_field(name: str, kind: SpecType) -> bool:
 func listed_in(list: const str[], name: str) -> bool:
     for known in list:
         if known == name: return true
-    return false
-
-## Whether a node is, or lies under, an inherit added at this prim.
-func due_to_direct_inherit(index: const PrimIndex*, node: u32) -> bool:
-    var at = (i32)node
-    while at >= 0:
-        let entry = index.node((u32)at)
-        if entry.arc == ArcType.inherit and not entry.due_to_ancestor: return true
-        at = entry.parent
     return false

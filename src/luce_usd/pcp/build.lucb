@@ -41,6 +41,9 @@ pub struct Composer:
     ## Path texts one of which a prim's must contain for its payloads to
     ## load (none: any).
     pub var loaded_containing: Growing[Growing[u8]]
+    ## Glob patterns one of which a prim's path must match for its
+    ## payloads to load (none: any).
+    pub var loaded_matching: Growing[Growing[u8]]
     ## Variant fallbacks: (set, selection) token pairs, preferred first.
     pub var variant_fallbacks: Growing[u32]
     ## The prim whose index is being built (payload loading asks about it).
@@ -60,7 +63,7 @@ pub struct Composer:
         var problems = Problems()
         errdefer problems.close()
         let opened = try layers.find_or_open(root)
-        if opened == none: error(errors.invalid, "the root layer cannot be read")
+        if opened == none: error(errors.invalid, unreadable("root", root, layers.problem(root)))
         let root_layer = opened else return
         var session_layer: usize? = none
         if session == anonymous_session:
@@ -69,7 +72,7 @@ pub struct Composer:
             session_layer = try layers.anonymous(session)
         elif session.length > 0:
             session_layer = try layers.find_or_open(session)
-            if session_layer == none: error(errors.invalid, "the session layer cannot be read")
+            if session_layer == none: error(errors.invalid, unreadable("session", session, layers.problem(session)))
         let root_stack = try stacks.find_or_build(&layers, root_layer, session_layer, none, &problems)
         self.names = names
         self.layers = layers
@@ -78,6 +81,7 @@ pub struct Composer:
         self.root_stack = root_stack
         self.unloaded = Growing[Growing[u8]]()
         self.loaded_containing = Growing[Growing[u8]]()
+        self.loaded_matching = Growing[Growing[u8]]()
         self.variant_fallbacks = Growing[u32]()
         self.composing = absolute_root
         self.cached = Growing[PrimIndex*]()
@@ -88,6 +92,8 @@ pub struct Composer:
         self.unloaded.close()
         for at in 0..<self.loaded_containing.count: self.loaded_containing.items[at].close()
         self.loaded_containing.close()
+        for at in 0..<self.loaded_matching.count: self.loaded_matching.items[at].close()
+        self.loaded_matching.close()
         self.variant_fallbacks.close()
         for at in 0..<self.cached.count:
             self.cached.items[at].close()
@@ -192,10 +198,15 @@ pub struct Composer:
         return index
 
     ## Whether the stage is its root layer alone: no sublayers, session
-    ## layer or composition arcs, so the layer's specs are the stage's.
+    ## layer with opinions or composition arcs, so the layer's specs are
+    ## the stage's.
     pub func is_single_layer() -> bool:
         let stack = self.stacks.stack(self.root_stack)
-        if stack.layers.count != 1: return false
+        var count = stack.layers.count
+        if let session = stack.session:
+            if self.layers.layer(session).spec_count() > 1: return false
+            count -= 1
+        if count != 1: return false
         let layer = self.layers.layer(stack.root)
         let keys = &layer.keys
         let arcs: u32[7] = [keys.references, keys.payload, keys.inherit_paths, keys.specializes, keys.variant_set_names, keys.relocates, keys.instanceable]
@@ -228,7 +239,7 @@ pub struct Composer:
 
     ## Whether every payload loads.
     func loads_all_payloads() -> bool:
-        return self.unloaded.count == 0 and self.loaded_containing.count == 0
+        return self.unloaded.count == 0 and self.loaded_containing.count == 0 and self.loaded_matching.count == 0
 
     ## Whether the payloads of the prim at `path` load.
     mutating func payload_included(path: u32) -> bool!:
@@ -237,6 +248,10 @@ pub struct Composer:
         try self.names.write_path(path, &text)
         for prefix in self.unloaded.view():
             if text.count >= prefix.count and (str)text.items[..<prefix.count] == (str)prefix.view(): return false
+        if self.loaded_matching.count > 0:
+            var matched = false
+            for pattern in self.loaded_matching.view(): matched = matched or glob_matches(pattern.view(), text.view())
+            if not matched: return false
         if self.loaded_containing.count == 0: return true
         for part in self.loaded_containing.view():
             var at: usize = 0
@@ -375,3 +390,11 @@ func can_cull(index: const PrimIndex*, node: u32, names: const Names*, root_stac
     for child in entry.children.view():
         if not index.nodes.items[(usize)child].culled: return false
     return not (entry.has_specs and entry.contributes())
+
+## The message of a stage layer that cannot be read: which one, its path
+## and why.
+local var unreadable_text: u8[1536]
+
+func unreadable(role: str, identifier: str, problem: str) -> str:
+    return format(unreadable_text, f"cannot read the {role} layer {identifier}: {problem}") catch failure:
+        recover "cannot read a stage layer"

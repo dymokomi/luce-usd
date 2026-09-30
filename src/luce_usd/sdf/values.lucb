@@ -64,6 +64,11 @@ pub struct Value:
     pub static func of_records(kind: ValueKind, count: usize, column: Column[u8]) -> Value:
         return Value(kind = kind, array = false, count = count, bits = 0, data = column, object = none)
 
+    ## A vector-shaped metadata value of `count` records of ids (tokens or
+    ## paths) copied from `ids`.
+    pub static func of_ids(kind: ValueKind, count: usize, ids: const u32[]) -> Value!:
+        return Value.of_records(kind, count, try Column[u8].copy_of(u8[]((u8*)ids.data, ids.length * 4)))
+
     ## A composite (taken): a Dictionary*, ListOp* or TimeSamples*.
     pub static func of_object(kind: ValueKind, object: void*) -> Value:
         return Value(kind = kind, array = false, count = 0, bits = 0, data = Column[u8](), object = object)

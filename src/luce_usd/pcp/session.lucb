@@ -1,0 +1,105 @@
+## Stage options authored before composing, as UsdStage does them: variant
+## selections go in the stage's session layer, the strongest opinion of
+## the root layer stack (UsdVariantSet::SetVariantSelection with the
+## session layer as edit target), and payloads can be limited to prims
+## matching glob patterns (UsdStage::LoadAndUnload's rules).
+
+extend Composer:
+    ## Select `selection` for variant set `set` of the prim at `prim` (a
+    ## prim path), in the session layer.
+    pub mutating func select_variant(prim: u32, set: u32, selection: u32) -> !:
+        let session = self.stacks.stack(self.root_stack).session else error(errors.invalid, "the stage has no session layer to author in")
+        let layer = self.layers.editable(session)
+        let spec = try over_spec(self.names, layer, prim)
+        let key = layer.keys.variant_selection
+        # The pairs already selected on the spec, this one replacing its set's.
+        var pairs = Growing[u32]()
+        defer pairs.close()
+        if let found = layer.get(spec, key):
+            let held = found.ids()
+            var at: usize = 0
+            while at + 1 < held.length:
+                if held[at] != set:
+                    try pairs.push(held[at])
+                    try pairs.push(held[at + 1])
+                at += 2
+        try pairs.push(set)
+        try pairs.push(selection)
+        try layer.set(spec, key, try Value.of_ids(ValueKind.variant_selection_map, pairs.count // 2, pairs.view()))
+
+    ## Author the variant selections `text` names: prim paths with
+    ## selections, as SdfPath writes them, separated by blanks outside the
+    ## braces ("/Kitchen{look=clean} /Kitchen/Chair{size=big}"). Selections
+    ## go in before any prim is composed.
+    pub mutating func select_variants(text: str) -> !:
+        var at: usize = 0
+        while at < text.length:
+            while at < text.length and is_blank(text.bytes[at]): at += 1
+            let start = at
+            var depth: usize = 0
+            while at < text.length and (depth > 0 or not is_blank(text.bytes[at])):
+                if text.bytes[at] == '{': depth += 1
+                if text.bytes[at] == '}' and depth > 0: depth -= 1
+                at += 1
+            if at == start: continue
+            var path = try self.names.parse_path((str)text.bytes[start..<at])
+            if self.names.kind(path) != PathKind.variant: error(errors.invalid, "a variant selection needs a prim path ending in {set=variant}")
+            while self.names.kind(path) == PathKind.variant:
+                try self.select_variant(try self.names.strip_variants(path), self.names.name(path), self.names.node(path).extra)
+                path = self.names.parent(path)
+
+    ## Load payloads only of prims whose path matches one of the glob
+    ## `patterns` (blank separated; `*` any run, `?` any character). A
+    ## pattern that is no path, such as "-", matches nothing.
+    pub mutating func include_payloads_matching(patterns: str) -> !:
+        var at: usize = 0
+        while at < patterns.length:
+            while at < patterns.length and is_blank(patterns.bytes[at]): at += 1
+            let start = at
+            while at < patterns.length and not is_blank(patterns.bytes[at]): at += 1
+            if at == start: continue
+            var text = Growing[u8]()
+            errdefer text.close()
+            try text.assign(patterns.bytes[start..<at])
+            try self.loaded_matching.push(text)
+
+## The spec at prim `path` in `layer`, created as an over (with its
+## parents, each listed among its parent's children) when missing.
+func over_spec(names: Names*, layer: LayerData*, path: u32) -> usize!:
+    if let found = layer.find(path): return found
+    let parent = names.parent(path)
+    let parent_spec = 0 if parent == absolute_root else try over_spec(names, layer, parent)
+    let spec = try layer.create_spec(path, SpecType.prim)
+    try layer.set(spec, layer.keys.specifier, Value.scalar(ValueKind.specifier, specifier_over))
+    var children = Growing[u32]()
+    defer children.close()
+    if let found = layer.get(parent_spec, layer.keys.prim_children): try children.assign(found.ids())
+    try children.push(names.name(path))
+    try layer.set(parent_spec, layer.keys.prim_children, try Value.of_ids(ValueKind.token_vector, children.count, children.view()))
+    return spec
+
+## Whether `text` matches glob `pattern` (`*` any run, `?` one character).
+func glob_matches(pattern: const u8[], text: const u8[]) -> bool:
+    var p: usize = 0
+    var t: usize = 0
+    var star: usize = pattern.length
+    var resume: usize = 0
+    while t < text.length:
+        if p < pattern.length and (pattern[p] == '?' or pattern[p] == text[t]):
+            p += 1
+            t += 1
+        elif p < pattern.length and pattern[p] == '*':
+            star = p
+            resume = t
+            p += 1
+        elif star < pattern.length:
+            p = star + 1
+            resume += 1
+            t = resume
+        else:
+            return false
+    while p < pattern.length and pattern[p] == '*': p += 1
+    return p == pattern.length
+
+func is_blank(byte: u8) -> bool:
+    return byte == ' ' or byte == 9 or byte == 10 or byte == 13

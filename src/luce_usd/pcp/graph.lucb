@@ -161,6 +161,15 @@ pub struct PrimIndex:
         let restricted = self.nodes.items[(usize)node].restricted
         return restricted == 0 or restricted > names.node(path).depth
 
+    ## Whether a node is, or lies under, an inherit added at this prim.
+    pub func due_to_direct_inherit(node: u32) -> bool:
+        var at = (i32)node
+        while at >= 0:
+            let entry = &self.nodes.items[(usize)at]
+            if entry.arc == ArcType.inherit and not entry.due_to_ancestor: return true
+            at = entry.parent
+        return false
+
     ## The node's path at the namespace depth its arc was introduced at
     ## (GetPathAtIntroduction): variant selections above that depth stay.
     pub func path_at_introduction(names: const Names*, node: u32) -> u32:

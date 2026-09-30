@@ -114,6 +114,7 @@ import luce_usd.pcp as pcp
 pub type Composer = pcp.Composer
 pub let anonymous_session = pcp.anonymous_session
 pub let composition_report = pcp.composition_report
+pub let summarize_stage = pcp.summarize
 import luce_usd.flatten as flatten
 
 pub let flatten_stage = flatten.flatten_stage

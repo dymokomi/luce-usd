@@ -1,0 +1,169 @@
+## A composed stage summarized for the File node (Usd.composition): how
+## many layer files make it up, how many prims UsdStage traverses (active,
+## loaded, defined and not abstract; none below an instance) and how many
+## of them are instances, then each variant set on the default prim and
+## below it (the whole stage without one): the prim, the set, the
+## selection composition made and the set's options, as UsdVariantSets::
+## GetNames and UsdVariantSet::GetVariantNames give them.
+##
+## Text: a first line "layers\tprims\tinstances", then one line per set,
+## "prim\tset\tselection\toption|option|...", at most `most_sets` of them.
+
+## The most variant sets listed.
+pub let most_sets: usize = 64
+
+## Summarize the composer's stage into `out`.
+pub func summarize(composer: Composer*, out: Growing[u8]*) -> !:
+    var summary = Summary(composer = composer, prims = 0, instances = 0, sets = Growing[u8](), listed = 0)
+    defer summary.sets.close()
+    let names = composer.names
+    let root_layer = composer.layers.layer(composer.stacks.stack(composer.root_stack).root)
+    var start = absolute_root
+    if let found = root_layer.get(0, root_layer.keys.default_prim):
+        let name = found.as_token()
+        if name != 0: start = try names.child(absolute_root, name)
+    var children = Growing[u32]()
+    defer children.close()
+    try composer.child_names(try composer.index(absolute_root), &children)
+    for name in children.view():
+        let path = try names.child(absolute_root, name)
+        try summary.walk(path, start == absolute_root or path == start)
+    try put_number(out, (u64)composer.layers.file_count())
+    try out.push(9)
+    try put_number(out, (u64)summary.prims)
+    try out.push(9)
+    try put_number(out, (u64)summary.instances)
+    try out.push(10)
+    for byte in summary.sets.view(): try out.push(byte)
+
+struct Summary:
+    var composer: Composer*
+    var prims: usize
+    var instances: usize
+    var sets: Growing[u8]
+    var listed: usize
+
+    ## Count the prim at `path` and those below it; list its variant sets
+    ## when `listing` (the default prim's subtree).
+    mutating func walk(path: u32, listing: bool) -> !:
+        let composer = self.composer
+        let index = try composer.index(path)
+        # UsdPrimDefaultPredicate: active, loaded, defined and not abstract.
+        let state = try summary_state(composer, index)
+        if not state.active or state.specifier != specifier_def: return
+        if index.has_payloads and not try composer.payload_included(path): return
+        self.prims += 1
+        if listing: try self.list_sets(index, path)
+        if index.instanceable:
+            self.instances += 1
+            return
+        var children = Growing[u32]()
+        defer children.close()
+        try composer.child_names(index, &children)
+        for name in children.view(): try self.walk(try composer.names.child(path, name), listing)
+
+    ## One line per variant set of the prim.
+    mutating func list_sets(index: const PrimIndex*, path: u32) -> !:
+        let composer = self.composer
+        let names = composer.names
+        var order = Growing[u32]()
+        defer order.close()
+        try index.order(&order, true)
+        # variantSetNames composed weakest first across the prim's specs.
+        var sets = Growing[ListItem]()
+        defer sets.close()
+        var at = order.count
+        while at > 0:
+            at -= 1
+            let node = index.node(order.items[at])
+            if not node.contributes(): continue
+            let layers = composer.stacks.stack(node.stack).layers.view()
+            var position = layers.length
+            while position > 0:
+                position -= 1
+                let data = composer.layers.layer(layers[position])
+                let spec = data.find(node.path) else continue
+                let field = data.get(spec, data.keys.variant_set_names) else continue
+                let list = field.list_op() else continue
+                try apply_list_op(list, &sets)
+        for item in sets.view():
+            if self.listed >= most_sets: return
+            self.listed += 1
+            let set = (u32)item.a
+            try names.write_path(path, &self.sets)
+            try self.sets.push(9)
+            try put(&self.sets, names.text_of(set))
+            try self.sets.push(9)
+            try put(&self.sets, names.text_of(summary_selected(names, index, order.view(), set)))
+            try self.sets.push(9)
+            var options = Growing[u32]()
+            defer options.close()
+            try self.options_of(index, order.view(), set, &options)
+            for number in 0..<options.count:
+                if number > 0: try self.sets.push('|')
+                try put(&self.sets, names.text_of(options.items[number]))
+            try self.sets.push(10)
+
+    ## The set's options: variantChildren across the prim's specs, sorted.
+    mutating func options_of(index: const PrimIndex*, order: const u32[], set: u32, out: Growing[u32]*) -> !:
+        let composer = self.composer
+        let names = composer.names
+        for node_index in order:
+            let node = index.node(node_index)
+            if not node.contributes(): continue
+            let set_path = try names.variant(node.path, set, 0)
+            for layer in composer.stacks.stack(node.stack).layers.view():
+                let data = composer.layers.layer(layer)
+                let spec = data.find(set_path) else continue
+                let field = data.get(spec, data.keys.variant_children) else continue
+                for option in field.ids():
+                    var known = false
+                    for held in out.view(): known = known or held == option
+                    if not known: try out.push(option)
+        # By text, as a std::set of strings.
+        for at in 1..<out.count:
+            var move = at
+            while move > 0 and text_less(names.text_of(out.items[move]), names.text_of(out.items[move - 1])):
+                let swap = out.items[move]
+                out.items[move] = out.items[move - 1]
+                out.items[move - 1] = swap
+                move -= 1
+
+## The selection the prim index made for `set` (0: none).
+func summary_selected(names: const Names*, index: const PrimIndex*, order: const u32[], set: u32) -> u32:
+    for node_index in order:
+        let path = index.node(node_index).path
+        if names.kind(path) == PathKind.variant and names.name(path) == set: return names.node(path).extra
+    return 0
+
+## What UsdStage's default predicate asks of a prim: its strongest
+## `active` opinion (true when unauthored) and its specifier, resolved as
+## flattening resolves it (the strongest def, else class, a class from a
+## direct inherit only when nothing defines the prim, else over).
+struct PrimState:
+    var active: bool
+    var specifier: u64
+
+func summary_state(composer: Composer*, index: const PrimIndex*) -> PrimState!:
+    var state = PrimState(active = true, specifier = specifier_over)
+    var active_found = false
+    var specifier_found = false
+    var order = Growing[u32]()
+    defer order.close()
+    try index.order(&order, true)
+    for node_index in order.view():
+        let node = index.node(node_index)
+        if not node.contributes(): continue
+        for layer in composer.stacks.stack(node.stack).layers.view():
+            let data = composer.layers.layer(layer)
+            let spec = data.find(node.path) else continue
+            if not active_found:
+                if let found = data.get(spec, data.keys.active):
+                    state.active = found.as_bool()
+                    active_found = true
+            if not specifier_found:
+                if let found = data.get(spec, data.keys.specifier):
+                    if found.bits != specifier_over:
+                        state.specifier = found.bits
+                        specifier_found = found.bits != specifier_class or not index.due_to_direct_inherit(node_index)
+    return state

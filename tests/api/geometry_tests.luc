@@ -31,3 +31,22 @@ pub func composed_tests() -> unit!:
     assert(loaded.is_empty())
     Usd.flatten("tests/fixtures/openusd/museum/BasicTimeOffset/root.usda", "flat.usda")
     assert(Usd.info("flat.usda").contains("prims: "))
+    stage_option_tests()
+
+## Variant selections and payload masks, and the composition summary the
+## File node shows: the room's table top is a quad or two triangles, its
+## lamp a payload of three triangles, its two chairs instances.
+func stage_option_tests() -> unit!:
+    let room = "tests/fixtures/geom/room.usda"
+    let loaded = Usd.load(room)
+    assert((loaded.mesh() else error(invalid, "no mesh")).face_count() == 4)
+    assert(loaded.instance_count() == 2)
+    let chosen = Usd.load(room, variants = "/Room/Table{ top = triangles }")
+    assert((chosen.mesh() else error(invalid, "no mesh")).face_count() == 5)
+    let bare = Usd.load(room, payloads = "-")
+    assert((bare.mesh() else error(invalid, "no mesh")).face_count() == 1)
+    let lamp = Usd.load(room, payloads = "/Room/Lamp*")
+    assert((lamp.mesh() else error(invalid, "no mesh")).face_count() == 4)
+    assert(Usd.composition(room) == "2\t7\t2\n/Room/Table\ttop\tquad\tquad|triangles\n")
+    let composed = Usd.composition(room, variants = "/Room/Table{top=triangles}", payloads = "-")
+    assert(composed == "1\t5\t2\n/Room/Table\ttop\ttriangles\tquad|triangles\n")

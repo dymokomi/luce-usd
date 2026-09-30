@@ -11,5 +11,7 @@ arcs.lucb
 variants.lucb
 classes.lucb
 instancing.lucb
+session.lucb
 compose.lucb
 report.lucb
+summary.lucb
