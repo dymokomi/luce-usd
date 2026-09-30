@@ -5,7 +5,7 @@ import math
 import memory
 from geocore import Mesh, GeometrySet
 from geocore_growing import Growing
-from geocore_kernel import dispose_set, set_mesh, attribute_entry, corner_span, triangle_span, group_bits, set_find, curves_type, points_component, Curves, PointCloud, AttributeStore, cloud_store, curves_knot_offsets
+from geocore_kernel import dispose_set, set_mesh, group_bits, curves_type, points_component, Curves, PointCloud, AttributeStore, cloud_store, curves_knot_offsets
 from usd_kernel import Composer, anonymous_session, flatten_stage, absolute_path, ImportOptions, ExportOptions, Warnings, import_layer, export_set, write_usda, Names, LayerData, read_usda, read_file, Stage, earliest, gather, Gathered, GprimKind, Matrix4d, local_transform, absolute_root, purpose_render
 
 func near(a: f64, b: f64) -> bool:
@@ -69,7 +69,7 @@ pub func imported() -> !:
     assert(near(tri.x, 6.0) and near(tri.y, 0.0) and near(tri.z, 0.0))
     let path = mesh.find_attribute("path", 2)
     assert(path >= 0)
-    let entry = try attribute_entry(mesh, path)
+    let entry = try mesh.attribute_entry(path)
     assert(entry.text_at(0) == "/World/Quad" and entry.text_at(1) == "/World/Reset/Tri")
     let color = mesh.find_attribute("Cd", 3)
     assert(color >= 0 and near(try mesh.attribute_value(color, 0, 0), 1.0))
@@ -113,7 +113,7 @@ func number(mesh: const Mesh*, name: str, domain: i64, element: i64, component: 
 func text_at(mesh: const Mesh*, name: str, domain: i64, element: usize) -> str!:
     let index = mesh.find_attribute(name, domain)
     assert(index >= 0)
-    return (try attribute_entry(mesh, index)).text_at(element)
+    return (try mesh.attribute_entry(index)).text_at(element)
 
 func in_group(mesh: const Mesh*, name: str, domain: i64, element: usize) -> bool!:
     let index = mesh.find_attribute(name, domain)
@@ -128,7 +128,7 @@ pub func mesh_features() -> !:
 func check_features(mesh: const Mesh*, set: const GeometrySet*, names: const Names*) -> !:
     # Left keeps two of its faces; Moving adds one.
     assert(mesh.face_count() == 3 and mesh.point_count() == 8)
-    let corners = corner_span(mesh)
+    let corners = mesh.corner_span()
     # The left-handed quad reversed after its first corner.
     assert(corners[0] == 0 and corners[1] == 3 and corners[2] == 2 and corners[3] == 1)
     assert(corners[7] == 5 and corners[8] == 6 and corners[9] == 7)
@@ -217,7 +217,7 @@ pub func curves_and_points() -> !:
     defer dispose_set(set)
     if warnings.text.count > 0: print((str)warnings.text.view())
     assert(warnings.text.count == 0 and set_mesh(set) == none)
-    let curves = (const Curves*)(set_find(set, curves_type()) else trap("no curves"))
+    let curves = (const Curves*)(set.find(curves_type()) else trap("no curves"))
     # 2 lines, 1 Bezier (2 control points), 1 spline, 1 NURBS arc.
     assert(curves.curve_count() == 5 and curves.point_count() == 5 + 2 + 4 + 3)
     let lifted = curves.point(0)
@@ -232,7 +232,7 @@ pub func curves_and_points() -> !:
     assert(near(store_number(store, "handle_r", 0, 5, 0), 1.0) and near(store_number(store, "handle_l", 0, 5, 0), -1.0) and near(store_number(store, "handle_l", 0, 5, 1), -1.0))
     assert(near(store_number(store, "w", 0, 12, 0), 0.70710678) and near(store_number(store, "w", 0, 0, 0), 1.0))
     assert(near(store_number(store, "width", 2, 1, 0), 0.5) and near(store_number(store, "Cd", 2, 1, 1), 1.0))
-    let cloud = (const PointCloud*)(set_find(set, points_component()) else trap("no points"))
+    let cloud = (const PointCloud*)(set.find(points_component()) else trap("no points"))
     assert(cloud.count() == 2)
     let points_store = cloud_store(cloud)
     assert(near(store_number(points_store, "width", 0, 1, 0), 0.2) and near(store_number(points_store, "id", 0, 1, 0), 11.0))
@@ -325,8 +325,8 @@ func same_meshes(first: const GeometrySet*, second: const GeometrySet*) -> !:
         assert(near(try number(a, "tag", 2, (i64)face, 0), try number(b, "tag", 2, (i64)face, 0)))
         assert((try in_group(a, "top", 2, face)) == (try in_group(b, "top", 2, face)))
         assert((try in_group(a, "hole", 2, face)) == (try in_group(b, "hole", 2, face)))
-    let ca = corner_span(a)
-    let cb = corner_span(b)
+    let ca = a.corner_span()
+    let cb = b.corner_span()
     for corner in 0..<ca.length:
         let pa = try a.point((i64)ca[corner])
         let pb = try b.point((i64)cb[corner])
@@ -341,7 +341,7 @@ func same_meshes(first: const GeometrySet*, second: const GeometrySet*) -> !:
     assert(near(try sum_of(a, a.find_attribute("corner_sharpness", 0)), try sum_of(b, b.find_attribute("corner_sharpness", 0))))
 
 func sum_of(mesh: const Mesh*, index: i64) -> f64!:
-    let entry = try attribute_entry(mesh, index)
+    let entry = try mesh.attribute_entry(index)
     var total: f64 = 0.0
     for element in 0..<entry.elements: total += entry.number(element, 0)
     return total
@@ -352,8 +352,8 @@ pub func elements_round_trip() -> !:
     try round_trip("instancer.usda", same_instances)
 
 func same_curves(first: const GeometrySet*, second: const GeometrySet*) -> !:
-    let a = (const Curves*)(set_find(first, curves_type()) else trap("no curves"))
-    let b = (const Curves*)(set_find(second, curves_type()) else trap("no curves"))
+    let a = (const Curves*)(first.find(curves_type()) else trap("no curves"))
+    let b = (const Curves*)(second.find(curves_type()) else trap("no curves"))
     assert(a.curve_count() == b.curve_count() and a.point_count() == b.point_count())
     for point in 0..<a.point_count():
         let pa = a.point(point)
@@ -362,8 +362,8 @@ func same_curves(first: const GeometrySet*, second: const GeometrySet*) -> !:
     for name in ["curve_type", "order", "knot_mode"]:
         for curve in 0..<a.curve_count(): assert(near(store_number(a.store(), name, 2, curve, 0), store_number(b.store(), name, 2, curve, 0)))
     assert(near(store_number(b.store(), "w", 0, 12, 0), 0.70710678))
-    let pa = cloud_store((const PointCloud*)(set_find(first, points_component()) else trap("no points")))
-    let pb = cloud_store((const PointCloud*)(set_find(second, points_component()) else trap("no points")))
+    let pa = cloud_store((const PointCloud*)(first.find(points_component()) else trap("no points")))
+    let pb = cloud_store((const PointCloud*)(second.find(points_component()) else trap("no points")))
     assert(near(store_number(pa, "id", 0, 1, 0), store_number(pb, "id", 0, 1, 0)) and near(store_number(pb, "width", 0, 1, 0), 0.2))
 
 func same_instances(first: const GeometrySet*, second: const GeometrySet*) -> !:
@@ -389,8 +389,8 @@ func same_big_faces(first: const GeometrySet*, second: const GeometrySet*) -> !:
 
 func check_big_faces(mesh: const Mesh*) -> !:
     assert(mesh.face_count() == 2 and (try mesh.face_size(0)) == 1000 and (try mesh.face_size(1)) == 1000)
-    let triangles = triangle_span(mesh)
-    let corners = corner_span(mesh)
+    let triangles = mesh.triangle_span()
+    let corners = mesh.corner_span()
     assert(triangles.length == 2 * 998 * 3)
     for face in 0..<(usize)2:
         # The left-handed copy is reversed, so it faces -z.
@@ -425,8 +425,8 @@ pub func folded_faces() -> !:
     let flat = try mesh.face_normal(2)
     assert(flat.x == 0.0 and flat.y == 0.0 and flat.z == 0.0)
     assert(contains((str)warnings.text.view(), "1 faces have no area"))
-    let triangles = triangle_span(mesh)
-    let corners = corner_span(mesh)
+    let triangles = mesh.triangle_span()
+    let corners = mesh.corner_span()
     assert(triangles.length == 8 * 3)
     var area: f64 = 0.0
     for at in 0..<(usize)4:

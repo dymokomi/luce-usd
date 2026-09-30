@@ -24,9 +24,9 @@ func export_cad(set: const GeometrySet*, author: Author*, base: u32, home: u32, 
     for reference in set_models(set):
         let model = reference.value()
         for face in 0..<model.face_count():
-            var support = try face_support(model, face)
+            var support = try model.face_support(face)
             defer support.close()
-            face_trim_uv(model, face, cad_divisions, &uv, &sizes) catch failure:
+            model.face_trim_uv(face, cad_divisions, &uv, &sizes) catch failure:
                 if failure.code == memory.exhausted: error(failure.code, failure.message)
                 skipped += 1
                 continue

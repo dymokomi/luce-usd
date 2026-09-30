@@ -19,7 +19,7 @@ extend MeshExport:
             if list.attribute == attribute: return list.edges.view()
         var edges = Growing[u32]()
         errdefer edges.close()
-        let entry = try attribute_entry(self.mesh, attribute)
+        let entry = try self.mesh.attribute_entry(attribute)
         if entry.is_group():
             let bits = Bits.of_bytes(entry.data.view(), entry.elements)
             for edge in 0..<entry.elements:
@@ -38,7 +38,7 @@ func write_subsets(work: MeshExport*, part: const MeshPart*, spec: usize, number
     var name = Growing[u8]()
     defer name.close()
     for index in 0..<(usize)mesh.attribute_count():
-        let entry = try attribute_entry(mesh, (i64)index)
+        let entry = try mesh.attribute_entry((i64)index)
         if not entry.is_group() or entry.name() == "hole": continue
         let bits = Bits.of_bytes(entry.data.view(), entry.elements)
         members.clear()
@@ -53,7 +53,7 @@ func write_subsets(work: MeshExport*, part: const MeshPart*, spec: usize, number
                     if bits.get(part.point_at(at)): try members.push((i32)at)
             .edge:
                 element = "edge"
-                let pairs = try edge_span(mesh)
+                let pairs = try mesh.edge_span()
                 for edge in try work.marked_edges((i64)index):
                     let a = local_point(part, numbers, (usize)pairs[edge * 2])
                     let b = local_point(part, numbers, (usize)pairs[edge * 2 + 1])
@@ -88,7 +88,7 @@ func subset_family(mesh: const Mesh*, name: str) -> str!:
     if label.count > 64: return ""
     let found = mesh.find_attribute((str)label.view(), (i64)(u8)Domain.detail)
     if found < 0: return ""
-    let entry = try attribute_entry(mesh, found)
+    let entry = try mesh.attribute_entry(found)
     if entry.kind != DataType.text: return ""
     return entry.text_at(0)
 
@@ -109,8 +109,8 @@ func write_subdivision(work: MeshExport*, part: const MeshPart*, spec: usize, nu
     defer values.close()
     let crease = mesh.find_attribute("crease", (i64)(u8)Domain.edge)
     if crease >= 0:
-        let pairs = try edge_span(mesh)
-        let entry = try attribute_entry(mesh, crease)
+        let pairs = try mesh.edge_span()
+        let entry = try mesh.attribute_entry(crease)
         for edge in try work.marked_edges(crease):
             let sharpness = entry.number(edge, 0)
             let a = local_point(part, numbers, (usize)pairs[edge * 2])
@@ -130,7 +130,7 @@ func write_subdivision(work: MeshExport*, part: const MeshPart*, spec: usize, nu
     values.clear()
     let corner = mesh.find_attribute("corner_sharpness", (i64)(u8)Domain.point)
     if corner >= 0:
-        let entry = try attribute_entry(mesh, corner)
+        let entry = try mesh.attribute_entry(corner)
         for at in 0..<part.point_count():
             let sharpness = entry.number(part.point_at(at), 0)
             if sharpness <= 0.0: continue
@@ -142,7 +142,7 @@ func write_subdivision(work: MeshExport*, part: const MeshPart*, spec: usize, nu
     indices.clear()
     let hole = mesh.find_attribute("hole", (i64)(u8)Domain.face)
     if hole >= 0:
-        let entry = try attribute_entry(mesh, hole)
+        let entry = try mesh.attribute_entry(hole)
         let bits = Bits.of_bytes(entry.data.view(), entry.elements)
         for at in 0..<part.faces.count:
             if bits.get((usize)part.faces.items[at]): try indices.push((i32)at)
@@ -159,7 +159,7 @@ func write_binding(work: MeshExport*, part: const MeshPart*, spec: usize) -> !:
     let mesh = work.mesh
     let found = mesh.find_attribute("material", (i64)(u8)Domain.face)
     if found < 0: return
-    let entry = try attribute_entry(mesh, found)
+    let entry = try mesh.attribute_entry(found)
     var materials = Growing[u32]()
     defer materials.close()
     var faces_of = Growing[i32]()

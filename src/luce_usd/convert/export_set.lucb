@@ -25,8 +25,8 @@ pub func export_set(set: const GeometrySet*, layer: LayerData*, root: str, optio
 ## `set`'s components under `base`; elements without paths under `home`.
 func export_into(set: const GeometrySet*, author: Author*, base: u32, home: u32, options: const ExportOptions*, warnings: Warnings*, depth: usize) -> !:
     let names = author.names
-    for index in 0..<set_component_count(set):
-        let component = set_component(set, index)
+    for index in 0..<set.component_count():
+        let component = set.component(index)
         let kind = component.kind
         if kind == mesh_component():
             try export_mesh((const Mesh*)component.data, author, base, try names.child(home, try names.token("mesh")), options, warnings)

@@ -81,7 +81,7 @@ func export_mesh(mesh: const Mesh*, author: Author*, base: u32, fallback: u32, o
             # The whole mesh: its own point and corner numbering.
             part.whole = true
             part.all_points = (usize)mesh.point_count()
-            part.all_corners = corner_span(mesh).length
+            part.all_corners = mesh.corner_span().length
         else:
             try number_points(mesh, part, (i32)at, numbers.span(), stamp.span())
         try write_part(&work, part, numbers.view())
@@ -99,7 +99,7 @@ func split_faces(mesh: const Mesh*, author: Author*, base: u32, fallback_path: u
         try parts.push(MeshPart(path = fallback_path, faces = Growing[i32](), points = Growing[i32](), corners = Growing[i32](), whole = false, all_points = 0, all_corners = 0))
         for face in 0..<faces: try parts.items[0].faces.push((i32)face)
         return
-    let entry = try attribute_entry(mesh, found)
+    let entry = try mesh.attribute_entry(found)
     let values = i32[]((i32*)entry.data.view().data, faces)
     # One part per distinct text: table index → part.
     var part_of = Growing[i32]()
@@ -145,8 +145,8 @@ func prim_path_of(names: Names*, base: u32, text: str) -> u32!:
 
 ## The part's points in first-use order and its corners.
 func number_points(mesh: const Mesh*, part: MeshPart*, id: i32, numbers: i32[], stamp: i32[]) -> !:
-    let offsets = offset_span(mesh)
-    let corners = corner_span(mesh)
+    let offsets = mesh.offset_span()
+    let corners = mesh.corner_span()
     for face in part.faces.view():
         for corner in offsets[(usize)face]..<offsets[(usize)face + 1]:
             let point = (usize)corners[(usize)corner]
@@ -162,8 +162,8 @@ func write_part(work: MeshExport*, part: const MeshPart*, numbers: const i32[]) 
     let t = work.tokens
     let spec = try author.define(part.path, t.mesh, t.xform)
     let mesh = work.mesh
-    let origin = mesh_origin(mesh)
-    let positions = point_span(mesh)
+    let origin = mesh.position_origin()
+    let positions = mesh.point_span()
     let points = part.point_count()
     # Points, placed back at the origin, and the extent.
     var low: f64[3] = [math.infinity, math.infinity, math.infinity]
@@ -182,7 +182,7 @@ func write_part(work: MeshExport*, part: const MeshPart*, numbers: const i32[]) 
             else: memory.write[f32]((void*)&out[(at * 3 + axis) * 4], (f32)xyz[axis])
     let taken = column.take()
     discard(try author.attribute(part.path, spec, "points", "point3d[]" if precise else "point3f[]", false, Value.of_array(ValueKind.vec3d if precise else ValueKind.vec3f, points, taken)))
-    let offsets = offset_span(mesh)
+    let offsets = mesh.offset_span()
     var counts = try Column[u8].allocate(part.faces.count * 4)
     errdefer counts.release()
     let count_out = i32[]((i32*)counts.span().data, part.faces.count)
@@ -191,7 +191,7 @@ func write_part(work: MeshExport*, part: const MeshPart*, numbers: const i32[]) 
         count_out[at] = offsets[face + 1] - offsets[face]
     let counts_taken = counts.take()
     discard(try author.attribute(part.path, spec, "faceVertexCounts", "int[]", false, Value.of_array(ValueKind.int, part.faces.count, counts_taken)))
-    let corners = corner_span(mesh)
+    let corners = mesh.corner_span()
     let corner_total = part.corner_count()
     var indices = try Column[u8].allocate(corner_total * 4)
     errdefer indices.release()
@@ -204,7 +204,7 @@ func write_part(work: MeshExport*, part: const MeshPart*, numbers: const i32[]) 
     let extent: f32[6] = [(f32)low[0], (f32)low[1], (f32)low[2], (f32)high[0], (f32)high[1], (f32)high[2]]
     discard(try author.attribute(part.path, spec, "extent", "float3[]", false, try array_of(ValueKind.vec3f, 2, u8[]((u8*)&extent[0], 24))))
     for index in 0..<(usize)mesh.attribute_count():
-        try write_primvar(work, part, spec, try attribute_entry(mesh, (i64)index))
+        try write_primvar(work, part, spec, try mesh.attribute_entry((i64)index))
     try write_subsets(work, part, spec, numbers)
     try write_subdivision(work, part, spec, numbers)
     try write_binding(work, part, spec)
