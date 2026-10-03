@@ -1,7 +1,7 @@
 # USD and GeometrySet
 
 How `Usd.load` turns a stage into a luce-geocore `GeometrySet`, and how
-`Usd.save` writes one back. The code is in `src/luce_usd/convert/`.
+`Usd.save` writes one back. The code is in `src/convert/`.
 
 ## Loading
 

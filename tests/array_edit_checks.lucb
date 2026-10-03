@@ -3,8 +3,8 @@
 ## it, a crate round trip, and edits applied as UsdStage's flatten applies
 ## them over an empty array.
 import memory
-from usd_kernel import Names, Value, ValueKind, LayerData, read_usda, write_usda, read_usdc, write_usdc, apply_array_edit, same_value
-from geocore_growing import Growing
+from luce_usd.kernel import Names, Value, ValueKind, LayerData, read_usda, write_usda, read_usdc, write_usdc, apply_array_edit, same_value
+from luce_geocore.core.growing import Growing
 
 let source = "#usda 1.2\n\nover \"foo\"\n{\n    int[] iattr = edit [\n        write [0] to [1]\n        write 123 to [0]\n        append [-1]\n        append 234\n        append 56\n        append 80\n        prepend [63]\n    ]\n    bool[] battr = edit [write true to [0]; write false to [1]; write [1] to [2]; write yes to [-1]; write no to [-2]; prepend 1; append 0; prepend [0]; append [1]; erase [3]; erase [3]; minsize 100 fill yes; resize 200 fill no; maxsize 150; minsize 300; maxsize 10]\n    string[] sattr = edit [minsize 4; append \"hello world\"; insert 'x' at [1]]\n}\n"
 

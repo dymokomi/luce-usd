@@ -2,8 +2,8 @@
 ## values share and release (composites included) without leaks, list ops
 ## apply as SdfListOp does, and layers find, set and erase fields.
 import memory
-from usd_kernel import Names, ValueKind, Role, find_type, element_bytes, Value, Dictionary, ListOp, ListItem, ListPart, TimeSamples, same_value, array_column, apply_list_op, LayerData, SpecType, absolute_root, invalid
-from geocore_growing import Growing
+from luce_usd.kernel import Names, ValueKind, Role, find_type, element_bytes, Value, Dictionary, ListOp, ListItem, ListPart, TimeSamples, same_value, array_column, apply_list_op, LayerData, SpecType, absolute_root, invalid
+from luce_geocore.core.growing import Growing
 
 func item(a: u64) -> ListItem:
     return ListItem(a = a, b = 0, offset = 0.0, scale = 1.0, custom = none)

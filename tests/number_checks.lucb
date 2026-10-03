@@ -1,8 +1,8 @@
 ## usda number text against reference cases (tests/number_cases.lucb, made
 ## by generate_number_cases.py): shortest doubles and floats laid out as
 ## TfStringify does, halves as "%g", and correctly rounded parsing.
-from usd_kernel import write_double, write_float, write_half, parse_number
-from geocore_growing import Growing
+from luce_usd.kernel import write_double, write_float, write_half, parse_number
+from luce_geocore.core.growing import Growing
 import number_cases
 
 pub func exercise() -> !:

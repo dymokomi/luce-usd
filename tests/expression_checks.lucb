@@ -1,7 +1,7 @@
 ## Variable expressions (sdf/expressions.lucb) against the behaviour of
 ## OpenUSD's SdfVariableExpression: substitution, functions, lists, typed
 ## results, nested and circular variables, and syntax errors.
-from usd_kernel import Names, Value, ValueKind, Dictionary, Evaluated, ExpressionKind, evaluate_expression, expression_string
+from luce_usd.kernel import Names, Value, ValueKind, Dictionary, Evaluated, ExpressionKind, evaluate_expression, expression_string
 
 ## A dictionary value of expression variables.
 func variables(names: Names*) -> Value!:

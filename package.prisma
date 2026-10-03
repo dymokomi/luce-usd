@@ -1,35 +1,30 @@
 #prisma 4.0
 def package "luce-usd" {
     str owner = "dymokomi"
-    str version = "0.5.0"
+    str version = "0.6.0"
     str kind = "package"
     str language = "luce-base"
     str readme = "README.md"
     str description = "Universal Scene Description in Luce Base: usda, usdc and usdz reading and writing, composition, and luce-geocore GeometrySet conversion. A rewrite of Pixar's OpenUSD; Apache-2.0."
-    def export "usd" {
-        str module = "luce_usd.usd"
-    }
-    def export "usd_kernel" {
-        str module = "luce_usd.kernel"
-    }
+    str[] public = ["usd", "kernel"]
     def dependency "luce-geocore" {
         str owner = "dymokomi"
-        str version = "^0.3.0"
+        str version = "^0.4.0"
         str path = "../luce-geocore"
     }
     def dependency "luce-compress" {
         str owner = "dymokomi"
-        str version = "^0.3.0"
+        str version = "^0.4.0"
         str path = "../luce-compress"
     }
     def dependency "luce-cad" {
         str owner = "dymokomi"
-        str version = "^0.5.0"
+        str version = "^0.6.0"
         str path = "../luce-cad"
     }
     def dependency "luce-std" {
         str owner = "dymokomi"
-        str version = "^0.1.0"
+        str version = "^0.2.0"
         str path = "../luce-std"
     }
 }

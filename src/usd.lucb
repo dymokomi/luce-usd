@@ -1,0 +1,222 @@
+## The luce-usd export: Universal Scene Description for Luce. Loading and
+## saving luce-geocore GeometrySets as .usda, .usdc and .usdz files, and
+## layer-level conversion. Everything here is a thin entry point; the work
+## is in the sdf/, usda/, usdc/, usdz/, stage/, usd_geom/ and convert/
+## modules.
+import interop
+import luce_std.math
+import memory
+import errors
+import source
+import sniff
+import usda.reader as usda_reader
+import usda.writer as usda_writer
+import usdc.reader as usdc_reader
+import usdc.writer as usdc_writer
+import usdz.package as usdz
+import convert
+import layer_info
+import ar
+import pcp
+import flatten as flattening
+from sdf.names import Names
+from sdf.layer_data import LayerData
+from luce_geocore.geocore import GeometrySet
+from luce_geocore.kernel import adopt_set, dispose_set
+from luce_geocore.core.growing import Growing
+
+## The last load's or save's warnings on this thread, up to 4 KiB of
+## whole lines.
+local var last_warnings: u8[4096]
+local var last_length: usize
+
+pub struct Usd:
+    let reserved: u8 = 0
+
+    ## The serialization the file at `path` holds, by its signature: "usda",
+    ## "usdc" or "usdz". Fails on a file that is none of them.
+    pub static func serialization(path: str) -> interop.Owned[str]!:
+        var prefix: u8[8]
+        let count = try source.read_prefix(path, prefix[..<8])
+        let found = try sniff.detect(prefix[..<count])
+        return try interop.copy_text(sniff.extension(found))
+
+    ## The stage of the layer at `path` as a GeometrySet (design §2): meshes,
+    ## points, curves and point instancers at `time` (NaN: the layer's
+    ## startTimeCode, else each attribute's first sample). `flatten` bakes
+    ## instances into the other components; `purposes` adds render (1),
+    ## proxy (2) and guide (4) prims to the default ones; `convert_units`
+    ## turns a Z-up stage Y-up and scales it to meters; `subdivide` shows
+    ## meshes that author no subdivisionScheme as Catmull-Clark surfaces, as
+    ## USD's default says. `variants` selects variants in the stage's
+    ## session layer ("/Kitchen{look=clean} /Chair{size=big}"); a non-empty
+    ## `payloads` loads only the payloads of prims whose path matches one of
+    ## its blank-separated globs ("-" loads none). What was left out is in
+    ## `warnings()`.
+    pub static func load(path: str, time: f64 = math.nan, flatten: bool = false, purposes: i64 = 0, convert_units: bool = false, subdivide: bool = true, variants: str = "", payloads: str = "") -> interop.Reference[GeometrySet]!:
+        var names = try Names()
+        defer names.close()
+        var identifier = Growing[u8]()
+        defer identifier.close()
+        try ar.absolute(path, &identifier)
+        var composer = try pcp.Composer(&names, (str)identifier.view(), pcp.anonymous_session)
+        defer composer.close()
+        try composer.select_variants(variants)
+        try composer.include_payloads_matching(payloads)
+        # A lone layer is the stage; otherwise the composed stage, flattened.
+        var flattened = try LayerData(&names)
+        defer flattened.close()
+        var layer: const LayerData* = composer.root_layer()
+        if not composer.is_single_layer():
+            # Instances become the instances component, each prototype once;
+            # flattening everything expands them among the other gprims.
+            try flattening.flatten_stage(&composer, &flattened, false, not flatten)
+            layer = &flattened
+        var warnings = convert.Warnings()
+        defer warnings.close()
+        # usd_geom's purpose bits: default 1, render 2, proxy 4, guide 8.
+        let bits = (u8)((purposes & 7) << 1)
+        let options = convert.ImportOptions(time = time, realize = flatten, purposes = bits, convert_units = convert_units, subdivide_unauthored = subdivide)
+        let set = try convert.import_layer(layer, &options, &warnings)
+        errdefer dispose_set(set)
+        remember(&warnings)
+        return try adopt_set(set)
+
+    ## Write `set` to `path` as the extension says: .usda text, .usdc or .usd
+    ## crate, .usdz package. Elements go to prims named by their `path`
+    ## attribute (`split`), the rest under the root prim `root`; `precise`
+    ## writes double-precision points. What was left out is in `warnings()`.
+    pub static func save(set: interop.Reference[GeometrySet], path: str, root: str = "geo", split: bool = true, precise: bool = false) -> !:
+        var names = try Names()
+        defer names.close()
+        var layer = try LayerData(&names)
+        defer layer.close()
+        var warnings = convert.Warnings()
+        defer warnings.close()
+        let options = convert.ExportOptions(split = split, precise = precise)
+        try convert.export_set(try set.get(), &layer, root, &options, &warnings)
+        try write_layer(&layer, path)
+        remember(&warnings)
+
+    ## Rewrite the layer at `source_path` to `destination` in the format
+    ## its extension names, keeping everything the layer holds.
+    pub static func convert(source_path: str, destination: str) -> !:
+        var names = try Names()
+        defer names.close()
+        var layer = try LayerData(&names)
+        defer layer.close()
+        try read_layer(source_path, &layer)
+        try write_layer(&layer, destination)
+
+    ## Write the stage of the layer at `source_path` to `destination`
+    ## composed into one layer (as usdcat --flatten does), in the format the
+    ## extension names.
+    pub static func flatten(source_path: str, destination: str) -> !:
+        var names = try Names()
+        defer names.close()
+        var identifier = Growing[u8]()
+        defer identifier.close()
+        try ar.absolute(source_path, &identifier)
+        var composer = try pcp.Composer(&names, (str)identifier.view(), pcp.anonymous_session)
+        defer composer.close()
+        var flattened = try LayerData(&names)
+        defer flattened.close()
+        try flattening.flatten_stage(&composer, &flattened, true, true)
+        try write_layer(&flattened, destination)
+
+    ## The composition of the stage at `path` as the File node shows it,
+    ## with the `variants` and `payloads` of load: a first line "layers\t
+    ## prims\tinstances" (the layer files read, the active prims and the
+    ## instances among them), then a line "prim\tset\tselection\t
+    ## option|option|..." per variant set on the default prim and below it.
+    pub static func composition(path: str, variants: str = "", payloads: str = "") -> interop.Owned[str]!:
+        var names = try Names()
+        defer names.close()
+        var identifier = Growing[u8]()
+        defer identifier.close()
+        try ar.absolute(path, &identifier)
+        var composer = try pcp.Composer(&names, (str)identifier.view(), pcp.anonymous_session)
+        defer composer.close()
+        try composer.select_variants(variants)
+        try composer.include_payloads_matching(payloads)
+        var out = Growing[u8]()
+        defer out.close()
+        try pcp.summarize(&composer, &out)
+        return try interop.copy_text((str)out.view())
+
+    ## A summary of the layer at `path`, one "key: value" per line: its
+    ## serialization, default prim, up axis, units, time range and prim
+    ## counts by type.
+    pub static func info(path: str) -> interop.Owned[str]!:
+        var names = try Names()
+        defer names.close()
+        var layer = try LayerData(&names)
+        defer layer.close()
+        let found = try read_layer(path, &layer)
+        var out = Growing[u8]()
+        defer out.close()
+        try layer_info.describe(&layer, sniff.extension(found), &out)
+        return try interop.copy_text((str)out.view())
+
+    ## The warnings of this thread's last load or save, one per line.
+    pub static func warnings() -> interop.Owned[str]!:
+        return try interop.copy_text((str)last_warnings[..<last_length])
+
+func remember(warnings: const convert.Warnings*):
+    let text = warnings.text.view()
+    var length = text.length
+    if length > last_warnings.length:
+        length = last_warnings.length
+        while length > 0 and text[length - 1] != 10: length -= 1
+    memory.copy(last_warnings[..<length], text[..<length], length)
+    last_length = length
+
+## Read the layer at `path` (any serialization) into `layer`; its format.
+func read_layer(path: str, layer: LayerData*) -> sniff.Format!:
+    let data = try source.read(path)
+    defer free(data) in memory.heap
+    let found = try sniff.detect(data[..<(data.length if data.length < 8 else 8)])
+    match found:
+        .usdc: try usdc_reader.read_usdc(data, layer)
+        .usdz: try usdz.read_usdz(data, layer)
+        _: try usda_reader.read_usda(data, layer)
+    return found
+
+## Write `layer` to `path` in the format its extension names.
+func write_layer(layer: const LayerData*, path: str) -> !:
+    var out = Growing[u8]()
+    defer out.close()
+    if ends_with(path, ".usda"): try usda_writer.write_usda(layer, &out)
+    elif ends_with(path, ".usdc") or ends_with(path, ".usd"): try usdc_writer.write_usdc(layer, &out)
+    elif ends_with(path, ".usdz"):
+        var no_files: usdz.PackageFile[]
+        try usdz.write_usdz(layer, try root_name(path), no_files, &out)
+    else: error(errors.unsupported, "save to a .usda, .usdc, .usd or .usdz path")
+    try source.write(path, out.view())
+
+## A package's root layer name: the file's stem as a crate.
+func root_name(path: str) -> str!:
+    var start = path.length
+    while start > 0 and path.bytes[start - 1] != '/' and path.bytes[start - 1] != '\\': start -= 1
+    let stem = (str)path.bytes[start..<path.length - 5]
+    if stem.length == 0 or stem.length > 200: return "root.usdc"
+    var index: usize = 0
+    for byte in stem.bytes:
+        name_buffer[index] = byte
+        index += 1
+    for byte in ".usdc".bytes:
+        name_buffer[index] = byte
+        index += 1
+    return (str)name_buffer[..<index]
+
+## Where root_name builds its answer (it outlives the call).
+local var name_buffer: u8[256]
+
+## Whether `text` ends with the lowercase `suffix`, ignoring ASCII case.
+func ends_with(text: str, suffix: str) -> bool:
+    if text.length < suffix.length: return false
+    let tail = text.bytes[text.length - suffix.length..]
+    for at in 0..<suffix.length:
+        let byte = tail[at] + 32 if tail[at] >= 'A' and tail[at] <= 'Z' else tail[at]
+        if byte != suffix.bytes[at]: return false
+    return true

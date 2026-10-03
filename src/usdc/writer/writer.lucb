@@ -1,0 +1,331 @@
+## The usdc writer: LayerData into a crate file, after OpenUSD's
+## crateFile.cpp packing (CrateFile::_Write, _AddSpec, _PackValue): the
+## bootstrap, the values each field holds, then the TOKENS, STRINGS,
+## FIELDS, FIELDSETS, PATHS and SPECS sections (integer-compressed, as from
+## 0.4.0) and the table of contents. Files are version 0.8.0, raised to
+## 0.9.0 for time codes, 0.10.0 for path expressions, 0.11.0 for layer
+## relocates, 0.12.0 to 0.15.0 for splines and 0.14.0 for array edits, as
+## OpenUSD raises them.
+##
+## Tokens, strings, paths, fields and field sets are shared through dense
+## tables over the load's ids; arrays sharing one column are written once.
+## Large integer and float arrays are compressed in parallel before packing.
+##
+## Fragments, in ORDER:
+##
+## writer.lucb    the CrateWriter state, the entry point, the index tables
+## values.lucb    packing a value into a ValueRep and its bytes
+## arrays.lucb    arrays, their compression and the parallel pre-pass
+## sections.lucb  the structural sections, the path tree and the bootstrap
+## splines.lucb   spline values
+## array_edits.lucb  array edit values
+import memory
+import errors
+import usdc.compression
+from sdf.names import Names, PathKind, absolute_root, relative_root, empty_path
+from sdf.layer_data import LayerData, Spec, SpecType
+from sdf.values import Value, Dictionary, ListOp, ListItem, ListPart, TimeSamples, Spline, CurveType, ExtrapolationMode, TangentAlgorithm, ArrayEdit
+from sdf.value_types import ValueKind, element_bytes, components, scalar_of
+from luce_geocore.core.shared import Column
+from luce_geocore.core.growing import Growing
+import luce_geocore.core.parallel as pool
+
+## The crate version new files take.
+let base_minor: u8 = 8
+
+## Append the crate of `layer` to `out`.
+pub func write_usdc(layer: const LayerData*, out: Growing[u8]*) -> !:
+    var writer = try CrateWriter(layer, out)
+    defer writer.close()
+    try writer.write()
+
+## A field: its token index and ValueRep.
+struct CrateField:
+    var token: u32
+    var rep: u64
+
+## A spec: path index, field set index, spec type.
+struct CrateSpecRecord:
+    var path: u32
+    var field_set: u32
+    var kind: u32
+
+struct CrateWriter:
+    var layer: const LayerData*
+    var names: Names*
+    var out: Growing[u8]*
+    var start: usize
+    var minor: u8
+    ## Token id to crate token index + 1, and crate token order.
+    var token_slots: Growing[u32]
+    var tokens: Growing[u32]
+    ## Token id to crate string index + 1, and each string's token index.
+    var string_slots: Growing[u32]
+    var strings: Growing[u32]
+    ## Path id to crate path index + 1, and crate path order.
+    var path_slots: Growing[u32]
+    var paths: Growing[u32]
+    var fields: Growing[CrateField]
+    ## Field dedup: slot to field index + 1.
+    var field_slots: Growing[u32]
+    var field_sets: Growing[u32]
+    ## Field set dedup: slot to the set's start + 1.
+    var set_slots: Growing[u32]
+    var specs: Growing[CrateSpecRecord]
+    ## Arrays already written, by column id: their reps.
+    var array_ids: Growing[u64]
+    var array_reps: Growing[u64]
+    ## Compressed array payloads prepared in parallel, by column id.
+    var prepared: Growing[Prepared]
+
+    func init(layer: const LayerData*, out: Growing[u8]*) -> !:
+        self.layer = layer
+        self.names = layer.names
+        self.out = out
+        self.start = out.count
+        self.minor = base_minor
+        self.token_slots = Growing[u32]()
+        self.tokens = Growing[u32]()
+        self.string_slots = Growing[u32]()
+        self.strings = Growing[u32]()
+        self.path_slots = Growing[u32]()
+        self.paths = Growing[u32]()
+        self.fields = Growing[CrateField]()
+        self.field_slots = Growing[u32]()
+        self.field_sets = Growing[u32]()
+        self.set_slots = Growing[u32]()
+        self.specs = Growing[CrateSpecRecord]()
+        self.array_ids = Growing[u64]()
+        self.array_reps = Growing[u64]()
+        self.prepared = Growing[Prepared]()
+
+    mutating func close():
+        self.token_slots.close()
+        self.tokens.close()
+        self.string_slots.close()
+        self.strings.close()
+        self.path_slots.close()
+        self.paths.close()
+        self.fields.close()
+        self.field_slots.close()
+        self.field_sets.close()
+        self.set_slots.close()
+        self.specs.close()
+        self.array_ids.close()
+        self.array_reps.close()
+        for index in 0..<self.prepared.count: self.prepared.items[index].close()
+        self.prepared.close()
+
+    ## Raise the file's version to at least 0.minor.
+    mutating func require(minor: u8):
+        if self.minor < minor: self.minor = minor
+
+    ## The whole file.
+    mutating func write() -> !:
+        # The bootstrap is written last; reserve it.
+        try self.out.extend(self.start + 88, 0)
+        try self.prepare_arrays()
+        for index in 0..<self.layer.spec_count():
+            try self.add_spec(self.layer.spec(index))
+        try self.write_sections()
+
+    ## A spec: its fields packed and deduplicated, its field set added.
+    mutating func add_spec(spec: const Spec*) -> !:
+        var set = Growing[u32]()
+        defer set.close()
+        for field in spec.fields.view():
+            if field.value.kind == ValueKind.empty or field.value.kind == ValueKind.packed: continue
+            # OpenUSD's crate cannot hold a prim's relocates map or a display
+            # unit (a TfEnum); refuse them as it does.
+            if field.name == self.layer.keys.relocates or field.name == self.layer.keys.display_unit:
+                error(errors.unsupported, "a crate cannot hold prim relocates or display units")
+            let token = try self.token(field.name)
+            let rep = try self.pack(&field.value)
+            try set.push(try self.field(CrateField(token = token, rep = rep)))
+        let set_index = try self.field_set(set.view())
+        try self.specs.push(CrateSpecRecord(path = try self.path(spec.path), field_set = set_index, kind = (u32)(u8)spec.kind))
+
+    ## The crate index of token `id`, added when new.
+    mutating func token(id: u32) -> u32!:
+        if (usize)id >= self.token_slots.count: try self.token_slots.extend(self.names.tokens.count() if self.names.tokens.count() > (usize)id else (usize)id + 1, 0)
+        let slot = self.token_slots.items[(usize)id]
+        if slot != 0: return slot - 1
+        let index = (u32)self.tokens.count
+        try self.tokens.push(id)
+        self.token_slots.items[(usize)id] = index + 1
+        return index
+
+    ## The crate string index of the text of token `id`, added when new.
+    mutating func string(id: u32) -> u32!:
+        if (usize)id >= self.string_slots.count: try self.string_slots.extend(self.names.tokens.count() if self.names.tokens.count() > (usize)id else (usize)id + 1, 0)
+        let slot = self.string_slots.items[(usize)id]
+        if slot != 0: return slot - 1
+        let token_index = try self.token(id)
+        let index = (u32)self.strings.count
+        try self.strings.push(token_index)
+        self.string_slots.items[(usize)id] = index + 1
+        return index
+
+    ## The crate index of path `id`, with its ancestors, target paths and
+    ## element tokens added (CrateFile::_AddPath).
+    mutating func path(id: u32) -> u32!:
+        if (usize)id >= self.path_slots.count: try self.path_slots.extend(self.names.path_count() if self.names.path_count() > (usize)id else (usize)id + 1, 0)
+        let slot = self.path_slots.items[(usize)id]
+        if slot != 0: return slot - 1
+        if id == empty_path: error(errors.invalid, "an empty path in a crate spec")
+        let node = self.names.node(id)
+        if node.kind == PathKind.target or node.kind == PathKind.mapper: discard(try self.path(node.element))
+        if id != absolute_root:
+            if node.parent == empty_path or not node.absolute: error(errors.invalid, "a relative path cannot be written to a crate")
+            discard(try self.path(node.parent))
+        discard(try self.token(try self.element_token(id)))
+        let index = (u32)self.paths.count
+        try self.paths.push(id)
+        self.path_slots.items[(usize)id] = index + 1
+        return index
+
+    ## The crate index for a path value: the empty path is index 0 of no
+    ## entry... it is written as the index of a path the tree never fills.
+    mutating func path_value(id: u32) -> u32!:
+        if id == empty_path: return try self.empty_path_index()
+        return try self.path(id)
+
+    ## An index for the empty path: one past the tree, reserved once.
+    mutating func empty_path_index() -> u32!:
+        for index in 0..<self.paths.count:
+            if self.paths.items[index] == empty_path: return (u32)index
+        let index = (u32)self.paths.count
+        try self.paths.push(empty_path)
+        return index
+
+    ## The token a path's last element is stored under: a prim property's
+    ## name, otherwise the element's text ("{set=sel}", "[/target]", ".name").
+    mutating func element_token(id: u32) -> u32!:
+        let node = self.names.node(id)
+        match node.kind:
+            .root: return 0
+            .prim, .property: return node.element
+            _: discard(0)
+        var text = Growing[u8]()
+        defer text.close()
+        match node.kind:
+            .variant:
+                try text.push('{')
+                try put(&text, self.names.text_of(node.element))
+                try text.push('=')
+                try put(&text, self.names.text_of(node.extra))
+                try text.push('}')
+            .target:
+                try text.push('[')
+                try self.names.write_path(node.element, &text)
+                try text.push(']')
+            .mapper:
+                try put(&text, ".mapper[")
+                try self.names.write_path(node.element, &text)
+                try text.push(']')
+            .expression:
+                try put(&text, ".expression")
+            _:
+                try text.push('.')
+                try put(&text, self.names.text_of(node.element))
+        return try self.names.token((str)text.view())
+
+    ## The index of `field`, deduplicated.
+    mutating func field(field: CrateField) -> u32!:
+        if self.field_slots.count == 0 or (self.fields.count + 1) * 2 >= self.field_slots.count:
+            try self.rehash_fields(1024 if self.field_slots.count == 0 else self.field_slots.count * 2)
+        let mask = self.field_slots.count - 1
+        var slot = (usize)field_hash(field) & mask
+        while self.field_slots.items[slot] != 0:
+            let index = self.field_slots.items[slot] - 1
+            let other = self.fields.items[(usize)index]
+            if other.token == field.token and other.rep == field.rep: return index
+            slot = (slot + 1) & mask
+        let index = (u32)self.fields.count
+        try self.fields.push(field)
+        self.field_slots.items[slot] = index + 1
+        return index
+
+    mutating func rehash_fields(capacity: usize) -> !:
+        try self.field_slots.fill(capacity, 0)
+        let mask = capacity - 1
+        for index in 0..<self.fields.count:
+            var slot = (usize)field_hash(self.fields.items[index]) & mask
+            while self.field_slots.items[slot] != 0: slot = (slot + 1) & mask
+            self.field_slots.items[slot] = (u32)index + 1
+
+    ## The start of a field set equal to `set`, added (with its ~0
+    ## terminator) when new.
+    mutating func field_set(set: const u32[]) -> u32!:
+        if self.set_slots.count == 0 or (self.specs.count + 1) * 2 >= self.set_slots.count:
+            try self.rehash_sets(1024 if self.set_slots.count == 0 else self.set_slots.count * 2)
+        let mask = self.set_slots.count - 1
+        var slot = (usize)set_hash(set) & mask
+        while self.set_slots.items[slot] != 0:
+            let start = (usize)self.set_slots.items[slot] - 1
+            if self.same_set(start, set): return (u32)start
+            slot = (slot + 1) & mask
+        let start = self.field_sets.count
+        for index in set: try self.field_sets.push(index)
+        try self.field_sets.push(0xFFFFFFFF)
+        self.set_slots.items[slot] = (u32)start + 1
+        return (u32)start
+
+    func same_set(start: usize, set: const u32[]) -> bool:
+        for index in 0..<set.length:
+            if start + index >= self.field_sets.count or self.field_sets.items[start + index] != set[index]: return false
+        return start + set.length < self.field_sets.count and self.field_sets.items[start + set.length] == 0xFFFFFFFF
+
+    mutating func rehash_sets(capacity: usize) -> !:
+        try self.set_slots.fill(capacity, 0)
+        let mask = capacity - 1
+        var start: usize = 0
+        while start < self.field_sets.count:
+            var end = start
+            while self.field_sets.items[end] != 0xFFFFFFFF: end += 1
+            var slot = (usize)set_hash(self.field_sets.items[start..<end]) & mask
+            while self.set_slots.items[slot] != 0: slot = (slot + 1) & mask
+            self.set_slots.items[slot] = (u32)start + 1
+            start = end + 1
+
+    ## Output helpers: the offset of the next byte, relative to the file.
+    func tell() -> u64:
+        return (u64)(self.out.count - self.start)
+
+    mutating func put_bytes(bytes: const u8[]) -> !:
+        try self.out.reserve(self.out.count + bytes.length)
+        if bytes.length > 0: memory.copy(self.out.items[self.out.count..], bytes, bytes.length)
+        self.out.count += bytes.length
+
+    mutating func put_u64(value: u64) -> !:
+        try self.out.reserve(self.out.count + 8)
+        memory.write[u64]((void*)&self.out.items[self.out.count], value)
+        self.out.count += 8
+
+    mutating func put_u32(value: u32) -> !:
+        try self.out.reserve(self.out.count + 4)
+        memory.write[u32]((void*)&self.out.items[self.out.count], value)
+        self.out.count += 4
+
+    mutating func put_f64(value: f64) -> !:
+        try self.put_u64(value.bits())
+
+    ## Pad with zeros to a multiple of `alignment` from the file's start.
+    mutating func align(alignment: u64) -> !:
+        while self.tell() % alignment != 0: try self.out.push(0)
+
+    ## Write `value` at `offset` (a u64 patch).
+    mutating func patch_u64(offset: u64, value: u64):
+        memory.write[u64]((void*)&self.out.items[self.start + (usize)offset], value)
+
+func field_hash(field: CrateField) -> u64:
+    let key = ((u64)field.token *% 0x9E3779B97F4A7C15) ^ (field.rep *% 0xC2B2AE3D27D4EB4F)
+    return key ^ (key >> 29)
+
+func set_hash(set: const u32[]) -> u64:
+    var key: u64 = 0xCBF29CE484222325
+    for index in set: key = (key ^ (u64)index) *% 0x100000001B3
+    return key ^ (key >> 31)
+
+func put(out: Growing[u8]*, text: str) -> !:
+    for byte in text.bytes: try out.push(byte)

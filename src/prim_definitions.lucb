@@ -1,0 +1,128 @@
+## Prim definitions, after UsdPrimDefinition and UsdSchemaRegistry
+## (pxr/usd/usd/primDefinition.cpp, schemaRegistry.cpp): a prim's built-in
+## properties come from its typed schema, then the API schemas that schema
+## builds in, then its applied API schemas in order, each with the API
+## schemas it builds in; the first definition of a name wins. A
+## multiple-apply schema applied as "Name:instance" defines its properties
+## with the instance in place of __INSTANCE_NAME__. Only what flattening
+## needs is kept (schema_table.lucb): each property's type, variability and
+## kind.
+import schema_table as table
+from sdf.names import Names
+from luce_geocore.core.growing import Growing
+
+## A built-in property.
+pub struct PropertyDefinition:
+    ## The type name's token ("point3f[]"); 0 for a relationship.
+    pub var type_name: u32
+    pub var uniform: bool
+    pub var relationship: bool
+
+struct PropertyEntry:
+    ## The property name's text in the table (it may hold __INSTANCE_NAME__).
+    var name: str
+    var definition: PropertyDefinition
+
+struct SchemaEntry:
+    var name: u32
+    var multiple: bool
+    ## Built-in API schemas, as applied: "Name" or "Name:instance".
+    var builtins: Growing[str]
+    var properties: Growing[PropertyEntry]
+
+    mutating func close():
+        self.builtins.close()
+        self.properties.close()
+
+## The schema table, parsed once.
+pub struct Schemas:
+    var names: Names*
+    var entries: Growing[SchemaEntry]
+
+    pub func init(names: Names*) -> !:
+        self.names = names
+        self.entries = Growing[SchemaEntry]()
+        errdefer self.close()
+        for row in table.schema_table: try self.parse(row)
+
+    pub mutating func close():
+        for at in 0..<self.entries.count: self.entries.items[at].close()
+        self.entries.close()
+
+    mutating func parse(row: str) -> !:
+        let first = find_byte(row, '|', 0)
+        let second = find_byte(row, '|', first + 1)
+        var name = (str)row.bytes[..<first]
+        let multiple = name.length > 0 and name.bytes[name.length - 1] == '*'
+        if multiple: name = (str)name.bytes[..<name.length - 1]
+        var entry = SchemaEntry(name = try self.names.token(name), multiple = multiple, builtins = Growing[str](), properties = Growing[PropertyEntry]())
+        errdefer entry.close()
+        var at = first + 1
+        while at < second:
+            let end = min_of(find_byte(row, ',', at), second)
+            try entry.builtins.push((str)row.bytes[at..<end])
+            at = end + 1
+        at = second + 1
+        while at < row.length:
+            let end = find_byte(row, ';', at)
+            let space = find_byte(row, ' ', at)
+            let flag_at = end - 1
+            let type_text = (str)row.bytes[space + 1..<flag_at - 1]
+            let flag = row.bytes[flag_at]
+            let relationship = flag == 'r'
+            var type_name: u32 = 0
+            if not relationship: type_name = try self.names.token(type_text)
+            try entry.properties.push(PropertyEntry(name = (str)row.bytes[at..<space], definition = PropertyDefinition(type_name = type_name, uniform = flag == 'u', relationship = relationship)))
+            at = end + 1
+        try self.entries.push(entry)
+
+    ## The definition of property `name` on a prim of type `type_name`
+    ## (0: none) with the API schemas `applied` (tokens of "Name" or
+    ## "Name:instance"), if it is built in.
+    pub func find(type_name: u32, applied: const u32[], name: u32) -> PropertyDefinition?:
+        let text = self.names.text_of(name)
+        if type_name != 0:
+            if let found = self.find_in(self.names.text_of(type_name), text, 0): return found
+        for api in applied:
+            if let found = self.find_in(self.names.text_of(api), text, 0): return found
+        return none
+
+    ## `name` in the schema applied as `application`, or its built-ins.
+    func find_in(application: str, name: str, depth: usize) -> PropertyDefinition?:
+        if depth > 8: return none
+        let colon = find_byte(application, ':', 0)
+        let schema = (str)application.bytes[..<colon]
+        let instance = (str)application.bytes[colon + 1..] if colon < application.length else ""
+        for entry in self.entries.view():
+            if self.names.text_of(entry.name) != schema: continue
+            if entry.multiple and instance.length == 0: return none
+            for property in entry.properties.view():
+                if matches(property.name, instance, name): return property.definition
+            for builtin in entry.builtins.view():
+                if let found = self.find_in(builtin, name, depth + 1): return found
+            return none
+        return none
+
+## Whether `name` is `template` with `instance` in place of
+## __INSTANCE_NAME__ (or equals it, without one).
+func matches(template: str, instance: str, name: str) -> bool:
+    let marker = "__INSTANCE_NAME__"
+    var at: usize = 0
+    while at + marker.length <= template.length:
+        if (str)template.bytes[at..<at + marker.length] == marker:
+            let before = (str)template.bytes[..<at]
+            let after = (str)template.bytes[at + marker.length..]
+            if name.length != before.length + instance.length + after.length: return false
+            return (str)name.bytes[..<before.length] == before and (str)name.bytes[before.length..<before.length + instance.length] == instance and (str)name.bytes[before.length + instance.length..] == after
+        at += 1
+    return template == name
+
+## The index of the first `byte` in `text` at or after `from_index`, or
+## text.length.
+func find_byte(text: str, byte: u8, from_index: usize) -> usize:
+    var at = from_index
+    while at < text.length and text.bytes[at] != byte: at += 1
+    return at
+
+func min_of(a: usize, b: usize) -> usize:
+    return a if a < b else b

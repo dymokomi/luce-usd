@@ -2,8 +2,8 @@
 ## usdcat from our layers) read into layers that print as usdcat prints
 ## them; the integer coding round-trips; damaged crates fail cleanly.
 import memory
-from usd_kernel import Names, LayerData, read_usda, read_usdc, write_usda, write_usdc, read_file, decode_integers, encode_integers, encoded_bound, invalid, unsupported
-from geocore_growing import Growing
+from luce_usd.kernel import Names, LayerData, read_usda, read_usdc, write_usda, write_usdc, read_file, decode_integers, encode_integers, encoded_bound, invalid, unsupported
+from luce_geocore.core.growing import Growing
 
 pub func fixtures() -> !:
     try fixture("values")

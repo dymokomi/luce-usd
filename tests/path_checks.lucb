@@ -2,8 +2,8 @@
 ## equal text is one id, malformed text fails, and the path algebra
 ## (prefixes, replacement, variant stripping, anchoring) matches SdfPath's.
 import memory
-from usd_kernel import Names, PathKind, absolute_root, relative_root, empty_path, invalid
-from geocore_growing import Growing
+from luce_usd.kernel import Names, PathKind, absolute_root, relative_root, empty_path, invalid
+from luce_geocore.core.growing import Growing
 
 func text_of(names: Names*, path: u32, out: Growing[u8]*) -> str!:
     out.clear()

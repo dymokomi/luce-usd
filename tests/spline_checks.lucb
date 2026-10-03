@@ -1,10 +1,10 @@
 ## Splines (sdf.splines, sdf.values splines.lucb): evaluation against the
 ## expected values of OpenUSD's testTsSplineEval.cpp, extrapolation and
 ## loops, layer offsets, and usda and crate round trips of a spline layer.
-import math
+import luce_std.math
 import memory
-from usd_kernel import Names, Value, ValueKind, Spline, Knot, CurveType, Interpolation, ExtrapolationMode, Extrapolation, LoopParams, TangentAlgorithm, settle_spline, evaluate_spline, offset_spline, LayerData, read_usda, write_usda, read_usdc, write_usdc, same_value
-from geocore_growing import Growing
+from luce_usd.kernel import Names, Value, ValueKind, Spline, Knot, CurveType, Interpolation, ExtrapolationMode, Extrapolation, LoopParams, TangentAlgorithm, settle_spline, evaluate_spline, offset_spline, LayerData, read_usda, write_usda, read_usdc, write_usdc, same_value
+from luce_geocore.core.growing import Growing
 
 ## A dual-valued knot as testTsSplineEval's CreateKnot makes it.
 func knot(time: f64, next: Interpolation, pre_value: f64, value: f64, pre_width: f64, pre_slope: f64, post_width: f64, post_slope: f64) -> Knot:

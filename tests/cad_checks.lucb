@@ -5,14 +5,14 @@
 ## outer trim loop runs counterclockwise in the patch's parameters.
 import interop
 import ownership
-import math
+import luce_std.math
 import memory
-from geocore import Vector3, GeometrySet
-from cad_solids import CadSolids
-from cad_geometry import CadGeometry, set_models
-from cad import CadModel
-from usd_kernel import Names, LayerData, Value, ValueKind, SpecType, export_set, ExportOptions, Warnings
-from geocore_growing import Growing
+from luce_geocore.geocore import Vector3, GeometrySet
+from luce_cad.solids import CadSolids
+from luce_cad.cad_geometry import CadGeometry, set_models
+from luce_cad.model import CadModel
+from luce_usd.kernel import Names, LayerData, Value, ValueKind, SpecType, export_set, ExportOptions, Warnings
+from luce_geocore.core.growing import Growing
 
 ## Run once before the heap is counted: the cycle collector keeps its
 ## candidate and garbage buffers for the thread's lifetime.

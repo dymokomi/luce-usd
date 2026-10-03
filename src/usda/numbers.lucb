@@ -1,0 +1,162 @@
+## Number text for usda. Parsing and shortest round-trip formatting are
+## std's (strings.parse_f64, format_f64 and format_f32: Eisel-Lemire and Ryu,
+## laid out as OpenUSD's TfStringify does through double-conversion's
+## ToShortest: "inf", "-inf", "nan", "-0", decimal notation for decimal
+## exponents -6..14). Halves print here as C's "%g" of their float value, as
+## GfHalf's stream operator does.
+import memory
+import strings
+from luce_geocore.core.growing import Growing
+
+## The number `text` spells, as TfStringToDouble reads it (correctly
+## rounded). Fails when `text` is not one.
+pub func parse_f64(text: const u8[]) -> f64!:
+    return try strings.parse_f64((str)text)
+
+## Append TfStringify(double) of `value`.
+pub func write_double(out: Growing[u8]*, value: f64) -> !:
+    var text: u8[32] = ---
+    try append(out, (try strings.format_f64(value, text)).bytes)
+
+## Append TfStringify(float) of `value`: the float's own shortest digits.
+pub func write_float(out: Growing[u8]*, value: f32) -> !:
+    var text: u8[32] = ---
+    try append(out, (try strings.format_f32(value, text)).bytes)
+
+## TfStringify(double) of `value` into `text` (32 bytes suffice); its length.
+pub func format_double(value: f64, text: u8[]) -> usize!:
+    return (try strings.format_f64(value, text)).length
+
+## TfStringify(float) of `value` into `text` (32 bytes suffice); its length.
+pub func format_float(value: f32, text: u8[]) -> usize!:
+    return (try strings.format_f32(value, text)).length
+
+func append(out: Growing[u8]*, bytes: const u8[]) -> !:
+    try out.reserve(out.count + bytes.length)
+    memory.copy(out.items[out.count..], bytes, bytes.length)
+    out.count += bytes.length
+
+## Append C's "%g" of a half's value (six significant digits, trailing zeros
+## dropped, exponent form below 1e-4 and from 1e6), as GfHalf streams. The
+## digits come from the half's exact decimal expansion, rounded half to even.
+pub func write_half(out: Growing[u8]*, bits: u16) -> !:
+    let negative = (bits >> 15) != 0
+    let exponent_bits = (u32)((bits >> 10) & 0x1F)
+    let fraction = (u64)(bits & 0x3FF)
+    if exponent_bits == 0x1F:
+        try append(out, ("nan" if fraction != 0 else ("-inf" if negative else "inf")).bytes)
+        return
+    if negative: try out.push('-')
+    if exponent_bits == 0 and fraction == 0:
+        try out.push('0')
+        return
+    # value = significand * 2^power exactly.
+    let significand = fraction if exponent_bits == 0 else fraction | 0x400
+    let power: i64 = -24 if exponent_bits == 0 else (i64)exponent_bits - 25
+    # Exact decimal: significand * 5^-power * 10^power for negative powers,
+    # in four 32-bit limbs (significand < 2^11 and 5^24 < 2^56).
+    var limbs: u32[4]
+    limbs[0] = (u32)significand
+    var scale: i64 = 0
+    if power >= 0:
+        limbs[0] = (u32)(significand << (u64)power)
+    else:
+        for _ in 0..<(usize)(-power):
+            var carry: u64 = 0
+            for index: usize in 0..<4:
+                let next = (u64)limbs[index] * 5 + carry
+                limbs[index] = (u32)(next & 0xFFFFFFFF)
+                carry = next >> 32
+        scale = power
+    var digits: u8[24]
+    var count: usize = 0
+    while limbs[0] != 0 or limbs[1] != 0 or limbs[2] != 0 or limbs[3] != 0:
+        var remainder: u64 = 0
+        var index: usize = 4
+        while index > 0:
+            index -= 1
+            let current = (remainder << 32) | (u64)limbs[index]
+            limbs[index] = (u32)(current // 10)
+            remainder = current % 10
+        digits[count] = (u8)remainder
+        count += 1
+    # digits are least significant first; round to six significant digits.
+    var kept = count
+    var exponent10 = (i64)count - 1 + scale
+    if count > 6:
+        let drop = count - 6
+        # Half to even over the dropped digits.
+        let first = digits[drop - 1]
+        var tail_zero = true
+        for index in 0..<drop - 1:
+            if digits[index] != 0: tail_zero = false
+        var up = first > 5 or (first == 5 and not tail_zero) or (first == 5 and tail_zero and digits[drop] % 2 == 1)
+        var index = drop
+        while up and index < count:
+            if digits[index] == 9:
+                digits[index] = 0
+                index += 1
+            else:
+                digits[index] += 1
+                up = false
+        # Keep the six most significant digits.
+        for at: usize in 0..<6: digits[at] = digits[drop + at]
+        kept = 6
+        if up:
+            digits[5] = 1
+            exponent10 += 1
+    # Most significant first, trailing zeros removed.
+    var first_kept: usize = 0
+    while first_kept + 1 < kept and digits[first_kept] == 0: first_kept += 1
+    if exponent10 < -4 or exponent10 >= 6:
+        try out.push('0' + digits[kept - 1])
+        if kept - 1 > first_kept:
+            try out.push('.')
+            var at = kept - 1
+            while at > first_kept:
+                at -= 1
+                try out.push('0' + digits[at])
+        try out.push('e')
+        var magnitude = exponent10
+        if magnitude < 0:
+            try out.push('-')
+            magnitude = -magnitude
+        else:
+            try out.push('+')
+        if magnitude < 10: try out.push('0')
+        var reversed: u8[4]
+        var width: usize = 0
+        while true:
+            reversed[width] = (u8)(48 + magnitude % 10)
+            width += 1
+            magnitude = magnitude // 10
+            if magnitude == 0: break
+        while width > 0:
+            width -= 1
+            try out.push(reversed[width])
+        return
+    # Fixed notation: digit at position p has weight 10^(exponent10 - (kept - 1 - p)).
+    if exponent10 < 0:
+        try out.push('0')
+        try out.push('.')
+        for _ in 0..<(usize)(-exponent10 - 1): try out.push('0')
+        var at = kept
+        while at > first_kept:
+            at -= 1
+            try out.push('0' + digits[at])
+        return
+    let integer_digits = (usize)exponent10 + 1
+    var at = kept
+    var written: usize = 0
+    while written < integer_digits:
+        if at > 0:
+            at -= 1
+            try out.push('0' + digits[at])
+        else:
+            try out.push('0')
+        written += 1
+    if at > first_kept:
+        try out.push('.')
+        while at > first_kept:
+            at -= 1
+            try out.push('0' + digits[at])

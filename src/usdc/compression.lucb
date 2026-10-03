@@ -1,0 +1,197 @@
+## The crate's compression layers: TfFastCompression's LZ4 wrapper
+## (pxr/base/tf/fastCompression.cpp: a chunk-count byte, then one LZ4 block,
+## or int32-sized chunks for inputs past LZ4's 2 GiB block limit) and
+## Sdf_IntegerCompression (pxr/usd/sdf/integerCoding.cpp): integers as
+## deltas from the previous one, the most common delta written once, a 2-bit
+## code per integer (common, small, medium, large), then the variable-width
+## deltas, all LZ4-compressed.
+import memory
+import luce_compress.lz4
+import errors
+
+## Decompress a TfFastCompression buffer into `output`; its length.
+pub func decompress(input: const u8[], output: u8[]) -> usize!:
+    if input.length == 0: error(errors.invalid, "an empty compressed block in a crate file")
+    let chunks = (usize)input[0]
+    if chunks == 0:
+        return lz4.decompress(input[1..], output) catch failure:
+            error(errors.invalid, "a damaged LZ4 block in a crate file")
+    var at: usize = 1
+    var out: usize = 0
+    for _ in 0..<chunks:
+        if input.length - at < 4: error(errors.invalid, "a truncated compressed chunk in a crate file")
+        let size = (usize)memory.read[i32]((void*)&input[at])
+        at += 4
+        if size > input.length - at: error(errors.invalid, "a compressed chunk runs past its buffer")
+        out += lz4.decompress(input[at..<at + size], output[out..]) catch failure:
+            error(errors.invalid, "a damaged LZ4 chunk in a crate file")
+        at += size
+    return out
+
+## The most bytes `compress` writes for `size` input bytes (one chunk).
+pub func compressed_bound(size: usize) -> usize:
+    return lz4.bound(size) + 1
+
+## Compress `input` into `output` (at least `compressed_bound` bytes) as one
+## TfFastCompression chunk; the compressed length.
+pub func compress(input: const u8[], output: u8[]) -> usize!:
+    if input.length > lz4.most_input: error(errors.limit, "a crate block larger than LZ4 holds")
+    output[0] = 0
+    return 1 + try lz4.compress(input, output[1..])
+
+## Bytes the integer encoding of `count` integers of `width` bytes may take.
+pub func encoded_bound(count: usize, width: usize) -> usize:
+    if count == 0: return 0
+    return width + (count * 2 + 7) // 8 + count * width
+
+## Decode `count` integers of `width` bytes (4 or 8) from the integer
+## encoding `data` into `out` (count * width bytes).
+pub func decode_integers(data: const u8[], count: usize, width: usize, out: u8[]) -> !:
+    if count == 0: return
+    let codes_bytes = (count * 2 + 7) // 8
+    if data.length < width + codes_bytes: error(errors.invalid, "truncated integer codes in a crate file")
+    var codes = width
+    var values = width + codes_bytes
+    if width == 4:
+        let common = (i64)memory.read[i32]((void*)&data[0])
+        var previous: i32 = 0
+        for index in 0..<count:
+            let code = (data[codes + index // 4] >> (u8)((index % 4) * 2)) & 3
+            var delta: i64 = common
+            if code == 1:
+                if values + 1 > data.length: error(errors.invalid, "truncated integer data in a crate file")
+                delta = (i64)(i8)data[values]
+                values += 1
+            elif code == 2:
+                if values + 2 > data.length: error(errors.invalid, "truncated integer data in a crate file")
+                delta = (i64)memory.read[i16]((void*)&data[values])
+                values += 2
+            elif code == 3:
+                if values + 4 > data.length: error(errors.invalid, "truncated integer data in a crate file")
+                delta = (i64)memory.read[i32]((void*)&data[values])
+                values += 4
+            previous = previous +% (i32)delta
+            memory.write[i32]((void*)&out[index * 4], previous)
+        return
+    let common = memory.read[i64]((void*)&data[0])
+    var previous: i64 = 0
+    for index in 0..<count:
+        let code = (data[codes + index // 4] >> (u8)((index % 4) * 2)) & 3
+        var delta = common
+        if code == 1:
+            if values + 2 > data.length: error(errors.invalid, "truncated integer data in a crate file")
+            delta = (i64)memory.read[i16]((void*)&data[values])
+            values += 2
+        elif code == 2:
+            if values + 4 > data.length: error(errors.invalid, "truncated integer data in a crate file")
+            delta = (i64)memory.read[i32]((void*)&data[values])
+            values += 4
+        elif code == 3:
+            if values + 8 > data.length: error(errors.invalid, "truncated integer data in a crate file")
+            delta = memory.read[i64]((void*)&data[values])
+            values += 8
+        previous = previous +% delta
+        memory.write[i64]((void*)&out[index * 8], previous)
+
+## Decompress then decode `count` integers of `width` bytes from `input`
+## into `out`.
+pub func decompress_integers(input: const u8[], count: usize, width: usize, out: u8[]) -> !:
+    if count == 0: return
+    let bound = encoded_bound(count, width)
+    let scratch = try alloc u8[bound] in memory.heap
+    defer free(scratch) in memory.heap
+    let length = try decompress(input, scratch)
+    try decode_integers(scratch[..<length], count, width, out)
+
+## Encode `count` integers of `width` bytes from `values` into `out` (at
+## least `encoded_bound` bytes); the encoded length. The common value is
+## the most frequent delta, the larger on ties, as Sdf chooses it.
+pub func encode_integers(values: const u8[], count: usize, width: usize, out: u8[]) -> usize!:
+    if count == 0: return 0
+    let common = try most_common_delta(values, count, width)
+    let codes_bytes = (count * 2 + 7) // 8
+    for index in 0..<codes_bytes: out[width + index] = 0
+    var at = width + codes_bytes
+    if width == 4:
+        memory.write[i32]((void*)&out[0], (i32)common)
+        var previous: i64 = 0
+        for index in 0..<count:
+            let value = (i64)memory.read[i32]((void*)&values[index * 4])
+            let delta = (i64)((i32)value -% (i32)previous)
+            previous = value
+            var code: u8 = 3
+            if delta == common: code = 0
+            elif delta >= -128 and delta <= 127:
+                code = 1
+                out[at] = (u8)(i8)delta
+                at += 1
+            elif delta >= -32768 and delta <= 32767:
+                code = 2
+                memory.write[i16]((void*)&out[at], (i16)delta)
+                at += 2
+            else:
+                memory.write[i32]((void*)&out[at], (i32)delta)
+                at += 4
+            out[width + index // 4] |= code << (u8)((index % 4) * 2)
+        return at
+    memory.write[i64]((void*)&out[0], common)
+    var previous: i64 = 0
+    for index in 0..<count:
+        let value = memory.read[i64]((void*)&values[index * 8])
+        let delta = value -% previous
+        previous = value
+        var code: u8 = 3
+        if delta == common: code = 0
+        elif delta >= -32768 and delta <= 32767:
+            code = 1
+            memory.write[i16]((void*)&out[at], (i16)delta)
+            at += 2
+        elif delta >= -2147483648 and delta <= 2147483647:
+            code = 2
+            memory.write[i32]((void*)&out[at], (i32)delta)
+            at += 4
+        else:
+            memory.write[i64]((void*)&out[at], delta)
+            at += 8
+        out[width + index // 4] |= code << (u8)((index % 4) * 2)
+    return at
+
+## The most frequent delta (the larger on a tie), over an open-addressed
+## count table.
+func most_common_delta(values: const u8[], count: usize, width: usize) -> i64!:
+    var capacity: usize = 64
+    while capacity < count * 2: capacity *= 2
+    if capacity > 1 << 26: capacity = 1 << 26
+    let keys = try alloc i64[capacity] in memory.heap
+    defer free(keys) in memory.heap
+    let counts = try new u32[capacity] in memory.heap
+    defer free(counts) in memory.heap
+    let mask = capacity - 1
+    var common: i64 = 0
+    var common_count: u32 = 0
+    var previous: i64 = 0
+    var used: usize = 0
+    for index in 0..<count:
+        var value: i64 = 0
+        var delta: i64 = 0
+        if width == 4:
+            value = (i64)memory.read[i32]((void*)&values[index * 4])
+            delta = (i64)((i32)value -% (i32)previous)
+        else:
+            value = memory.read[i64]((void*)&values[index * 8])
+            delta = value -% previous
+        previous = value
+        var slot = (usize)(((u64)delta *% 0x9E3779B97F4A7C15) >> 32) & mask
+        while counts[slot] != 0 and keys[slot] != delta: slot = (slot + 1) & mask
+        if counts[slot] == 0:
+            # A full table stops counting new deltas; the result stays a
+            # valid (if less compact) choice.
+            if used * 2 >= capacity: continue
+            keys[slot] = delta
+            used += 1
+        counts[slot] += 1
+        let seen = counts[slot]
+        if seen > common_count or (seen == common_count and delta > common):
+            common = delta
+            common_count = seen
+    return common

@@ -1,0 +1,169 @@
+## Applying list ops, after SdfListOp::ApplyOperations (pxr/usd/sdf/listOp.cpp):
+## an explicit list replaces what it is applied to; otherwise its deletes,
+## adds, prepends, appends and reorders edit it, in that order. Items are
+## the same when their ids, offsets and scales are (custom data aside).
+## Result items borrow the list op's custom data: keep the list op alive
+## while they are used.
+from sdf.values import Value, ListOp, ListItem, ListPart
+from sdf.value_types import ValueKind
+from luce_geocore.core.growing import Growing
+
+## Apply `list` to `items` in place.
+pub func apply_list_op(list: const ListOp*, items: Growing[ListItem]*) -> !:
+    if list.explicit:
+        items.clear()
+        for item in list.items(ListPart.explicit):
+            if find(items.view(), item) == none: try items.push(item)
+        return
+    for item in list.items(ListPart.deleted):
+        if let at = find(items.view(), item): remove_at(items, at)
+    for item in list.items(ListPart.added):
+        if find(items.view(), item) == none: try items.push(item)
+    let prepended = list.items(ListPart.prepended)
+    var index = prepended.length
+    while index > 0:
+        index -= 1
+        try move_to(items, prepended[index], 0)
+    for item in list.items(ListPart.appended):
+        if let at = find(items.view(), item): remove_at(items, at)
+        try items.push(item)
+    try reorder(items, list.items(ListPart.ordered))
+
+## Whether the list op edits anything (an explicit list always does).
+pub func has_edits(list: const ListOp*) -> bool:
+    if list.explicit: return true
+    for part in 1..<6:
+        if list.parts[part].count > 0: return true
+    return false
+
+pub func same_item(left: ListItem, right: ListItem) -> bool:
+    return left.a == right.a and left.b == right.b and left.offset == right.offset and left.scale == right.scale
+
+func find(items: const ListItem[], item: ListItem) -> usize?:
+    for index in 0..<items.length:
+        if same_item(items[index], item): return index
+    return none
+
+func remove_at(items: Growing[ListItem]*, at: usize):
+    var index = at
+    while index + 1 < items.count:
+        items.items[index] = items.items[index + 1]
+        index += 1
+    items.count -= 1
+
+## Move `item` to position `at`, inserting it when absent.
+func move_to(items: Growing[ListItem]*, item: ListItem, at: usize) -> !:
+    if let found = find(items.view(), item): remove_at(items, found)
+    try items.push(item)
+    var index = items.count - 1
+    while index > at:
+        items.items[index] = items.items[index - 1]
+        index -= 1
+    items.items[at] = item
+
+## SdfListOp's reorder: each ordered item that is present starts a run that
+## takes the items after it up to the next ordered one; runs follow the
+## order, and items before any ordered item stay first.
+func reorder(items: Growing[ListItem]*, order: const ListItem[]) -> !:
+    if order.length == 0 or items.count == 0: return
+    var unique = Growing[ListItem]()
+    defer unique.close()
+    for item in order:
+        if find(unique.view(), item) == none: try unique.push(item)
+    var scratch = Growing[ListItem]()
+    defer scratch.close()
+    try scratch.assign(items.view())
+    var taken = Growing[bool]()
+    defer taken.close()
+    try taken.fill(scratch.count, false)
+    items.clear()
+    var tail = Growing[ListItem]()
+    defer tail.close()
+    for item in unique.view():
+        let start = find(scratch.view(), item) else continue
+        var end = start
+        while true:
+            try tail.push(scratch.items[end])
+            taken.items[end] = true
+            end += 1
+            if end >= scratch.count or find(unique.view(), scratch.items[end]) != none: break
+    for index in 0..<scratch.count:
+        if not taken.items[index]: try items.push(scratch.items[index])
+    for item in tail.view(): try items.push(item)
+
+## `strong` composed over `weak` (SdfListOp::ApplyOperations(inner)): an
+## explicit strong list wins; a strong list of deletes, prepends and appends
+## edits an explicit weak one into an explicit list, or merges with a weak
+## one of the same kinds; none when either uses added or ordered items.
+## Custom data is not carried.
+pub func compose_list_ops(strong: const ListOp*, weak: const ListOp*) -> ListOp*?!:
+    let made = try ListOp.create()
+    var owner = Value.of_object(ValueKind.token_list_op, (void*)made)
+    errdefer owner.release()
+    if strong.explicit:
+        made.explicit = true
+        for item in strong.items(ListPart.explicit): try made.push(ListPart.explicit, plain(item))
+        return made
+    if strong.parts[(usize)(u8)ListPart.added].count > 0 or strong.parts[(usize)(u8)ListPart.ordered].count > 0:
+        owner.release()
+        return none
+    if weak.explicit:
+        var items = Growing[ListItem]()
+        defer items.close()
+        for item in weak.items(ListPart.explicit): try items.push(plain(item))
+        try apply_list_op(strong, &items)
+        made.explicit = true
+        for item in items.view(): try made.push(ListPart.explicit, plain(item))
+        return made
+    if weak.parts[(usize)(u8)ListPart.added].count > 0 or weak.parts[(usize)(u8)ListPart.ordered].count > 0:
+        owner.release()
+        return none
+    var deleted = Growing[ListItem]()
+    defer deleted.close()
+    var prepended = Growing[ListItem]()
+    defer prepended.close()
+    var appended = Growing[ListItem]()
+    defer appended.close()
+    for item in weak.items(ListPart.deleted): try deleted.push(plain(item))
+    for item in weak.items(ListPart.prepended): try prepended.push(plain(item))
+    for item in weak.items(ListPart.appended): try appended.push(plain(item))
+    for item in strong.items(ListPart.deleted):
+        remove_all(&prepended, item)
+        remove_all(&appended, item)
+        if find(deleted.view(), item) == none: try deleted.push(plain(item))
+    for item in strong.items(ListPart.prepended):
+        remove_all(&deleted, item)
+        remove_all(&prepended, item)
+        remove_all(&appended, item)
+    for item in strong.items(ListPart.appended):
+        remove_all(&deleted, item)
+        remove_all(&prepended, item)
+        remove_all(&appended, item)
+    for item in deleted.view(): try made.push(ListPart.deleted, item)
+    for item in strong.items(ListPart.prepended): try made.push(ListPart.prepended, plain(item))
+    for item in prepended.view(): try made.push(ListPart.prepended, item)
+    for item in appended.view(): try made.push(ListPart.appended, item)
+    for item in strong.items(ListPart.appended): try made.push(ListPart.appended, plain(item))
+    return made
+
+## `list` applied to nothing, as an explicit list (a composed list op
+## finalized over the background).
+pub func explicit_list(list: const ListOp*) -> ListOp*!:
+    let made = try ListOp.create()
+    var owner = Value.of_object(ValueKind.token_list_op, (void*)made)
+    errdefer owner.release()
+    var items = Growing[ListItem]()
+    defer items.close()
+    try apply_list_op(list, &items)
+    made.explicit = true
+    for item in items.view(): try made.push(ListPart.explicit, plain(item))
+    return made
+
+func plain(item: ListItem) -> ListItem:
+    return ListItem(a = item.a, b = item.b, offset = item.offset, scale = item.scale, custom = none)
+
+func remove_all(items: Growing[ListItem]*, item: ListItem):
+    var at: usize = 0
+    while at < items.count:
+        if same_item(items.items[at], item): remove_at(items, at)
+        else: at += 1

@@ -2,8 +2,8 @@
 ## many types, time samples, relationships and connections reads into the
 ## specs and fields Sdf's parser makes; malformed text fails with a line.
 import memory
-from usd_kernel import Names, LayerData, SpecType, ValueKind, Value, read_usda, write_usda, read_file, invalid, absolute_root
-from geocore_growing import Growing
+from luce_usd.kernel import Names, LayerData, SpecType, ValueKind, Value, read_usda, write_usda, read_file, invalid, absolute_root
+from luce_geocore.core.growing import Growing
 
 let sample = """#usda 1.0
 (

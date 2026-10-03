@@ -6,16 +6,16 @@
 ## ratios against it: the 837x837 quad grid (702,244 points, 700,569 faces)
 ## with a corner uv, as geocore's bench saves it.
 import time
-import math
+import luce_std.math
 import c
-import files
+import luce_std.files
 import interop
 import memory
-import geocore
-from geocore import Vector3, Mesh, GeometrySet
-from geocore_kernel import save_geometry, load_geometry, adopt_set, set_mesh, dispose_set
-from geocore_growing import Growing
-from usd_kernel import ImportOptions, ExportOptions, Warnings, import_layer, export_set, read_file, most_bytes, Names, LayerData, read_usda, read_usdc, write_usda, write_usdc, read_usdz, write_usdz, PackageFile
+import luce_geocore.geocore
+from luce_geocore.geocore import Vector3, Mesh, GeometrySet
+from luce_geocore.kernel import save_geometry, load_geometry, adopt_set, set_mesh, dispose_set
+from luce_geocore.core.growing import Growing
+from luce_usd.kernel import ImportOptions, ExportOptions, Warnings, import_layer, export_set, read_file, most_bytes, Names, LayerData, read_usda, read_usdc, write_usda, write_usdc, read_usdz, write_usdz, PackageFile
 from io import path
 
 ## Where the grid crate goes (a module buffer: error messages and paths

@@ -1,8 +1,8 @@
 ## Usd.load, save, convert, info and warnings as luced-3d calls them.
-from usd import Usd
-from geocore import invalid, Mesh
-from cad_solids import CadSolids
-from cad_geometry import CadGeometry
+from luce_usd.usd import Usd
+from luce_geocore.geocore import invalid, Mesh
+from luce_cad.solids import CadSolids
+from luce_cad.cad_geometry import CadGeometry
 
 pub func geometry_tests() -> unit!:
     let loaded = Usd.load("tests/fixtures/geom/meshes.usda")

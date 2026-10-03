@@ -1,0 +1,83 @@
+## usdz packages, after OpenUSD's usdz file format (pxr/usd/sdf/
+## usdzFileFormat.cpp, zipFile.cpp) and usdUtils' packaging: a ZIP whose
+## entries are all stored (uncompressed) and 64-byte aligned, the first
+## entry being the root layer (usdc or usda). Layers are read in place from
+## the archive's bytes, with no copy; writing puts the root layer first and
+## any other files after it.
+import memory
+import luce_compress.zip
+import errors
+import usda.reader as usda_reader
+import usdc.reader as usdc_reader
+import usdc.writer as usdc_writer
+import usda.writer as usda_writer
+from sdf.layer_data import LayerData
+from luce_geocore.core.growing import Growing
+
+## The alignment usdz requires of every entry's data.
+pub let alignment: usize = 64
+
+## A file placed in a package after the root layer.
+pub type PackageFile = zip.StoredFile
+
+## Read the root layer of the package `data` into `layer`.
+pub func read_usdz(data: const u8[], layer: LayerData*) -> !:
+    var archive = zip.open(data) catch failure:
+        if failure.code == memory.exhausted: error(failure.code, failure.message)
+        error(errors.invalid, "not a usdz package: not a ZIP archive")
+    defer archive.close()
+    if archive.count == 0: error(errors.invalid, "an empty usdz package")
+    let root = archive.entries[0]
+    let bytes = archive.stored_bytes(root) catch failure:
+        if failure.code == memory.exhausted: error(failure.code, failure.message)
+        error(errors.invalid, "a usdz package's layers must be stored uncompressed")
+    try read_layer_bytes(root.name, bytes, layer)
+
+## The bytes of the package entry `name` (a layer or an asset), in place.
+pub func package_entry(data: const u8[], name: str) -> const u8[]!:
+    var archive = zip.open(data) catch failure:
+        if failure.code == memory.exhausted: error(failure.code, failure.message)
+        error(errors.invalid, "not a usdz package: not a ZIP archive")
+    defer archive.close()
+    let entry = archive.find(name) else error(errors.invalid, "the usdz package has no such entry")
+    return archive.stored_bytes(entry) catch failure:
+        if failure.code == memory.exhausted: error(failure.code, failure.message)
+        error(errors.invalid, "a usdz package entry must be stored uncompressed")
+
+## Read a layer from bytes, by the entry name's extension.
+func read_layer_bytes(name: str, bytes: const u8[], layer: LayerData*) -> !:
+    # A package may hold a package as its root layer.
+    if ends_with(name, ".usdz"):
+        try read_usdz(bytes, layer)
+        return
+    if ends_with(name, ".usdc") or (bytes.length >= 8 and (str)bytes[..<8] == "PXR-USDC"):
+        try usdc_reader.read_usdc(bytes, layer)
+        return
+    if ends_with(name, ".usda") or ends_with(name, ".usd"):
+        try usda_reader.read_usda(bytes, layer)
+        return
+    error(errors.unsupported, "a usdz root layer that is not usda or usdc")
+
+## Append a package to `out`: `layer` as its root entry `root_name` (a crate
+## when it ends in .usdc, text when .usda), then `files`.
+pub func write_usdz(layer: const LayerData*, root_name: str, files: const PackageFile[], out: Growing[u8]*) -> !:
+    var root = Growing[u8]()
+    defer root.close()
+    if ends_with(root_name, ".usdc"): try usdc_writer.write_usdc(layer, &root)
+    elif ends_with(root_name, ".usda"): try usda_writer.write_usda(layer, &root)
+    else: error(errors.invalid, "a usdz root layer must be named .usdc or .usda")
+    let entries = try alloc PackageFile[files.length + 1] in memory.heap
+    defer free(entries) in memory.heap
+    entries[0] = PackageFile(name = root_name, data = root.view())
+    for index in 0..<files.length: entries[index + 1] = files[index]
+    let size = zip.stored_size(entries, alignment)
+    let start = out.count
+    try out.reserve(start + size)
+    let written = zip.write_stored(entries, alignment, out.items[start..<start + size]) catch failure:
+        if failure.code == memory.exhausted: error(failure.code, failure.message)
+        error(errors.limit, "the usdz package is too large for a ZIP without ZIP64")
+    out.count = start + written
+
+func ends_with(text: str, suffix: str) -> bool:
+    if text.length < suffix.length: return false
+    return (str)text.bytes[text.length - suffix.length..] == suffix

@@ -1,0 +1,219 @@
+## Path text to ids, following the SdfPath grammar of OpenUSD's
+## pxr/usd/sdf/pathParser.h:
+##
+##   path       = "/" [prim-elts [prop-elts]] | dotdots ["/" path-elts] | "." | path-elts
+##   prim-elts  = name { "/" name | selections name } [selections]
+##   selections = { "{" set "=" [variant] "}" }+       (blanks around "{", "=", "}")
+##   prop-elts  = "." property [ "[" path "]" [rel-attr] | "." mapper-or-expression ]
+##   rel-attr   = "." property [ "[" path "]" | "." mapper-or-expression ]
+##   mapper-or-expression = "expression" | "mapper" "[" path "]" ["." identifier]
+##
+## Names are UTF-8 identifiers (XID); properties are ":"-joined identifiers;
+## variant set names may hold "-", variant names "|" and "-" and a leading ".".
+import luce_std.utf8
+import sdf.identifiers
+
+extend Names:
+    ## The id of the path `text`; "" is the empty path. Fails with `invalid`
+    ## on text that is not a path.
+    pub mutating func parse_path(text: str) -> u32!:
+        if text.length == 0: return empty_path
+        var cursor = PathCursor(data = text.bytes, at = 0)
+        let path = try self.parse_at(&cursor, true)
+        if cursor.at != cursor.data.length:
+            error(errors.invalid, "not a path: unexpected text after the path")
+        return path
+
+    ## One path at the cursor; `whole` allows the lone relative root ".".
+    mutating func parse_at(cursor: PathCursor*, whole: bool) -> u32!:
+        if cursor.peek() == 47:
+            cursor.at += 1
+            if identifier_at(cursor.data, cursor.at) > 0:
+                let prim = try self.prim_elements(cursor, absolute_root)
+                return try self.property_elements(cursor, prim)
+            return absolute_root
+        if cursor.peek() == 46 and cursor.peek_at(1) == 46:
+            var at = relative_root
+            while true:
+                if not (cursor.peek() == 46 and cursor.peek_at(1) == 46):
+                    error(errors.invalid, "not a path: expected '..'")
+                cursor.at += 2
+                at = try self.child(at, self.dot_dot)
+                if cursor.peek() == 47 and cursor.peek_at(1) == 46 and cursor.peek_at(2) == 46:
+                    cursor.at += 1
+                    continue
+                break
+            if cursor.peek() == 47:
+                cursor.at += 1
+                return try self.path_elements(cursor, at)
+            return at
+        if whole and cursor.data.length - cursor.at == 1 and cursor.peek() == 46:
+            cursor.at += 1
+            return relative_root
+        return try self.path_elements(cursor, relative_root)
+
+    ## Prim elements then optional property elements, or property elements alone.
+    mutating func path_elements(cursor: PathCursor*, parent: u32) -> u32!:
+        if identifier_at(cursor.data, cursor.at) > 0:
+            let prim = try self.prim_elements(cursor, parent)
+            return try self.property_elements(cursor, prim)
+        if cursor.peek() != 46:
+            error(errors.invalid, "not a path: expected a prim or property name")
+        return try self.property_elements(cursor, parent)
+
+    mutating func prim_elements(cursor: PathCursor*, parent: u32) -> u32!:
+        var at = try self.child(parent, try self.identifier(cursor))
+        while true:
+            if cursor.peek() == 47:
+                cursor.at += 1
+                if identifier_at(cursor.data, cursor.at) == 0:
+                    error(errors.invalid, "not a path: expected a prim name after '/'")
+                at = try self.child(at, try self.identifier(cursor))
+            elif cursor.peek() == 123:
+                at = try self.selections(cursor, at)
+                if identifier_at(cursor.data, cursor.at) == 0: return at
+                at = try self.child(at, try self.identifier(cursor))
+            else:
+                return at
+
+    ## One or more `{set=variant}` after `at`.
+    mutating func selections(cursor: PathCursor*, parent: u32) -> u32!:
+        var at = parent
+        while cursor.peek() == 123:
+            cursor.at += 1
+            cursor.blanks()
+            let set_start = cursor.at
+            let first = identifier_at(cursor.data, cursor.at)
+            if first == 0: error(errors.invalid, "not a path: expected a variant set name")
+            cursor.at += first
+            while true:
+                if cursor.peek() == 45: cursor.at += 1
+                else:
+                    let width = continue_at(cursor.data, cursor.at)
+                    if width == 0: break
+                    cursor.at += width
+            let set = try self.tokens.intern((str)cursor.data[set_start..<cursor.at])
+            cursor.blanks()
+            if cursor.peek() != 61: error(errors.invalid, "not a path: expected '=' in a variant selection")
+            cursor.at += 1
+            cursor.blanks()
+            let name_start = cursor.at
+            if cursor.peek() == 46: cursor.at += 1
+            while true:
+                let byte = cursor.peek()
+                if byte == 124 or byte == 45: cursor.at += 1
+                else:
+                    let width = continue_at(cursor.data, cursor.at)
+                    if width == 0: break
+                    cursor.at += width
+            let selection = try self.tokens.intern((str)cursor.data[name_start..<cursor.at])
+            cursor.blanks()
+            if cursor.peek() != 125: error(errors.invalid, "not a path: expected '}' after a variant selection")
+            cursor.at += 1
+            at = try self.variant(at, set, selection)
+        return at
+
+    mutating func property_elements(cursor: PathCursor*, parent: u32) -> u32!:
+        if cursor.peek() != 46: return parent
+        cursor.at += 1
+        let property = try self.property(parent, try self.property_name(cursor))
+        if cursor.peek() == 91:
+            let target = try self.target(property, try self.bracketed(cursor))
+            if cursor.peek() != 46: return target
+            cursor.at += 1
+            let relational = try self.relational(target, try self.property_name(cursor))
+            if cursor.peek() == 91:
+                return try self.target(relational, try self.bracketed(cursor))
+            if cursor.peek() == 46:
+                cursor.at += 1
+                return try self.mapper_or_expression(cursor, relational)
+            return relational
+        if cursor.peek() == 46:
+            cursor.at += 1
+            return try self.mapper_or_expression(cursor, property)
+        return property
+
+    mutating func mapper_or_expression(cursor: PathCursor*, parent: u32) -> u32!:
+        if cursor.keyword("expression"): return try self.expression(parent)
+        if not cursor.keyword("mapper"):
+            error(errors.invalid, "not a path: expected 'mapper' or 'expression'")
+        let mapper = try self.mapper(parent, try self.bracketed(cursor))
+        if cursor.peek() != 46: return mapper
+        cursor.at += 1
+        let start = cursor.at
+        let byte = cursor.peek()
+        if not ((byte >= 65 and byte <= 90) or (byte >= 97 and byte <= 122) or byte == 95):
+            error(errors.invalid, "not a path: expected a mapper argument name")
+        while true:
+            let next = cursor.peek()
+            if (next >= 65 and next <= 90) or (next >= 97 and next <= 122) or next == 95 or (next >= 48 and next <= 57): cursor.at += 1
+            else: break
+        return try self.mapper_arg(mapper, try self.tokens.intern((str)cursor.data[start..<cursor.at]))
+
+    ## `[path]`.
+    mutating func bracketed(cursor: PathCursor*) -> u32!:
+        if cursor.peek() != 91: error(errors.invalid, "not a path: expected '['")
+        cursor.at += 1
+        let path = try self.parse_at(cursor, false)
+        if cursor.peek() != 93: error(errors.invalid, "not a path: expected ']'")
+        cursor.at += 1
+        return path
+
+    ## A ":"-joined property name at the cursor.
+    mutating func property_name(cursor: PathCursor*) -> u32!:
+        let start = cursor.at
+        let first = identifier_at(cursor.data, cursor.at)
+        if first == 0: error(errors.invalid, "not a path: expected a property name")
+        cursor.at += first
+        while cursor.peek() == 58:
+            let next = identifier_at(cursor.data, cursor.at + 1)
+            if next == 0: error(errors.invalid, "not a path: expected a name after ':'")
+            cursor.at += 1 + next
+        return try self.tokens.intern((str)cursor.data[start..<cursor.at])
+
+    mutating func identifier(cursor: PathCursor*) -> u32!:
+        let start = cursor.at
+        let width = identifier_at(cursor.data, cursor.at)
+        if width == 0: error(errors.invalid, "not a path: expected a name")
+        cursor.at += width
+        return try self.tokens.intern((str)cursor.data[start..<cursor.at])
+
+## A position in path text.
+struct PathCursor:
+    var data: const u8[]
+    var at: usize
+
+    ## The byte at the cursor, or 0 at the end.
+    func peek() -> u8:
+        return self.data[self.at] if self.at < self.data.length else 0
+
+    func peek_at(offset: usize) -> u8:
+        return self.data[self.at + offset] if self.at + offset < self.data.length else 0
+
+    mutating func blanks():
+        while self.peek() == 32 or self.peek() == 9: self.at += 1
+
+    ## Consume `word` when it is next and not followed by an identifier character.
+    mutating func keyword(word: str) -> bool:
+        if self.data.length - self.at < word.length: return false
+        for index in 0..<word.length:
+            if self.data[self.at + index] != word.bytes[index]: return false
+        if continue_at(self.data, self.at + word.length) > 0: return false
+        self.at += word.length
+        return true
+
+## The byte length of the identifier starting at `at` (an identifier start
+## then continue characters), or 0.
+pub func identifier_at(data: const u8[], at: usize) -> usize:
+    let first = utf8.decode(data, at) else return 0
+    if not identifiers.is_start((u32)first.scalar): return 0
+    var end = at + first.width
+    while true:
+        let width = continue_at(data, end)
+        if width == 0: return end - at
+        end += width
+
+## The byte width of an identifier continue character at `at`, or 0.
+func continue_at(data: const u8[], at: usize) -> usize:
+    let decoded = utf8.decode(data, at) else return 0
+    return decoded.width if identifiers.is_continue((u32)decoded.scalar) else 0

@@ -1,0 +1,92 @@
+## Prim cache population, after OpenUSD's Pcp (pxr/usd/pcp): which layers'
+## opinions make up each prim of a stage, and in what strength order. A
+## layer stack is a root layer and its sublayers; a prim index is a graph of
+## nodes, each a site (a layer stack and a path in it) reached from its
+## parent by an arc (reference, payload, variant, inherit, specialize,
+## relocate), with a map from its namespace to the parent's. Opinions are
+## read strongest first: nodes in strength order, and within a node its
+## layer stack's layers, strongest first.
+##
+## This fragment holds time offsets and arc types; layers.lucb opens layers,
+## layer_stack.lucb builds layer stacks and relocations.lucb their
+## relocations, map.lucb maps paths between
+## namespaces, graph.lucb holds the node graph and strength.lucb orders
+## it, tasks.lucb orders the work of building an index, build.lucb,
+## arcs.lucb, variants.lucb and classes.lucb build prim indexes, compose.lucb answers what composes, report.lucb
+## prints it as OpenUSD's composition results do.
+import luce_std.math
+import memory
+import errors
+import ar
+import layer_file
+from sdf.names import Names, PathKind, absolute_root, relative_root, empty_path
+from sdf.layer_data import LayerData, Spec, SpecType, FieldKeys
+from sdf.values import Value, Dictionary, ListOp, ListItem, ListPart, PayloadRecord, same, specifier_over, specifier_def, specifier_class
+from sdf.expressions import is_expression, evaluate_to_string, evaluate, Evaluated, ExpressionKind
+from sdf.value_types import ValueKind
+from sdf.list_ops import apply_list_op, same_item
+from luce_geocore.core.growing import Growing
+
+## A time mapping t' = t * scale + offset (SdfLayerOffset).
+pub struct Offset:
+    pub var offset: f64
+    pub var scale: f64
+
+    pub static func identity() -> Offset:
+        return Offset(offset = 0.0, scale = 1.0)
+
+    ## `self` after `inner` (SdfLayerOffset's operator*).
+    pub func times(inner: Offset) -> Offset:
+        return Offset(offset = self.scale * inner.offset + self.offset, scale = self.scale * inner.scale)
+
+    pub func is_identity() -> bool:
+        return self.offset == 0.0 and self.scale == 1.0
+
+    ## Finite, with an invertible, non-negative scale.
+    pub func is_valid() -> bool:
+        return math.is_finite(self.offset) and math.is_finite(self.scale) and self.scale > 0.0
+
+    pub func apply(time: f64) -> f64:
+        return time * self.scale + self.offset
+
+## Arc types in strength order (PcpArcType).
+pub enum ArcType as u8:
+    root = 0
+    inherit = 1
+    variant = 2
+    relocate = 3
+    reference = 4
+    payload = 5
+    specialize = 6
+
+## PcpArcType's display names, as composition reports print them.
+pub func arc_name(arc: ArcType) -> str:
+    match arc:
+        .root: return "root"
+        .inherit: return "inherit"
+        .variant: return "variant"
+        .relocate: return "relocate"
+        .reference: return "reference"
+        .payload: return "payload"
+        _: return "specialize"
+
+## Composition errors, one line each (PcpErrorBase descriptions).
+pub struct Problems:
+    pub var text: Growing[u8]
+
+    pub func init():
+        self.text = Growing[u8]()
+
+    pub mutating func close():
+        self.text.close()
+
+    pub mutating func add(message: str) -> !:
+        for byte in message.bytes: try self.text.push(byte)
+        try self.text.push(10)
+
+    ## `message` followed by `detail` and "@".
+    pub mutating func add_with(message: str, detail: str) -> !:
+        for byte in message.bytes: try self.text.push(byte)
+        for byte in detail.bytes: try self.text.push(byte)
+        try self.text.push('@')
+        try self.text.push(10)

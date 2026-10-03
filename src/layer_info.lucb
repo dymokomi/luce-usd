@@ -1,0 +1,62 @@
+## A layer summarized as "key: value" lines for Usd.info: serialization,
+## default prim, up axis, units, time range, and prim specs counted by type.
+import luce_std.math
+from sdf.names import Names
+from sdf.layer_data import LayerData, SpecType
+from sdf.values import Value
+from sdf.value_types import ValueKind
+import usda.numbers
+from luce_geocore.core.growing import Growing
+
+## Describe `layer` (read from `serialization`) into `out`.
+pub func describe(layer: const LayerData*, serialization: str, out: Growing[u8]*) -> !:
+    let names = layer.names
+    try line(out, "format", serialization)
+    let keys = layer.keys
+    if let found = layer.get(0, keys.default_prim): try line(out, "defaultPrim", names.text_of(found.as_token()))
+    var up = "Y"
+    if let found = layer.get(0, try names.token("upAxis")): up = names.text_of(found.as_token())
+    try line(out, "upAxis", up)
+    var meters: f64 = 0.01
+    if let found = layer.get(0, try names.token("metersPerUnit")): meters = found.as_double()
+    try number_line(out, "metersPerUnit", meters)
+    if let found = layer.get(0, keys.start_time_code): try number_line(out, "startTimeCode", found.as_double())
+    if let found = layer.get(0, keys.end_time_code): try number_line(out, "endTimeCode", found.as_double())
+    # Prim specs, and how many of each type.
+    var types = Growing[u32]()
+    defer types.close()
+    var counts = Growing[usize]()
+    defer counts.close()
+    var prims: usize = 0
+    for index in 1..<layer.spec_count():
+        let spec = layer.spec(index)
+        if spec.kind != SpecType.prim: continue
+        prims += 1
+        var type_name: u32 = 0
+        if let found = spec.get(keys.type_name): type_name = found.as_token()
+        var slot = types.count
+        for at in 0..<types.count:
+            if types.items[at] == type_name: slot = at
+        if slot == types.count:
+            try types.push(type_name)
+            try counts.push(0)
+        counts.items[slot] += 1
+    try number_line(out, "prims", (f64)prims)
+    for at in 0..<types.count:
+        var key = Growing[u8]()
+        defer key.close()
+        try key.assign("type ".bytes)
+        let name = names.text_of(types.items[at])
+        for byte in (name if name.length > 0 else "(typeless)").bytes: try key.push(byte)
+        try number_line(out, (str)key.view(), (f64)counts.items[at])
+
+func line(out: Growing[u8]*, key: str, value: str) -> !:
+    for byte in key.bytes: try out.push(byte)
+    for byte in ": ".bytes: try out.push(byte)
+    for byte in value.bytes: try out.push(byte)
+    try out.push(10)
+
+func number_line(out: Growing[u8]*, key: str, value: f64) -> !:
+    var buffer: u8[32]
+    let count = try numbers.format_double(value, buffer[..<32])
+    try line(out, key, (str)buffer[..<count])

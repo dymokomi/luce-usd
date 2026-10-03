@@ -1,0 +1,64 @@
+## Path ids to text, as OpenUSD writes them (Sdf_PathNode::_WriteTextToBuffer):
+## `/A/B{set=sel}C.prop[/target].rel`, `../A`, `.` for the relative root.
+import text as emit
+
+extend Names:
+    ## Append the text of `path` to `out`; nothing for the empty path.
+    pub func write_path(path: u32, out: Growing[u8]*) -> !:
+        if path == empty_path: return
+        if path == absolute_root:
+            try emit.put_byte(out, 47)
+            return
+        if path == relative_root:
+            try emit.put_byte(out, 46)
+            return
+        try self.write_node(path, out)
+
+    func write_node(path: u32, out: Growing[u8]*) -> !:
+        let node = self.node(path)
+        let parent = self.node(node.parent)
+        match node.kind:
+            .prim:
+                if node.parent == absolute_root: try emit.put_byte(out, 47)
+                elif node.parent != relative_root:
+                    try self.write_node(node.parent, out)
+                    if parent.kind == PathKind.prim: try emit.put_byte(out, 47)
+                try emit.put(out, self.text_of(node.element))
+            .variant:
+                try self.write_below(node.parent, out)
+                try emit.put_byte(out, 123)
+                try emit.put(out, self.text_of(node.element))
+                try emit.put_byte(out, 61)
+                try emit.put(out, self.text_of(node.extra))
+                try emit.put_byte(out, 125)
+            .property, .relational, .mapper_arg:
+                try self.write_below(node.parent, out)
+                # '../.property': a property of a parent step keeps a slash.
+                if node.kind == PathKind.property and parent.kind == PathKind.prim and parent.element == self.dot_dot:
+                    try emit.put_byte(out, 47)
+                try emit.put_byte(out, 46)
+                try emit.put(out, self.text_of(node.element))
+            .target:
+                try self.write_below(node.parent, out)
+                try emit.put_byte(out, 91)
+                try self.write_path(node.element, out)
+                try emit.put_byte(out, 93)
+            .mapper:
+                try self.write_below(node.parent, out)
+                try emit.put(out, ".mapper[")
+                try self.write_path(node.element, out)
+                try emit.put_byte(out, 93)
+            .expression:
+                try self.write_below(node.parent, out)
+                try emit.put(out, ".expression")
+            _:
+                return
+
+    ## The text of a parent that is not the whole path: the roots write
+    ## nothing here except `/` before an absolute root's property.
+    func write_below(parent: u32, out: Growing[u8]*) -> !:
+        if parent == absolute_root:
+            try emit.put_byte(out, 47)
+            return
+        if parent == relative_root: return
+        try self.write_node(parent, out)

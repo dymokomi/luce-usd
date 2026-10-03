@@ -1,0 +1,102 @@
+## Quoting for usda text, after Sdf_FileIOUtility::Quote and
+## _StringFromAssetPath (pxr/usd/sdf/fileIO_Common.cpp): strings take
+## double quotes unless they hold a '"' and no '\'', triple quotes when they
+## hold a line end; asset paths take @...@, or @@@...@@@ when they hold an
+## '@', with an inner @@@ escaped.
+from luce_geocore.core.growing import Growing
+
+## Append `text` quoted (`triple` allows triple quotes for line ends).
+pub func quote_into(out: Growing[u8]*, text: str, triple: bool = true) -> !:
+    var quote: u8 = '"'
+    var has_double = false
+    var has_single = false
+    var has_newline = false
+    for byte in text.bytes:
+        if byte == '"': has_double = true
+        elif byte == '\'': has_single = true
+        elif byte == '\n': has_newline = true
+    if has_double and not has_single: quote = '\''
+    let tripled = triple and has_newline
+    try out.reserve(out.count + text.length + 8)
+    try out.push(quote)
+    if tripled:
+        try out.push(quote)
+        try out.push(quote)
+    let bytes = text.bytes
+    var index: usize = 0
+    while index < bytes.length:
+        let byte = bytes[index]
+        let width = multibyte(bytes, index)
+        if width > 0:
+            for offset in 0..<width: try out.push(bytes[index + offset])
+            index += width
+            continue
+        if byte == '\n':
+            if tripled: try out.push('\n')
+            else:
+                try out.push('\\')
+                try out.push('n')
+        elif byte == '\r':
+            try out.push('\\')
+            try out.push('r')
+        elif byte == '\t':
+            try out.push('\\')
+            try out.push('t')
+        elif byte == '\\':
+            try out.push('\\')
+            try out.push('\\')
+        elif byte == quote:
+            try out.push('\\')
+            try out.push(quote)
+        elif byte < 32 or byte > 126:
+            try out.push('\\')
+            try out.push('x')
+            try out.push(hex_digits[(usize)(byte >> 4)])
+            try out.push(hex_digits[(usize)(byte & 15)])
+        else:
+            try out.push(byte)
+        index += 1
+    try out.push(quote)
+    if tripled:
+        try out.push(quote)
+        try out.push(quote)
+
+## Append the asset path `path` delimited as usda writes it.
+pub func asset_into(out: Growing[u8]*, path: str) -> !:
+    var triple = false
+    for byte in path.bytes:
+        if byte == '@':
+            triple = true
+            break
+    try out.reserve(out.count + path.length + 8)
+    let delimiters: usize = 3 if triple else 1
+    for _ in 0..<delimiters: try out.push('@')
+    let bytes = path.bytes
+    var index: usize = 0
+    while index < bytes.length:
+        if triple and index + 2 < bytes.length and bytes[index] == '@' and bytes[index + 1] == '@' and bytes[index + 2] == '@':
+            try out.push('\\')
+            try out.push('@')
+            try out.push('@')
+            try out.push('@')
+            index += 3
+            continue
+        try out.push(bytes[index])
+        index += 1
+    for _ in 0..<delimiters: try out.push('@')
+
+let hex_digits: u8[16] = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f']
+
+## The length of a valid UTF-8 multi-byte sequence at `index`, or 0
+## (fileIO_Common's _IsUTF8MultiByte: lead and continuation bits only).
+func multibyte(bytes: const u8[], index: usize) -> usize:
+    let lead = bytes[index]
+    var width: usize = 0
+    if lead & 0xE0 == 0xC0: width = 2
+    elif lead & 0xF0 == 0xE0: width = 3
+    elif lead & 0xF8 == 0xF0: width = 4
+    else: return 0
+    if index + width > bytes.length: return 0
+    for offset in 1..<width:
+        if bytes[index + offset] & 0xC0 != 0x80: return 0
+    return width
