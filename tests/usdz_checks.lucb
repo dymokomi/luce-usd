@@ -2,7 +2,7 @@
 ## written here hold their files stored and 64-byte aligned, read back to
 ## the same layer, and give their other entries back in place.
 import memory
-import luce_compress.zip
+from luce_compress import zip
 from luce_usd.kernel import Names, LayerData, read_usdz, write_usdz, write_usda, package_entry, read_file, PackageFile
 from luce_geocore.core.growing import Growing
 

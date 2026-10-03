@@ -7,6 +7,6 @@
 ##                applies them whenever knots are set
 ## offsets.lucb   splines moved in time by a layer offset
 ## evaluate.lucb  a spline's value at a time
-import luce_std.math
+from luce_std import math
 from sdf.values import Value, Spline, Knot, CurveType, Interpolation, ExtrapolationMode, Extrapolation, LoopParams, TangentAlgorithm, typed_as
 from sdf.value_types import ValueKind

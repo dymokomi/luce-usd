@@ -5,7 +5,7 @@
 ## the archive's bytes, with no copy; writing puts the root layer first and
 ## any other files after it.
 import memory
-import luce_compress.zip
+from luce_compress import zip
 import errors
 import usda.reader as usda_reader
 import usdc.reader as usdc_reader

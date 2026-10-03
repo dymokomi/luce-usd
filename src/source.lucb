@@ -5,8 +5,7 @@
 import c
 import memory
 import strings
-import luce_std.utf8
-import luce_std.files
+from luce_std import utf8, files
 
 ## The largest file luce-usd reads whole: 4 GiB.
 pub let most_bytes: usize = 4294967296

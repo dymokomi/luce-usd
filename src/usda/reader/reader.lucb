@@ -16,9 +16,9 @@
 ## properties.lucb  attributes and relationships
 ## splines.lucb     attribute splines
 ## array_edits.lucb array edits
-import luce_std.math
+from luce_std import math
 import memory
-import luce_std.utf8
+from luce_std import utf8
 import errors
 import usda.numbers
 from usda.quote import quote_into, asset_into

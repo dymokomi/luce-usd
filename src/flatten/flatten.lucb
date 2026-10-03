@@ -10,7 +10,7 @@
 ## (instances.lucb). This fragment walks prims and writes specs;
 ## metadata.lucb composes fields; properties.lucb writes attributes and
 ## relationships.
-import luce_std.math
+from luce_std import math
 import memory
 import errors
 import ar

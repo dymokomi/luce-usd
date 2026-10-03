@@ -2,7 +2,7 @@
 ## into the output, and arrays of more than `parallel_elements` elements
 ## formatted in chunks on luce-geocore's pool, each into its own buffer,
 ## then joined in order.
-import luce_geocore.core.parallel as pool
+from luce_geocore.core import parallel as pool
 
 ## Arrays longer than this format in parallel.
 let parallel_elements: usize = 32768

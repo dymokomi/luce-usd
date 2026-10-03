@@ -7,7 +7,7 @@
 ## The usd_geom module reads UsdGeom schemas from a stage: this fragment has
 ## the math, then xform (xformOp stacks), prims (traversal with world
 ## transforms, purposes and visibility).
-import luce_std.math
+from luce_std import math
 import memory
 import errors
 from sdf.names import Names, absolute_root, empty_path

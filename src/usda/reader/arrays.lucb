@@ -5,7 +5,7 @@
 ## array is large. Anything unusual (comments, strings, inf and nan, a
 ## malformed element) sends the array back to the general parser, which
 ## reads it the same way and reports any error.
-import luce_geocore.core.parallel as pool
+from luce_geocore.core import parallel as pool
 import strings
 
 ## Text per parallel chunk.

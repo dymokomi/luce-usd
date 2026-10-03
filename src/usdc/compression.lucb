@@ -6,7 +6,7 @@
 ## code per integer (common, small, medium, large), then the variable-width
 ## deltas, all LZ4-compressed.
 import memory
-import luce_compress.lz4
+from luce_compress import lz4
 import errors
 
 ## Decompress a TfFastCompression buffer into `output`; its length.

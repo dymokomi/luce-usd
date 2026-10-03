@@ -1,7 +1,7 @@
 ## UsdGeom reading: xform op stacks (every op kind, inversion, resetting),
 ## the walk's visibility, purpose, specifier and instancer-prototype rules,
 ## and inherited constant primvars.
-import luce_std.math
+from luce_std import math
 import memory
 from luce_geocore.geocore import Mesh, GeometrySet
 from luce_geocore.core.growing import Growing

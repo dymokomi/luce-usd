@@ -5,7 +5,7 @@
 ## outer trim loop runs counterclockwise in the patch's parameters.
 import interop
 import ownership
-import luce_std.math
+from luce_std import math
 import memory
 from luce_geocore.geocore import Vector3, GeometrySet
 from luce_cad.solids import CadSolids

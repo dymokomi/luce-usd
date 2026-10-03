@@ -4,7 +4,7 @@
 ## is in the sdf/, usda/, usdc/, usdz/, stage/, usd_geom/ and convert/
 ## modules.
 import interop
-import luce_std.math
+from luce_std import math
 import memory
 import errors
 import source

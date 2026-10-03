@@ -6,7 +6,7 @@
 ## package ("/a/b.usdz[c/e.usda]"). Paths are normalized lexically, and a
 ## layer's identity is its normalized absolute path.
 import c
-import luce_std.files
+from luce_std import files
 from luce_geocore.core.growing import Growing
 
 extern func getcwd(buffer: u8*, size: usize) -> c.str?

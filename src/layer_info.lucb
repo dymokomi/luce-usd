@@ -1,6 +1,6 @@
 ## A layer summarized as "key: value" lines for Usd.info: serialization,
 ## default prim, up axis, units, time range, and prim specs counted by type.
-import luce_std.math
+from luce_std import math
 from sdf.names import Names
 from sdf.layer_data import LayerData, SpecType
 from sdf.values import Value

@@ -14,7 +14,7 @@
 ## it, tasks.lucb orders the work of building an index, build.lucb,
 ## arcs.lucb, variants.lucb and classes.lucb build prim indexes, compose.lucb answers what composes, report.lucb
 ## prints it as OpenUSD's composition results do.
-import luce_std.math
+from luce_std import math
 import memory
 import errors
 import ar

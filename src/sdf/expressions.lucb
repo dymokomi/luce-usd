@@ -9,7 +9,7 @@
 ## A variable whose value is itself an expression is evaluated in turn;
 ## circular ones fail. Parsing and evaluating go together: arguments an
 ## and/or no longer needs are parsed without being evaluated.
-import luce_std.math
+from luce_std import math
 from sdf.names import Names
 from sdf.values import Value, Dictionary
 from sdf.value_types import ValueKind, scalar_of
