@@ -32,7 +32,7 @@ pub struct Offset:
     pub var offset: f64
     pub var scale: f64
 
-    pub func identity() -> Offset:
+    pub static func identity() -> Offset:
         return Offset(offset = 0.0, scale = 1.0)
 
     ## `self` after `inner` (SdfLayerOffset's operator*).

@@ -116,7 +116,7 @@ pub struct GeomTokens:
     pub var reset_xform_stack: u32
 
     ## Every token, interned in `names`.
-    pub func of(names: Names*) -> GeomTokens!:
+    pub static func of(names: Names*) -> GeomTokens!:
         return GeomTokens(
             xform = try names.token("Xform"),
             scope = try names.token("Scope"),

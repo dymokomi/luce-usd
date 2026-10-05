@@ -15,7 +15,7 @@ pub struct PathPairs:
     pub var targets: Growing[u32]
     pub var root_identity: bool
 
-    pub func empty(root_identity: bool) -> PathPairs:
+    pub static func empty(root_identity: bool) -> PathPairs:
         return PathPairs(sources = Growing[u32](), targets = Growing[u32](), root_identity = root_identity)
 
     pub func close():
@@ -86,11 +86,11 @@ pub struct MapFunction:
     pub var offset: Offset
 
     ## The identity map (PcpMapFunction::Identity).
-    pub func identity() -> MapFunction:
+    pub static func identity() -> MapFunction:
         return MapFunction(pairs = PathPairs.empty(true), chain = Growing[PathPairs](), offset = Offset.identity())
 
     ## The map of one pair; "/" to "/" becomes the root identity.
-    pub func of_pair(source: u32, target: u32, offset: Offset) -> MapFunction!:
+    pub static func of_pair(source: u32, target: u32, offset: Offset) -> MapFunction!:
         var made = MapFunction(pairs = PathPairs.empty(false), chain = Growing[PathPairs](), offset = offset)
         errdefer made.close()
         if source == absolute_root and target == absolute_root: made.pairs.root_identity = true
@@ -101,7 +101,7 @@ pub struct MapFunction:
 
     ## The map of `pairs` (taken), its composition deferred
     ## (PcpMapFunction::DeferredComposition); the identity stays plain.
-    pub func deferred_of(pairs: PathPairs) -> MapFunction!:
+    pub static func deferred_of(pairs: PathPairs) -> MapFunction!:
         var owned = pairs
         if owned.is_identity(): return MapFunction(pairs = owned, chain = Growing[PathPairs](), offset = Offset.identity())
         var made = MapFunction(pairs = PathPairs.empty(true), chain = Growing[PathPairs](), offset = Offset.identity())

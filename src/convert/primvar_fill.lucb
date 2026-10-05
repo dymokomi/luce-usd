@@ -70,7 +70,7 @@ struct ElementReader:
     ## Table indices of a text primvar's elements.
     var texts: Growing[i32]
 
-    func of(stage: const Stage*, candidate: const PrimvarSource*, table: TableBuilder*) -> ElementReader!:
+    static func of(stage: const Stage*, candidate: const PrimvarSource*, table: TableBuilder*) -> ElementReader!:
         var reader = ElementReader(bytes = candidate.value.bytes(), inline = candidate.value.bits, scalar = scalar_of(candidate.value.kind), indices = ints_of(&candidate.indices), width = candidate.width, texts = Growing[i32]())
         errdefer reader.texts.close()
         if reader.scalar == ValueKind.string or reader.scalar == ValueKind.token:

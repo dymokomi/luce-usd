@@ -120,7 +120,7 @@ pub struct FieldKeys:
     pub var variant_set_children: u32
 
     ## The keys, interned in `names`.
-    pub func of(names: Names*) -> FieldKeys!:
+    pub static func of(names: Names*) -> FieldKeys!:
         return FieldKeys(
             active = try names.token("active"),
             allowed_tokens = try names.token("allowedTokens"),

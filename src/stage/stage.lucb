@@ -95,7 +95,7 @@ pub struct Stage:
 
     ## An attribute metadata field (interpolation, elementSize): the spec's
     ## own field.
-    pub func attribute_field(attribute: const Spec*, key: u32) -> const Value*?:
+    pub static func attribute_field(attribute: const Spec*, key: u32) -> const Value*?:
         return attribute.get(key)
 
     ## The targets of relationship `name` of prim `path`, absolute, into

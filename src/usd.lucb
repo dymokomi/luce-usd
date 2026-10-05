@@ -35,7 +35,7 @@ pub struct Usd:
 
     ## The serialization the file at `path` holds, by its signature: "usda",
     ## "usdc" or "usdz". Fails on a file that is none of them.
-    pub func serialization(path: str) -> interop.Owned[str]!:
+    pub static func serialization(path: str) -> interop.Owned[str]!:
         var prefix: u8[8]
         let count = try source.read_prefix(path, prefix[..<8])
         let found = try sniff.detect(prefix[..<count])
@@ -53,7 +53,7 @@ pub struct Usd:
     ## `payloads` loads only the payloads of prims whose path matches one of
     ## its blank-separated globs ("-" loads none). What was left out is in
     ## `warnings()`.
-    pub func load(path: str, time: f64 = math.nan, flatten: bool = false, purposes: i64 = 0, convert_units: bool = false, subdivide: bool = true, variants: str = "", payloads: str = "") -> interop.Reference[GeometrySet]!:
+    pub static func load(path: str, time: f64 = math.nan, flatten: bool = false, purposes: i64 = 0, convert_units: bool = false, subdivide: bool = true, variants: str = "", payloads: str = "") -> interop.Reference[GeometrySet]!:
         var names = try Names()
         defer names.close()
         var identifier = Growing[u8]()
@@ -86,7 +86,7 @@ pub struct Usd:
     ## crate, .usdz package. Elements go to prims named by their `path`
     ## attribute (`split`), the rest under the root prim `root`; `precise`
     ## writes double-precision points. What was left out is in `warnings()`.
-    pub func save(set: interop.Reference[GeometrySet], path: str, root: str = "geo", split: bool = true, precise: bool = false) -> !:
+    pub static func save(set: interop.Reference[GeometrySet], path: str, root: str = "geo", split: bool = true, precise: bool = false) -> !:
         var names = try Names()
         defer names.close()
         var layer = try LayerData(&names)
@@ -100,7 +100,7 @@ pub struct Usd:
 
     ## Rewrite the layer at `source_path` to `destination` in the format
     ## its extension names, keeping everything the layer holds.
-    pub func convert(source_path: str, destination: str) -> !:
+    pub static func convert(source_path: str, destination: str) -> !:
         var names = try Names()
         defer names.close()
         var layer = try LayerData(&names)
@@ -111,7 +111,7 @@ pub struct Usd:
     ## Write the stage of the layer at `source_path` to `destination`
     ## composed into one layer (as usdcat --flatten does), in the format the
     ## extension names.
-    pub func flatten(source_path: str, destination: str) -> !:
+    pub static func flatten(source_path: str, destination: str) -> !:
         var names = try Names()
         defer names.close()
         var identifier = Growing[u8]()
@@ -129,7 +129,7 @@ pub struct Usd:
     ## prims\tinstances" (the layer files read, the active prims and the
     ## instances among them), then a line "prim\tset\tselection\t
     ## option|option|..." per variant set on the default prim and below it.
-    pub func composition(path: str, variants: str = "", payloads: str = "") -> interop.Owned[str]!:
+    pub static func composition(path: str, variants: str = "", payloads: str = "") -> interop.Owned[str]!:
         var names = try Names()
         defer names.close()
         var identifier = Growing[u8]()
@@ -147,7 +147,7 @@ pub struct Usd:
     ## A summary of the layer at `path`, one "key: value" per line: its
     ## serialization, default prim, up axis, units, time range and prim
     ## counts by type.
-    pub func info(path: str) -> interop.Owned[str]!:
+    pub static func info(path: str) -> interop.Owned[str]!:
         var names = try Names()
         defer names.close()
         var layer = try LayerData(&names)
@@ -159,7 +159,7 @@ pub struct Usd:
         return try interop.copy_text((str)out.view())
 
     ## The warnings of this thread's last load or save, one per line.
-    pub func warnings() -> interop.Owned[str]!:
+    pub static func warnings() -> interop.Owned[str]!:
         return try interop.copy_text((str)last_warnings[..<last_length])
 
 func remember(warnings: const convert.Warnings*):

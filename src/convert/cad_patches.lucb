@@ -29,7 +29,7 @@ struct Patch:
     ## Whether the face's normal is the patch's (du x dv).
     var right_handed: bool
 
-    func empty() -> Patch:
+    static func empty() -> Patch:
         return Patch(nu = 0, nv = 0, order_u = 0, order_v = 0, knots_u = Growing[f64](), knots_v = Growing[f64](), points = Growing[Vector3](),
                      weights = Growing[f64](), trims = Growing[Vector3](), loops = Growing[i64](), right_handed = true)
 
@@ -55,7 +55,7 @@ struct Profile:
     var arcs: usize
     var span: f64
 
-    func empty() -> Profile:
+    static func empty() -> Profile:
         return Profile(a = Growing[f64](), b = Growing[f64](), weights = Growing[f64](), knots = Growing[f64](), order = 2, start = 0.0, arcs = 0, span = 0.0)
 
     func close():

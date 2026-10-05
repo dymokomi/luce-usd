@@ -62,7 +62,7 @@ pub struct PrimIndex:
         return &self.nodes.items[(usize)index]
 
     ## The root node alone at `path` of layer stack `stack`.
-    pub func rooted(stack: usize, path: u32) -> PrimIndex!:
+    pub static func rooted(stack: usize, path: u32) -> PrimIndex!:
         var index = PrimIndex()
         errdefer index.close()
         try index.nodes.push(Node(stack = stack, path = path, arc = ArcType.root, parent = -1, origin = -1, children = Growing[u32](), sibling = 0, depth = 0, map_to_parent = MapFunction.identity(), inert = false, culled = false, has_specs = false, restricted = 0, due_to_ancestor = false, direct = false, ancestral_arc = false))

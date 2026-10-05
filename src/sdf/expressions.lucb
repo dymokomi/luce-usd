@@ -35,10 +35,10 @@ pub struct Evaluated:
     pub var items: Growing[i64]
     pub var failed: bool
 
-    pub func of(kind: ExpressionKind, number: i64) -> Evaluated:
+    pub static func of(kind: ExpressionKind, number: i64) -> Evaluated:
         return Evaluated(kind = kind, number = number, items = Growing[i64](), failed = false)
 
-    pub func failure() -> Evaluated:
+    pub static func failure() -> Evaluated:
         return Evaluated(kind = ExpressionKind.nothing, number = 0, items = Growing[i64](), failed = true)
 
     pub func close():
@@ -484,6 +484,6 @@ func element_at(names: Names*, source: const Evaluated*, index: i64) -> Evaluate
 
 extend Evaluated:
     ## Close `held` and give a failure (for a broken parse).
-    func take_failure(held: Evaluated*) -> Evaluated:
+    static func take_failure(held: Evaluated*) -> Evaluated:
         held.close()
         return Evaluated.failure()

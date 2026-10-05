@@ -45,7 +45,7 @@ pub struct ArrayEdit:
     ## Where the last op word is, for repeats (Vt_ArrayEditOpsBuilder).
     var last_op: usize
 
-    pub func create(kind: ValueKind) -> ArrayEdit*!:
+    pub static func create(kind: ValueKind) -> ArrayEdit*!:
         let made = try new ArrayEdit(users = 1, kind = kind, literals = Growing[u8](), ops = Growing[i64](), last_op = 0) in memory.heap
         return made
 

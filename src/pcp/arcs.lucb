@@ -18,7 +18,7 @@ struct ArcOptions:
     var copy_ancestor: bool
     var tasks: u32
 
-    func plain() -> ArcOptions:
+    static func plain() -> ArcOptions:
         return ArcOptions(contribute = true, ancestral = false, skip_duplicates = false, copy_ancestor = false, tasks = all_tasks)
 
 ## One composed arc: the item (asset anchored: its identifier's token) and
@@ -287,7 +287,7 @@ extend Composer:
 
     ## An implied class arc under a relocation's class arcs, which is no
     ## cycle (the XXX:RelocatesSourceNodes case of _CheckForCycle).
-    func implied_under_relocate(index: const PrimIndex*, kind: ArcType, parent: u32, origin: u32, frame: const Frame*?) -> bool:
+    static func implied_under_relocate(index: const PrimIndex*, kind: ArcType, parent: u32, origin: u32, frame: const Frame*?) -> bool:
         if not is_class_based(kind) or parent == origin: return false
         var graph = index
         var node = (i32)parent

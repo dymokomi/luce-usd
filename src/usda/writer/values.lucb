@@ -344,7 +344,7 @@ extend Writer:
         if per_line: try self.indent(indent)
         try self.put("]\n")
 
-    func needs_brackets(kind: ValueKind, item: ListItem) -> bool:
+    static func needs_brackets(kind: ValueKind, item: ListItem) -> bool:
         match kind:
             .path_list_op, .payload_list_op: return false
             .reference_list_op:

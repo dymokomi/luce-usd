@@ -45,33 +45,33 @@ pub struct Value:
     pub var object: void*?
 
     ## A scalar held in `bits`.
-    pub func scalar(kind: ValueKind, bits: u64) -> Value:
+    pub static func scalar(kind: ValueKind, bits: u64) -> Value:
         return Value(kind = kind, array = false, count = 0, bits = bits, data = Column[u8](), object = none)
 
     ## A kind with no payload (a value block, an animation block).
-    pub func marker(kind: ValueKind) -> Value:
+    pub static func marker(kind: ValueKind) -> Value:
         return Value.scalar(kind, 0)
 
     ## A scalar whose bytes are copied into its own column (vectors,
     ## quaternions, matrices, a payload).
-    pub func of_bytes(kind: ValueKind, bytes: const u8[]) -> Value!:
+    pub static func of_bytes(kind: ValueKind, bytes: const u8[]) -> Value!:
         return Value(kind = kind, array = false, count = 1, bits = 0, data = try Column[u8].copy_of(bytes), object = none)
 
     ## An array of `count` elements whose bytes `column` holds (taken).
-    pub func of_array(kind: ValueKind, count: usize, column: Column[u8]) -> Value:
+    pub static func of_array(kind: ValueKind, count: usize, column: Column[u8]) -> Value:
         return Value(kind = kind, array = true, count = count, bits = 0, data = column, object = none)
 
     ## A vector-shaped metadata value of `count` records in `column` (taken).
-    pub func of_records(kind: ValueKind, count: usize, column: Column[u8]) -> Value:
+    pub static func of_records(kind: ValueKind, count: usize, column: Column[u8]) -> Value:
         return Value(kind = kind, array = false, count = count, bits = 0, data = column, object = none)
 
     ## A vector-shaped metadata value of `count` records of ids (tokens or
     ## paths) copied from `ids`.
-    pub func of_ids(kind: ValueKind, count: usize, ids: const u32[]) -> Value!:
+    pub static func of_ids(kind: ValueKind, count: usize, ids: const u32[]) -> Value!:
         return Value.of_records(kind, count, try Column[u8].copy_of(u8[]((u8*)ids.data, ids.length * 4)))
 
     ## A composite (taken): a Dictionary*, ListOp*, TimeSamples* or Spline*.
-    pub func of_object(kind: ValueKind, object: void*) -> Value:
+    pub static func of_object(kind: ValueKind, object: void*) -> Value:
         return Value(kind = kind, array = false, count = 0, bits = 0, data = Column[u8](), object = object)
 
     pub func is_empty() -> bool:
@@ -165,7 +165,7 @@ pub struct Dictionary:
     pub var values: Growing[Value]
 
     ## A new, empty dictionary with one owner.
-    pub func create() -> Dictionary*!:
+    pub static func create() -> Dictionary*!:
         let made = try new Dictionary(users = 1, keys = Growing[u32](), values = Growing[Value]()) in memory.heap
         return made
 
@@ -221,7 +221,7 @@ pub struct ListOp:
     pub var explicit: bool
     pub var parts: Growing[ListItem][6]
 
-    pub func create() -> ListOp*!:
+    pub static func create() -> ListOp*!:
         let parts: Growing[ListItem][6] = [Growing[ListItem](), Growing[ListItem](), Growing[ListItem](), Growing[ListItem](), Growing[ListItem](), Growing[ListItem]()]
         let made = try new ListOp(users = 1, explicit = false, parts = parts) in memory.heap
         return made
@@ -250,7 +250,7 @@ pub struct TimeSamples:
     pub var times: Growing[f64]
     pub var values: Growing[Value]
 
-    pub func create() -> TimeSamples*!:
+    pub static func create() -> TimeSamples*!:
         let made = try new TimeSamples(users = 1, times = Growing[f64](), values = Growing[Value]()) in memory.heap
         return made
 

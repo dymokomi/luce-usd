@@ -21,17 +21,17 @@ from luce_geocore.core.growing import Growing
 pub struct Matrix4d:
     pub var m: f64[16]
 
-    pub func identity() -> Matrix4d:
+    pub static func identity() -> Matrix4d:
         return Matrix4d([1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0])
 
-    pub func translation(x: f64, y: f64, z: f64) -> Matrix4d:
+    pub static func translation(x: f64, y: f64, z: f64) -> Matrix4d:
         return Matrix4d([1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, x, y, z, 1.0])
 
-    pub func scaling(x: f64, y: f64, z: f64) -> Matrix4d:
+    pub static func scaling(x: f64, y: f64, z: f64) -> Matrix4d:
         return Matrix4d([x, 0.0, 0.0, 0.0, 0.0, y, 0.0, 0.0, 0.0, 0.0, z, 0.0, 0.0, 0.0, 0.0, 1.0])
 
     ## A rotation of `degrees` about axis 0 (X), 1 (Y) or 2 (Z), right-handed.
-    pub func rotation(axis: usize, degrees: f64) -> Matrix4d:
+    pub static func rotation(axis: usize, degrees: f64) -> Matrix4d:
         let radians = degrees * math.pi / 180.0
         let s = math.sin(radians)
         let c = math.cos(radians)
@@ -41,7 +41,7 @@ pub struct Matrix4d:
             _: return Matrix4d([c, s, 0.0, 0.0, -s, c, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0])
 
     ## The rotation of the quaternion (real, i, j, k), normalized first.
-    pub func quaternion(real: f64, i: f64, j: f64, k: f64) -> Matrix4d:
+    pub static func quaternion(real: f64, i: f64, j: f64, k: f64) -> Matrix4d:
         let length = math.sqrt(real * real + i * i + j * j + k * k)
         if length == 0.0: return Matrix4d.identity()
         let w = real / length

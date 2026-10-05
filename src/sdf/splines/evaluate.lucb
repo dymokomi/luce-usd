@@ -63,7 +63,7 @@ struct LoopResolver:
     var extrap_knot1: Knot
     var extrap_knot2: Knot
 
-    func make(spline: const Spline*, time: f64) -> LoopResolver:
+    static func make(spline: const Spline*, time: f64) -> LoopResolver:
         var made = LoopResolver(time = time, pre = false, value_offset = 0.0, inner = false, first_proto = 0, first_time = 0.0, last_time = 0.0,
                                 first_looped = false, last_looped = false, between_last_proto_and_end = false, between_pre_unlooped_and_looped = false,
                                 between_looped_and_post_unlooped = false, invalid_pre_loop = false, invalid_post_loop = false,
@@ -203,7 +203,7 @@ struct LoopResolver:
         return last - first
 
     ## _CopyProtoKnotData: a prototype knot shifted by whole iterations.
-    func proto_copy(spline: const Spline*, index: usize, iterations: f64) -> Knot:
+    static func proto_copy(spline: const Spline*, index: usize, iterations: f64) -> Knot:
         var copy = spline.knots.items[index]
         copy.custom = Value.marker(ValueKind.empty)
         copy.time += iterations * (spline.loops.proto_end - spline.loops.proto_start)
