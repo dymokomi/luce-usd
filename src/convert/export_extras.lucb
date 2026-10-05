@@ -14,7 +14,7 @@ func local_point(part: const MeshPart*, numbers: const i32[], point: usize) -> i
 extend MeshExport:
     ## The edges edge attribute `attribute` marks, found on first use: the
     ## parts each take theirs from the list rather than every edge.
-    mutating func marked_edges(attribute: i64) -> const u32[]!:
+    func marked_edges(attribute: i64) -> const u32[]!:
         for list in self.marked.view():
             if list.attribute == attribute: return list.edges.view()
         var edges = Growing[u32]()
@@ -67,16 +67,16 @@ func write_subsets(work: MeshExport*, part: const MeshPart*, spec: usize, number
         # keeps its own materialBind family only when there is none.
         var family = try subset_family(mesh, entry.name())
         if family == "materialBind" and mesh.find_attribute("material", (i64)(u8)Domain.face) >= 0: family = ""
-        discard(try write_subset(work, part, (str)name.view(), element, members.view(), family))
+        _ = try write_subset(work, part, (str)name.view(), element, members.view(), family)
 
 ## A GeomSubset child of the part; its path.
 func write_subset(work: MeshExport*, part: const MeshPart*, name: str, element: str, members: const i32[], family: str) -> u32!:
     let author = work.author
     let path = try author.names.child(part.path, try author.names.token(name))
     let spec = try author.define(path, work.tokens.geom_subset, work.tokens.xform)
-    discard(try author.attribute(path, spec, "elementType", "token", true, Value.scalar(ValueKind.token, (u64)(try author.names.token(element)))))
-    discard(try author.attribute(path, spec, "indices", "int[]", false, try array_of(ValueKind.int, members.length, u8[]((u8*)members.data, members.length * 4))))
-    if family.length > 0: discard(try author.attribute(path, spec, "familyName", "token", true, Value.scalar(ValueKind.token, (u64)(try author.names.token(family)))))
+    _ = try author.attribute(path, spec, "elementType", "token", true, Value.scalar(ValueKind.token, (u64)(try author.names.token(element))))
+    _ = try author.attribute(path, spec, "indices", "int[]", false, try array_of(ValueKind.int, members.length, u8[]((u8*)members.data, members.length * 4)))
+    if family.length > 0: _ = try author.attribute(path, spec, "familyName", "token", true, Value.scalar(ValueKind.token, (u64)(try author.names.token(family))))
     return path
 
 ## The subset family the import recorded for group `name` ("" without one).
@@ -99,10 +99,10 @@ func write_subdivision(work: MeshExport*, part: const MeshPart*, spec: usize, nu
     let author = work.author
     let scheme = detail_number(mesh, "subd.scheme", 0.0)
     let text = "catmullClark" if scheme == 1.0 else ("loop" if scheme == 2.0 else ("bilinear" if scheme == 3.0 else "none"))
-    discard(try author.attribute(part.path, spec, "subdivisionScheme", "token", true, Value.scalar(ValueKind.token, (u64)(try author.names.token(text)))))
+    _ = try author.attribute(part.path, spec, "subdivisionScheme", "token", true, Value.scalar(ValueKind.token, (u64)(try author.names.token(text))))
     if text == "none": return
     if detail_number(mesh, "subd.boundary", 1.0) == 0.0:
-        discard(try author.attribute(part.path, spec, "interpolateBoundary", "token", false, Value.scalar(ValueKind.token, (u64)(try author.names.token("edgeOnly")))))
+        _ = try author.attribute(part.path, spec, "interpolateBoundary", "token", false, Value.scalar(ValueKind.token, (u64)(try author.names.token("edgeOnly"))))
     var indices = Growing[i32]()
     defer indices.close()
     var values = Growing[f32]()
@@ -123,9 +123,9 @@ func write_subdivision(work: MeshExport*, part: const MeshPart*, spec: usize, nu
         var lengths = Growing[i32]()
         defer lengths.close()
         try lengths.fill(values.count, 2)
-        discard(try author.attribute(part.path, spec, "creaseIndices", "int[]", false, try array_of(ValueKind.int, indices.count, u8[]((u8*)indices.items.data, indices.count * 4))))
-        discard(try author.attribute(part.path, spec, "creaseLengths", "int[]", false, try array_of(ValueKind.int, lengths.count, u8[]((u8*)lengths.items.data, lengths.count * 4))))
-        discard(try author.attribute(part.path, spec, "creaseSharpnesses", "float[]", false, try array_of(ValueKind.float, values.count, u8[]((u8*)values.items.data, values.count * 4))))
+        _ = try author.attribute(part.path, spec, "creaseIndices", "int[]", false, try array_of(ValueKind.int, indices.count, u8[]((u8*)indices.items.data, indices.count * 4)))
+        _ = try author.attribute(part.path, spec, "creaseLengths", "int[]", false, try array_of(ValueKind.int, lengths.count, u8[]((u8*)lengths.items.data, lengths.count * 4)))
+        _ = try author.attribute(part.path, spec, "creaseSharpnesses", "float[]", false, try array_of(ValueKind.float, values.count, u8[]((u8*)values.items.data, values.count * 4)))
     indices.clear()
     values.clear()
     let corner = mesh.find_attribute("corner_sharpness", (i64)(u8)Domain.point)
@@ -137,8 +137,8 @@ func write_subdivision(work: MeshExport*, part: const MeshPart*, spec: usize, nu
             try indices.push((i32)at)
             try values.push((f32)sharpness)
     if values.count > 0:
-        discard(try author.attribute(part.path, spec, "cornerIndices", "int[]", false, try array_of(ValueKind.int, indices.count, u8[]((u8*)indices.items.data, indices.count * 4))))
-        discard(try author.attribute(part.path, spec, "cornerSharpnesses", "float[]", false, try array_of(ValueKind.float, values.count, u8[]((u8*)values.items.data, values.count * 4))))
+        _ = try author.attribute(part.path, spec, "cornerIndices", "int[]", false, try array_of(ValueKind.int, indices.count, u8[]((u8*)indices.items.data, indices.count * 4)))
+        _ = try author.attribute(part.path, spec, "cornerSharpnesses", "float[]", false, try array_of(ValueKind.float, values.count, u8[]((u8*)values.items.data, values.count * 4)))
     indices.clear()
     let hole = mesh.find_attribute("hole", (i64)(u8)Domain.face)
     if hole >= 0:
@@ -147,7 +147,7 @@ func write_subdivision(work: MeshExport*, part: const MeshPart*, spec: usize, nu
         for at in 0..<part.faces.count:
             if bits.get((usize)part.faces.items[at]): try indices.push((i32)at)
     if indices.count > 0:
-        discard(try author.attribute(part.path, spec, "holeIndices", "int[]", false, try array_of(ValueKind.int, indices.count, u8[]((u8*)indices.items.data, indices.count * 4))))
+        _ = try author.attribute(part.path, spec, "holeIndices", "int[]", false, try array_of(ValueKind.int, indices.count, u8[]((u8*)indices.items.data, indices.count * 4)))
 
 func detail_number(mesh: const Mesh*, name: str, fallback: f64) -> f64:
     let found = mesh.find_attribute(name, (i64)(u8)Domain.detail)
@@ -185,7 +185,7 @@ func write_binding(work: MeshExport*, part: const MeshPart*, spec: usize) -> !:
         try apply_binding_api(author, spec)
         return
     # The material subsets never overlap.
-    discard(try author.attribute(part.path, spec, "subsetFamily:materialBind:familyType", "token", true, Value.scalar(ValueKind.token, (u64)(try author.names.token("nonOverlapping")))))
+    _ = try author.attribute(part.path, spec, "subsetFamily:materialBind:familyType", "token", true, Value.scalar(ValueKind.token, (u64)(try author.names.token("nonOverlapping"))))
     var members = Growing[i32]()
     defer members.close()
     var name = Growing[u8]()

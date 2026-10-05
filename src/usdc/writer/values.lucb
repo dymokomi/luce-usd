@@ -15,7 +15,7 @@ func rep_of(kind: ValueKind, payload: u64, inlined: bool) -> u64:
 
 extend CrateWriter:
     ## The ValueRep of `value`, writing its bytes when not inlined.
-    mutating func pack(value: const Value*) -> u64!:
+    func pack(value: const Value*) -> u64!:
         if value.array: return try self.pack_array(value)
         let kind = value.kind
         match kind:
@@ -85,7 +85,7 @@ extend CrateWriter:
                 return rep_of(kind, at, false)
             .token_vector, .string_vector, .path_vector:
                 let ids = value.ids()
-                var indexes = try alloc u32[ids.length] in memory.heap
+                var indexes = try new u32[ids.length] --- in memory.heap
                 defer free(indexes) in memory.heap
                 for index in 0..<ids.length:
                     if kind == ValueKind.token_vector: indexes[index] = try self.token(ids[index])
@@ -105,7 +105,7 @@ extend CrateWriter:
             .relocates:
                 self.require(11)
                 let pairs = value.ids()
-                var indexes = try alloc u32[pairs.length] in memory.heap
+                var indexes = try new u32[pairs.length] --- in memory.heap
                 defer free(indexes) in memory.heap
                 for index in 0..<pairs.length: indexes[index] = try self.path_value(pairs[index])
                 let at = self.tell()
@@ -145,7 +145,7 @@ extend CrateWriter:
 
     ## A nested value (_Writer::Write(VtValue)): an int64 forward offset,
     ## the value's own bytes, then its rep at the offset's target.
-    mutating func write_nested(value: const Value*) -> !:
+    func write_nested(value: const Value*) -> !:
         let offset_at = self.tell()
         try self.put_u64(0)
         let rep = try self.pack(value)
@@ -155,9 +155,9 @@ extend CrateWriter:
 
     ## A dictionary (WriteMap): u64 count, then (string index, nested value)
     ## pairs in key order.
-    mutating func write_dictionary(dictionary: const Dictionary*) -> !:
+    func write_dictionary(dictionary: const Dictionary*) -> !:
         let count = dictionary.count()
-        var order = try alloc usize[count] in memory.heap
+        var order = try new usize[count] --- in memory.heap
         defer free(order) in memory.heap
         for index in 0..<count: order[index] = index
         for index in 1..<count:
@@ -174,10 +174,10 @@ extend CrateWriter:
 
     ## A variant selection map (WriteMap): u64 count, then (string, string)
     ## index pairs in key order.
-    mutating func pack_selection_map(value: const Value*) -> u64!:
+    func pack_selection_map(value: const Value*) -> u64!:
         let pairs = value.ids()
         let count = pairs.length // 2
-        var order = try alloc usize[count] in memory.heap
+        var order = try new usize[count] --- in memory.heap
         defer free(order) in memory.heap
         for index in 0..<count: order[index] = index
         for index in 1..<count:
@@ -187,7 +187,7 @@ extend CrateWriter:
                 order[at] = order[at - 1]
                 at -= 1
             order[at] = current
-        var indexes = try alloc u32[count * 2] in memory.heap
+        var indexes = try new u32[count * 2] --- in memory.heap
         defer free(indexes) in memory.heap
         for index in 0..<count:
             indexes[index * 2] = try self.string(pairs[order[index] * 2])
@@ -199,7 +199,7 @@ extend CrateWriter:
 
     ## A list op: its header byte, then each non-empty part (explicit,
     ## added, prepended, appended, deleted, ordered) as a count and items.
-    mutating func pack_list_op(value: const Value*) -> u64!:
+    func pack_list_op(value: const Value*) -> u64!:
         let list = value.list_op() else return rep_of(value.kind, 0, false)
         let kind = value.kind
         # Items that are nested values or dictionaries are written first
@@ -222,7 +222,7 @@ extend CrateWriter:
         return rep_of(kind, at, false)
 
     ## One list op item.
-    mutating func write_item(kind: ValueKind, item: ListItem) -> !:
+    func write_item(kind: ValueKind, item: ListItem) -> !:
         match kind:
             .token_list_op: try self.put_u32(try self.token((u32)item.a))
             .string_list_op: try self.put_u32(try self.string((u32)item.a))
@@ -252,7 +252,7 @@ extend CrateWriter:
     ## Time samples: an offset to the times' rep (the times written before
     ## it, shared by rep), an offset to the values (their bytes before them),
     ## then the count and the values' reps.
-    mutating func pack_time_samples(value: const Value*) -> u64!:
+    func pack_time_samples(value: const Value*) -> u64!:
         let samples = value.time_samples() else return rep_of(value.kind, 0, false)
         let at = self.tell()
         try self.put_u64(0)
@@ -265,7 +265,7 @@ extend CrateWriter:
         try self.put_u64(times_rep)
         let values_offset_at = self.tell()
         try self.put_u64(0)
-        var reps = try alloc u64[samples.count()] in memory.heap
+        var reps = try new u64[samples.count()] --- in memory.heap
         defer free(reps) in memory.heap
         for index in 0..<samples.count(): reps[index] = try self.pack(&samples.values.items[index])
         let values_at = self.tell()

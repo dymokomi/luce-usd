@@ -7,6 +7,8 @@
 ## /Flattened_Prototype_N in the text order of their /__Prototype_M paths:
 ## an over holding the source's children. Instances reference theirs.
 
+import strings
+
 ## One prototype: its instances' key, its source instance, and its path
 ## in the flattened layer.
 struct Prototype:
@@ -20,7 +22,7 @@ extend Flattener:
     ## where nested instances are. Pcp registers instances from parallel
     ## tasks, so which instance of a key comes first varies; the source
     ## here is the shallowest, then the first in path order.
-    mutating func populate(roots: const u32[]) -> !:
+    func populate(roots: const u32[]) -> !:
         for root in roots: try self.walk(root)
         var at: usize = 0
         while at < self.prototypes.count:
@@ -39,7 +41,7 @@ extend Flattener:
             at += 1
 
     ## Register the instances at and under `path`, not looking inside them.
-    mutating func walk(path: u32) -> !:
+    func walk(path: u32) -> !:
         let composer = self.composer
         let index = try composer.index(path)
         var opinions = Growing[Opinion]()
@@ -56,7 +58,7 @@ extend Flattener:
 
     ## Register instance `path` with the prototype of its key, a new one
     ## when the key is new.
-    mutating func register(index: const PrimIndex*, path: u32) -> !:
+    func register(index: const PrimIndex*, path: u32) -> !:
         var key = InstanceKey()
         errdefer key.close()
         try self.composer.instance_key(index, &key)
@@ -70,14 +72,14 @@ extend Flattener:
         key = InstanceKey()
         try self.add_instance(path, (u32)(self.prototypes.count - 1))
 
-    mutating func add_instance(path: u32, prototype: u32) -> !:
+    func add_instance(path: u32, prototype: u32) -> !:
         try self.instances.push(path)
         errdefer self.instances.count -= 1
         try self.instance_of.push(prototype)
 
     ## Name the prototypes and write each: an over with its source's
     ## children (_CopyPrototypePrim).
-    mutating func write_prototypes() -> !:
+    func write_prototypes() -> !:
         let count = self.prototypes.count
         if count == 0: return
         # __Prototype_N numbers follow the sources' path order.
@@ -96,7 +98,7 @@ extend Flattener:
         sort_by(&by_text, self.names, self.prototypes.view(), true, numbers.view())
         var text: u8[40]
         for rank in 0..<count:
-            let name = try format(text, f"Flattened_Prototype_{rank + 1}")
+            let name = try strings.format(text, f"Flattened_Prototype_{rank + 1}")
             self.prototypes.items[(usize)by_text.items[rank]].flattened = try self.names.child(absolute_root, try self.names.token(name))
         for at in by_text.view():
             let prototype = self.prototypes.items[(usize)at]
@@ -115,13 +117,13 @@ extend Flattener:
 
     ## A target path of a prim in the prototype being written: paths in
     ## its source move into the prototype.
-    mutating func in_prototype(path: u32) -> u32!:
+    func in_prototype(path: u32) -> u32!:
         if self.writing_source == empty_path or not self.names.has_prefix(path, self.writing_source): return path
         return try self.names.replace_prefix(path, self.writing_source, self.writing_path)
 
     ## `add references = </Flattened_Prototype_N>` on instance `source`'s
     ## flattened spec.
-    mutating func reference_prototype(source: u32, spec: usize) -> !:
+    func reference_prototype(source: u32, spec: usize) -> !:
         var target = empty_path
         for at in 0..<self.instances.count:
             if self.instances.items[at] == source: target = self.prototypes.items[(usize)self.instance_of.items[at]].flattened

@@ -42,12 +42,12 @@ pub struct Tokens:
         return self.texts.items[(usize)token]
 
     ## The id of `text`, added when new.
-    pub mutating func intern(text: str) -> u32!:
+    pub func intern(text: str) -> u32!:
         if text.length == 0: return 0
         if self.slots.count == 0 or self.texts.count * 2 >= self.slots.count:
             try self.rehash(1024 if self.slots.count == 0 else self.slots.count * 2)
         let mask = self.slots.count - 1
-        var slot = (usize)hash(text) & mask
+        var slot = (usize)text.hash() & mask
         while self.slots.items[slot] != 0:
             let id = self.slots.items[slot] - 1
             if self.texts.items[(usize)id] == text: return id
@@ -65,7 +65,7 @@ pub struct Tokens:
         if text.length == 0: return 0
         if self.slots.count == 0: return none
         let mask = self.slots.count - 1
-        var slot = (usize)hash(text) & mask
+        var slot = (usize)text.hash() & mask
         while self.slots.items[slot] != 0:
             let id = self.slots.items[slot] - 1
             if self.texts.items[(usize)id] == text: return id
@@ -73,10 +73,10 @@ pub struct Tokens:
         return none
 
     ## A copy of `text` in chunk storage.
-    mutating func store(text: str) -> str!:
+    func store(text: str) -> str!:
         if text.length > self.tail.length:
             let size = text.length if text.length > chunk_bytes // 4 else chunk_bytes
-            let chunk = try alloc u8[size] in memory.heap
+            let chunk = try new u8[size] --- in memory.heap
             errdefer free(chunk) in memory.heap
             try self.chunks.push(chunk)
             if size == chunk_bytes: self.tail = chunk
@@ -88,15 +88,15 @@ pub struct Tokens:
         self.tail = self.tail[text.length..]
         return stored
 
-    mutating func rehash(capacity: usize) -> !:
+    func rehash(capacity: usize) -> !:
         try self.slots.fill(capacity, 0)
         let mask = capacity - 1
         for id in 1..<self.texts.count:
-            var slot = (usize)hash(self.texts.items[id]) & mask
+            var slot = (usize)self.texts.items[id].hash() & mask
             while self.slots.items[slot] != 0: slot = (slot + 1) & mask
             self.slots.items[slot] = (u32)id + 1
 
-    pub mutating func close():
+    pub func close():
         for chunk in self.chunks.view(): free(chunk) in memory.heap
         self.chunks.close()
         self.texts.close()

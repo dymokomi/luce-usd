@@ -40,7 +40,7 @@ struct CurveWrite:
         self.weights = Growing[f64]()
         self.curves = Growing[i32]()
 
-    mutating func close():
+    func close():
         self.counts.close()
         self.sources.close()
         self.positions.close()
@@ -51,7 +51,7 @@ struct CurveWrite:
         self.curves.close()
 
     ## A vertex at `p` (absolute) taking point `source`'s values.
-    mutating func vertex(p: Vector3, source: usize) -> !:
+    func vertex(p: Vector3, source: usize) -> !:
         try self.positions.push(p.x)
         try self.positions.push(p.y)
         try self.positions.push(p.z)
@@ -203,22 +203,22 @@ func write_curve_prim(author: Author*, tokens: const GeomTokens*, path: u32, kin
         if options.precise: memory.write[f64]((void*)&out[at * 8], value)
         else: memory.write[f32]((void*)&out[at * 4], (f32)value)
     let taken = column.take()
-    discard(try author.attribute(path, spec, "points", "point3d[]" if options.precise else "point3f[]", false, Value.of_array(ValueKind.vec3d if options.precise else ValueKind.vec3f, vertices, taken)))
+    _ = try author.attribute(path, spec, "points", "point3d[]" if options.precise else "point3f[]", false, Value.of_array(ValueKind.vec3d if options.precise else ValueKind.vec3f, vertices, taken))
     let extent: f32[6] = [(f32)low[0], (f32)low[1], (f32)low[2], (f32)high[0], (f32)high[1], (f32)high[2]]
-    discard(try author.attribute(path, spec, "extent", "float3[]", false, try array_of(ValueKind.vec3f, 2, u8[]((u8*)&extent[0], 24))))
-    discard(try author.attribute(path, spec, "curveVertexCounts", "int[]", false, try array_of(ValueKind.int, write.counts.count, u8[]((u8*)write.counts.items.data, write.counts.count * 4))))
+    _ = try author.attribute(path, spec, "extent", "float3[]", false, try array_of(ValueKind.vec3f, 2, u8[]((u8*)&extent[0], 24)))
+    _ = try author.attribute(path, spec, "curveVertexCounts", "int[]", false, try array_of(ValueKind.int, write.counts.count, u8[]((u8*)write.counts.items.data, write.counts.count * 4)))
     if nurbs:
-        discard(try author.attribute(path, spec, "order", "int[]", false, try array_of(ValueKind.int, write.orders.count, u8[]((u8*)write.orders.items.data, write.orders.count * 4))))
-        discard(try author.attribute(path, spec, "knots", "double[]", false, try array_of(ValueKind.double, write.knots.count, u8[]((u8*)write.knots.items.data, write.knots.count * 8))))
-        discard(try author.attribute(path, spec, "pointWeights", "double[]", false, try array_of(ValueKind.double, write.weights.count, u8[]((u8*)write.weights.items.data, write.weights.count * 8))))
+        _ = try author.attribute(path, spec, "order", "int[]", false, try array_of(ValueKind.int, write.orders.count, u8[]((u8*)write.orders.items.data, write.orders.count * 4)))
+        _ = try author.attribute(path, spec, "knots", "double[]", false, try array_of(ValueKind.double, write.knots.count, u8[]((u8*)write.knots.items.data, write.knots.count * 8)))
+        _ = try author.attribute(path, spec, "pointWeights", "double[]", false, try array_of(ValueKind.double, write.weights.count, u8[]((u8*)write.weights.items.data, write.weights.count * 8)))
     else:
         let cubic = kind != CurveClass.linear
-        discard(try author.attribute(path, spec, "type", "token", true, Value.scalar(ValueKind.token, (u64)(try author.names.token("cubic" if cubic else "linear")))))
+        _ = try author.attribute(path, spec, "type", "token", true, Value.scalar(ValueKind.token, (u64)(try author.names.token("cubic" if cubic else "linear"))))
         if cubic:
             let basis = "bezier" if kind == CurveClass.bezier else ("bspline" if kind == CurveClass.bspline else "catmullRom")
-            discard(try author.attribute(path, spec, "basis", "token", true, Value.scalar(ValueKind.token, (u64)(try author.names.token(basis)))))
+            _ = try author.attribute(path, spec, "basis", "token", true, Value.scalar(ValueKind.token, (u64)(try author.names.token(basis))))
         let cyclic = write.cyclic.count > 0 and write.cyclic.items[0]
         let wrap = "periodic" if cyclic else ("pinned" if kind == CurveClass.catmull_rom else "nonperiodic")
-        discard(try author.attribute(path, spec, "wrap", "token", true, Value.scalar(ValueKind.token, (u64)(try author.names.token(wrap)))))
+        _ = try author.attribute(path, spec, "wrap", "token", true, Value.scalar(ValueKind.token, (u64)(try author.names.token(wrap))))
     try write_element_attributes(author, path, spec, store, Domain.point, write.sources.view(), "vertex", warnings)
     try write_element_attributes(author, path, spec, store, Domain.face, write.curves.view(), "uniform", warnings)

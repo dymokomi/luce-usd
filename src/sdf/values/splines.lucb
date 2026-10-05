@@ -42,7 +42,7 @@ pub struct Extrapolation:
     pub var has_boundary: bool
     pub var boundary: f64
 
-    pub static func of(mode: ExtrapolationMode) -> Extrapolation:
+    pub func of(mode: ExtrapolationMode) -> Extrapolation:
         return Extrapolation(mode = mode, slope = 0.0, has_boundary = false, boundary = 0.0)
 
     ## TsExtrapolation's ==: the mode, and the slope when sloped.
@@ -61,7 +61,7 @@ pub struct LoopParams:
     pub var post_loops: i32
     pub var value_offset: f64
 
-    pub static func none_set() -> LoopParams:
+    pub func none_set() -> LoopParams:
         return LoopParams(proto_start = 0.0, proto_end = 0.0, pre_loops = 0, post_loops = 0, value_offset = 0.0)
 
     pub func is_set() -> bool:
@@ -85,7 +85,7 @@ pub struct Knot:
     pub var custom: Value
 
     ## A knot at `time` with Ts's defaults: held after it, no tangents.
-    pub static func at(time: f64) -> Knot:
+    pub func at(time: f64) -> Knot:
         return Knot(time = time, value = 0.0, pre_value = 0.0, dual = false, next = Interpolation.held,
                     pre_width = 0.0, pre_slope = 0.0, pre_algorithm = TangentAlgorithm.unset,
                     post_width = 0.0, post_slope = 0.0, post_algorithm = TangentAlgorithm.unset,
@@ -107,14 +107,14 @@ pub struct Spline:
     pub var knots: Growing[Knot]
 
     ## A new spline of value type `kind` with no knots and Ts's defaults.
-    pub static func create(kind: ValueKind) -> Spline*!:
+    pub func create(kind: ValueKind) -> Spline*!:
         let made = try new Spline(users = 1, kind = kind, curve = CurveType.bezier, pre = Extrapolation.of(ExtrapolationMode.held),
                                   post = Extrapolation.of(ExtrapolationMode.held), loops = LoopParams.none_set(), knots = Growing[Knot]()) in memory.heap
         return made
 
     ## Add `knot` (its custom data taken) in time order; a knot at the same
     ## time is replaced.
-    pub mutating func put(knot: Knot) -> !:
+    pub func put(knot: Knot) -> !:
         var owned = knot
         var at = self.knots.count
         while at > 0 and self.knots.items[at - 1].time > owned.time: at -= 1

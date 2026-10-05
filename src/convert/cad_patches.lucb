@@ -29,11 +29,11 @@ struct Patch:
     ## Whether the face's normal is the patch's (du x dv).
     var right_handed: bool
 
-    static func empty() -> Patch:
+    func empty() -> Patch:
         return Patch(nu = 0, nv = 0, order_u = 0, order_v = 0, knots_u = Growing[f64](), knots_v = Growing[f64](), points = Growing[Vector3](),
                      weights = Growing[f64](), trims = Growing[Vector3](), loops = Growing[i64](), right_handed = true)
 
-    mutating func close():
+    func close():
         self.knots_u.close()
         self.knots_v.close()
         self.points.close()
@@ -55,16 +55,16 @@ struct Profile:
     var arcs: usize
     var span: f64
 
-    static func empty() -> Profile:
+    func empty() -> Profile:
         return Profile(a = Growing[f64](), b = Growing[f64](), weights = Growing[f64](), knots = Growing[f64](), order = 2, start = 0.0, arcs = 0, span = 0.0)
 
-    mutating func close():
+    func close():
         self.a.close()
         self.b.close()
         self.weights.close()
         self.knots.close()
 
-    mutating func push(a: f64, b: f64, weight: f64) -> !:
+    func push(a: f64, b: f64, weight: f64) -> !:
         try self.a.push(a)
         try self.b.push(b)
         try self.weights.push(weight)

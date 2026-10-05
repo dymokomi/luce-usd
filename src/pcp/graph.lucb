@@ -33,7 +33,7 @@ pub struct Node:
     pub var direct: bool
     pub var ancestral_arc: bool
 
-    pub mutating func close():
+    pub func close():
         self.children.close()
         self.map_to_parent.close()
 
@@ -54,7 +54,7 @@ pub struct PrimIndex:
         self.instanceable = false
         self.has_payloads = false
 
-    pub mutating func close():
+    pub func close():
         for at in 0..<self.nodes.count: self.nodes.items[at].close()
         self.nodes.close()
 
@@ -62,7 +62,7 @@ pub struct PrimIndex:
         return &self.nodes.items[(usize)index]
 
     ## The root node alone at `path` of layer stack `stack`.
-    pub static func rooted(stack: usize, path: u32) -> PrimIndex!:
+    pub func rooted(stack: usize, path: u32) -> PrimIndex!:
         var index = PrimIndex()
         errdefer index.close()
         try index.nodes.push(Node(stack = stack, path = path, arc = ArcType.root, parent = -1, origin = -1, children = Growing[u32](), sibling = 0, depth = 0, map_to_parent = MapFunction.identity(), inert = false, culled = false, has_specs = false, restricted = 0, due_to_ancestor = false, direct = false, ancestral_arc = false))
@@ -106,7 +106,7 @@ pub struct PrimIndex:
 
     ## Add `node` (taken) as a child of `parent`, among its siblings by
     ## strength; its index.
-    pub mutating func insert_child(names: const Names*, parent: u32, node: Node) -> u32!:
+    pub func insert_child(names: const Names*, parent: u32, node: Node) -> u32!:
         var owned = node
         errdefer owned.close()
         owned.parent = (i32)parent
@@ -119,7 +119,7 @@ pub struct PrimIndex:
     ## List node `index` among `parent`'s children by strength
     ## (_InsertChildInStrengthOrder: first, last, else before the first
     ## weaker one).
-    pub mutating func link_child(names: const Names*, parent: u32, index: u32) -> !:
+    pub func link_child(names: const Names*, parent: u32, index: u32) -> !:
         let count = self.nodes.items[(usize)parent].children.count
         var at = count
         if count > 0:
@@ -153,14 +153,14 @@ pub struct PrimIndex:
 
     ## Make `node` inert, recording where it was first restricted
     ## (PcpNodeRef::SetInert).
-    pub mutating func set_inert(names: const Names*, node: u32):
+    pub func set_inert(names: const Names*, node: u32):
         let entry = &self.nodes.items[(usize)node]
         let was = entry.inert or entry.culled
         entry.inert = true
         if not was and entry.restricted == 0: entry.restricted = names.node(entry.path).depth
 
     ## Mark `node` culled, recording where it was first restricted.
-    pub mutating func set_culled(names: const Names*, node: u32):
+    pub func set_culled(names: const Names*, node: u32):
         let entry = &self.nodes.items[(usize)node]
         if entry.culled: return
         if entry.restricted == 0: entry.restricted = names.node(entry.path).depth

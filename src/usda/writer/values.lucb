@@ -6,12 +6,12 @@
 
 extend Writer:
     ## A field in a metadata section: `name = value`, list ops per part.
-    mutating func simple_field(indent: usize, name: u32, value: const Value*) -> !:
+    func simple_field(indent: usize, name: u32, value: const Value*) -> !:
         match value.kind:
             .int_list_op, .int64_list_op, .uint_list_op, .uint64_list_op, .string_list_op, .token_list_op, .unregistered_value_list_op:
                 try self.list_op(indent, self.text(name), value)
                 return
-            _: discard(0)
+            _: _ = 0
         try self.indent(indent)
         try self.token_text(name)
         try self.put(" = ")
@@ -33,7 +33,7 @@ extend Writer:
         try self.put("\n")
 
     ## StringFromVtValue: an attribute value, a value block, an array.
-    mutating func value(value: const Value*) -> !:
+    func value(value: const Value*) -> !:
         match value.kind:
             .value_block:
                 try self.put("None")
@@ -63,7 +63,7 @@ extend Writer:
                     try numbers.write_double(self.out, doubles[index])
                 try self.byte(']')
                 return
-            _: discard(0)
+            _: _ = 0
         let size = element_bytes(value.kind)
         if size == 0: error(errors.unsupported, "a value this writer cannot print")
         if value.array and numeric(value.kind):
@@ -89,7 +89,7 @@ extend Writer:
         try self.element(value.kind, &value.bytes()[0])
 
     ## One element of `kind` stored at `at`.
-    mutating func element(kind: ValueKind, at: const u8*) -> !:
+    func element(kind: ValueKind, at: const u8*) -> !:
         match kind:
             .string, .token, .path_expression:
                 try self.quoted(self.text(memory.read[u32]((void*)at)))
@@ -127,7 +127,7 @@ extend Writer:
                 try self.byte(')')
 
     ## One scalar number.
-    mutating func number(kind: ValueKind, at: const u8*) -> !:
+    func number(kind: ValueKind, at: const u8*) -> !:
         match kind:
             .double, .time_code: try numbers.write_double(self.out, memory.read[f64]((void*)at))
             .float: try numbers.write_float(self.out, memory.read[f32]((void*)at))
@@ -140,7 +140,7 @@ extend Writer:
             .boolean: try self.byte('1' if memory.read[u8]((void*)at) != 0 else '0')
             _: error(errors.unsupported, "a number kind this writer cannot print")
 
-    mutating func integer(value: i64) -> !:
+    func integer(value: i64) -> !:
         var digits: u8[20]
         var count: usize = 0
         var rest: u64 = (u64)value if value >= 0 else (u64)(-%value)
@@ -154,7 +154,7 @@ extend Writer:
             count -= 1
             try self.byte(digits[count])
 
-    mutating func unsigned(value: u64) -> !:
+    func unsigned(value: u64) -> !:
         var digits: u8[20]
         var count: usize = 0
         var rest = value
@@ -169,7 +169,7 @@ extend Writer:
 
     ## `{\n ... }\n`: keys in byte order, `dictionary k = {...}` nested,
     ## `type k = value` otherwise; `"k": "v"` pairs when `strings_only`.
-    mutating func dictionary(indent: usize, value: const Value*, strings_only: bool) -> !:
+    func dictionary(indent: usize, value: const Value*, strings_only: bool) -> !:
         let dictionary = value.dictionary() else return
         var order = Growing[usize]()
         defer order.close()
@@ -212,7 +212,7 @@ extend Writer:
 
     ## `{ type k = value; ... }` on one line (WriteDictionary with
     ## multiLine false), as knot custom data is written.
-    mutating func inline_dictionary(value: const Value*) -> !:
+    func inline_dictionary(value: const Value*) -> !:
         let dictionary = value.dictionary() else return
         var order = Growing[usize]()
         defer order.close()
@@ -237,7 +237,7 @@ extend Writer:
         try self.put(" }")
 
     ## The dictionary's entry indices, by key in byte order (a std::map).
-    mutating func key_order(dictionary: const Dictionary*, order: Growing[usize]*) -> !:
+    func key_order(dictionary: const Dictionary*, order: Growing[usize]*) -> !:
         for index in 0..<dictionary.count(): try order.push(index)
         for index in 1..<order.count:
             let current = order.items[index]
@@ -248,7 +248,7 @@ extend Writer:
             order.items[at] = current
 
     ## A path expression value, or an array of them, without quotes.
-    mutating func bare_expressions(value: const Value*) -> !:
+    func bare_expressions(value: const Value*) -> !:
         if not value.array:
             try self.token_text(value.as_token())
             return
@@ -260,12 +260,12 @@ extend Writer:
         try self.byte(']')
 
     ## A dictionary key: bare when it is an identifier, quoted otherwise.
-    mutating func key(text: str) -> !:
+    func key(text: str) -> !:
         if is_identifier(text): try self.put(text)
         else: try self.quoted(text)
 
     ## The serialization type name of a dictionary value.
-    mutating func value_type(value: const Value*) -> !:
+    func value_type(value: const Value*) -> !:
         var name = ""
         match value.kind:
             .boolean: name = "bool"
@@ -307,7 +307,7 @@ extend Writer:
             try self.put("[]")
 
     ## A list op field, explicit or one line per part: `op name = items`.
-    mutating func list_op(indent: usize, name: str, value: const Value*) -> !:
+    func list_op(indent: usize, name: str, value: const Value*) -> !:
         let list = value.list_op() else return
         if list.explicit:
             try self.list_part(indent, name, "", value.kind, list.items(ListPart.explicit))
@@ -321,7 +321,7 @@ extend Writer:
     ## One list op part (_WriteListOpList): paths, references and payloads
     ## one per line, a single path or payload without brackets; tokens,
     ## strings and numbers on one line in brackets.
-    mutating func list_part(indent: usize, name: str, op: str, kind: ValueKind, items: const ListItem[]) -> !:
+    func list_part(indent: usize, name: str, op: str, kind: ValueKind, items: const ListItem[]) -> !:
         try self.indent(indent)
         if op.length > 0:
             try self.put(op)
@@ -332,7 +332,7 @@ extend Writer:
             try self.put("None\n")
             return
         let per_line = kind == ValueKind.path_list_op or kind == ValueKind.reference_list_op or kind == ValueKind.payload_list_op
-        if items.length == 1 and not self.needs_brackets(kind, items[0]):
+        if items.length == 1 and not Writer.needs_brackets(kind, items[0]):
             try self.list_item(0, kind, items[0])
             try self.put("\n")
             return
@@ -352,7 +352,7 @@ extend Writer:
                 return custom.count() > 0
             _: return true
 
-    mutating func list_item(indent: usize, kind: ValueKind, item: ListItem) -> !:
+    func list_item(indent: usize, kind: ValueKind, item: ListItem) -> !:
         match kind:
             .token_list_op, .string_list_op:
                 try self.indent(indent)
@@ -375,7 +375,7 @@ extend Writer:
 
     ## A reference or payload: `@asset@<path>` or `<path>`, its layer
     ## offset, and a reference's custom data in a multi-line block.
-    mutating func reference(indent: usize, is_reference: bool, item: ListItem) -> !:
+    func reference(indent: usize, is_reference: bool, item: ListItem) -> !:
         var custom: const Dictionary*? = none
         if is_reference:
             if let found = item.custom:
@@ -399,7 +399,7 @@ extend Writer:
             try self.put(")")
 
     ## ` (offset = o; scale = s)` or offset/scale lines, when not identity.
-    mutating func layer_offset(indent: usize, multiline: bool, offset: f64, scale: f64) -> !:
+    func layer_offset(indent: usize, multiline: bool, offset: f64, scale: f64) -> !:
         if offset == 0.0 and scale == 1.0: return
         if not multiline: try self.put(" (")
         if offset != 0.0:
@@ -416,7 +416,7 @@ extend Writer:
         if not multiline: try self.byte(')')
 
     ## Time samples, one `time: value,` line each.
-    mutating func time_samples(indent: usize, value: const Value*) -> !:
+    func time_samples(indent: usize, value: const Value*) -> !:
         let samples = value.time_samples() else return
         for index in 0..<samples.count():
             try self.indent(indent + 1)
@@ -426,7 +426,7 @@ extend Writer:
             try self.put(",\n")
 
     ## `relocates = { <a>: <b>, ... }`.
-    mutating func relocates(indent: usize, multiline: bool, value: const Value*) -> !:
+    func relocates(indent: usize, multiline: bool, value: const Value*) -> !:
         try self.indent(indent)
         try self.put("relocates = {\n" if multiline else "relocates = { ")
         let pairs = value.ids()
@@ -445,7 +445,7 @@ extend Writer:
             try self.put(" }")
 
     ## `variants = { string set = "selection" ... }`.
-    mutating func variant_selections(indent: usize, value: const Value*) -> !:
+    func variant_selections(indent: usize, value: const Value*) -> !:
         let pairs = value.ids()
         let count = pairs.length // 2
         var order = Growing[usize]()

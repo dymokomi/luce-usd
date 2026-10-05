@@ -20,7 +20,7 @@ func round_trip(names: Names*, out: Growing[u8]*, text: str) -> u32!:
     return path
 
 func rejected(names: Names*, text: str):
-    discard(names.parse_path(text)) catch failure:
+    _ = names.parse_path(text) catch failure:
         assert(failure.code == invalid)
         return
     print(f"path accepted but should fail: {text}")
@@ -39,7 +39,7 @@ pub func exercise() -> !:
                  "/A.rel[/B].ratt[/C]", "/A.attr.mapper[/B.x]", "/A.attr.mapper[/B.x].arg",
                  "/A.attr.expression", "A", "A/B", ".prop", "..", "../..", "../A", "../../A.x", "../.prop",
                  "/Caf\u{e9}/\u{65e5}\u{672c}", "/_a1/b_2.c3"]
-    for form in forms: discard(try round_trip(&names, &out, form))
+    for form in forms: _ = try round_trip(&names, &out, form)
     # Blanks inside variant selections are accepted and dropped.
     let spaced = try names.parse_path("/A{ v = x }B")
     assert((try text_of(&names, spaced, &out)) == "/A{v=x}B")
@@ -78,7 +78,7 @@ pub func exercise() -> !:
     assert((try text_of(&names, try names.make_absolute(try names.parse_path(".p"), anchor), &out)) == "/A/B.p")
     let above = try names.parse_path("../../..")
     var climbed = false
-    discard(names.make_absolute(above, anchor)) catch failure:
+    _ = names.make_absolute(above, anchor) catch failure:
         assert(failure.code == invalid)
         climbed = true
     assert(climbed)
@@ -89,4 +89,4 @@ pub func allocations() -> !:
     defer names.close()
     let path = try names.parse_path("/A/B{v=x}C.rel[/D/E].attr")
     let moved = try names.replace_prefix(path, try names.parse_path("/A"), try names.parse_path("/Z"))
-    discard(try names.strip_variants(moved))
+    _ = try names.strip_variants(moved)

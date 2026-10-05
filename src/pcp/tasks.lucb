@@ -50,12 +50,12 @@ struct Indexer:
     ## specializes are evaluated (not the nested builds arcs make).
     var outer: bool
 
-    mutating func close():
+    func close():
         self.index.close()
         self.queue.close()
 
     ## Queue a task; implied class and specializes tasks once per node.
-    mutating func add(task: Task) -> !:
+    func add(task: Task) -> !:
         if task.kind == task_implied_classes or task.kind == task_implied_specializes:
             for queued in self.queue.view():
                 if queued.kind == task.kind and queued.node == task.node: return
@@ -64,7 +64,7 @@ struct Indexer:
     ## Queue a new node's tasks (AddTasksForNode): the implied classes of
     ## the class hierarchy it joins or brings, its subtree's specializes to
     ## propagate, then `kinds` for it and every node under it.
-    mutating func add_tasks_for_node(names: const Names*, node: u32, kinds: u32) -> !:
+    func add_tasks_for_node(names: const Names*, node: u32, kinds: u32) -> !:
         let index = &self.index
         if kinds & task_implied_classes != 0:
             if is_class_based(index.node(node).arc):
@@ -78,7 +78,7 @@ struct Indexer:
     ## Queue `kinds` for `node` and every node under it (Pcp's
     ## _AddTasksForNodeRecursively): the node sets for variant kinds, the
     ## kind itself for arc kinds.
-    mutating func add_tasks(node: u32, kinds: u32) -> !:
+    func add_tasks(node: u32, kinds: u32) -> !:
         var mask = kinds
         if not self.outer: mask = mask & ~variant_tasks
         let children = self.index.nodes.items[(usize)node].children.view()
@@ -89,7 +89,7 @@ struct Indexer:
             if mask & kind != 0: try self.add(Task(kind = kind, node = node, path = 0, name = 0, number = 0))
 
     ## The next task, highest priority first (none when done).
-    mutating func pop(names: const Names*) -> Task?:
+    func pop(names: const Names*) -> Task?:
         if self.queue.count == 0: return none
         var best: usize = 0
         for at in 1..<self.queue.count:
@@ -118,7 +118,7 @@ struct Indexer:
 
     ## Queued fallback and none-found variant tasks become authored ones
     ## again: a new variant may author selections (RetryVariantTasks).
-    mutating func retry_variants():
+    func retry_variants():
         for at in 0..<self.queue.count:
             let kind = self.queue.items[at].kind
             if kind == task_variant_fallback or kind == task_variant_none: self.queue.items[at].kind = task_variant_authored

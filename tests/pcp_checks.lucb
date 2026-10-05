@@ -5,6 +5,7 @@
 import memory
 from luce_usd.kernel import Names, LayerData, Composer, anonymous_session, flatten_stage, write_usda, absolute_path, composition_report, read_file
 from luce_geocore.core.growing import Growing
+import strings
 
 ## One museum case: its directory, the session layer (or ""), and the
 ## prefix of prims whose payloads stay unloaded (or "").
@@ -49,11 +50,11 @@ pub func museum() -> !:
 
 func check_case(case: Case) -> !:
     var root: u8[256]
-    let root_path = try format(root, f"tests/fixtures/openusd/museum/{case.name}/root.usda")
+    let root_path = try strings.format(root, f"tests/fixtures/openusd/museum/{case.name}/root.usda")
     var session: u8[256]
-    let session_path = try format(session, f"tests/fixtures/openusd/museum/{case.name}/{case.session}") if case.session.length > 0 else ""
+    let session_path = try strings.format(session, f"tests/fixtures/openusd/museum/{case.name}/{case.session}") if case.session.length > 0 else ""
     var expected_buffer: u8[256]
-    let expected = try read_file(try format(expected_buffer, f"tests/fixtures/openusd/museum/{case.name}/expected.txt"))
+    let expected = try read_file(try strings.format(expected_buffer, f"tests/fixtures/openusd/museum/{case.name}/expected.txt"))
     defer free(expected) in memory.heap
     var names = try Names()
     defer names.close()
@@ -89,7 +90,7 @@ pub func flattened() -> !:
 func check_flattened(name: str) -> !:
     var root: u8[256]
     var expected_buffer: u8[256]
-    try compare_flattened(try format(root, f"tests/fixtures/openusd/museum/{name}/root.usda"), try format(expected_buffer, f"tests/fixtures/openusd/museum/{name}/flattened.usda"), name)
+    try compare_flattened(try strings.format(root, f"tests/fixtures/openusd/museum/{name}/root.usda"), try strings.format(expected_buffer, f"tests/fixtures/openusd/museum/{name}/flattened.usda"), name)
 
 ## Built-in properties take their schema's type and variability, and are
 ## not custom (UsdPrimDefinition), as usdcat --flatten writes them.

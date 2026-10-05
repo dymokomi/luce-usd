@@ -34,7 +34,7 @@ extend Crate:
         match kind:
             .int, .uint, .int64, .uint64:
                 if compressed and self.since(5):
-                    discard(try self.compressed_ints(at, (usize)count, size, out))
+                    _ = try self.compressed_ints(at, (usize)count, size, out)
                 else:
                     memory.copy(out, try self.bytes_at(at, count * (u64)size), out.length)
             .half, .float, .double:
@@ -56,10 +56,10 @@ extend Crate:
     ## or 't' then a lookup table and compressed u32 indexes.
     func compressed_reals(kind: ValueKind, at: u64, count: usize, out: u8[]) -> !:
         let code = (try self.bytes_at(at, 1))[0]
-        let ints = try alloc u8[count * 4] in memory.heap
+        let ints = try new u8[count * 4] --- in memory.heap
         defer free(ints) in memory.heap
         if code == 'i':
-            discard(try self.compressed_ints(at + 1, count, 4, ints))
+            _ = try self.compressed_ints(at + 1, count, 4, ints)
             for index in 0..<count:
                 let value = memory.read[i32]((void*)&ints[index * 4])
                 match kind:
@@ -71,7 +71,7 @@ extend Crate:
             let size = element_bytes(kind)
             let entries = (u64)try self.u32_at(at + 1)
             let table = try self.bytes_at(at + 5, entries * (u64)size)
-            discard(try self.compressed_ints(at + 5 + entries * (u64)size, count, 4, ints))
+            _ = try self.compressed_ints(at + 5 + entries * (u64)size, count, 4, ints)
             for index in 0..<count:
                 let entry = (u64)memory.read[u32]((void*)&ints[index * 4])
                 if entry >= entries: error(errors.invalid, "a crate lookup index outside its table")

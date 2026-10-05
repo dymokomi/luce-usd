@@ -83,7 +83,7 @@ struct Crate:
     ## Nesting of values inside values (dictionaries, VtValues), bounded.
     var depth: usize
 
-    mutating func close():
+    func close():
         for index in 0..<self.arrays.count: self.arrays.items[index].value.release()
         self.tokens.close()
         self.strings.close()
@@ -133,7 +133,7 @@ struct Crate:
         return self.paths.items[(usize)index]
 
     ## Specs and their fields into `layer`; arrays decode last, in parallel.
-    mutating func fill(layer: LayerData*) -> !:
+    func fill(layer: LayerData*) -> !:
         for crate_spec in self.specs.view():
             let path = try self.path((u64)crate_spec.path)
             if path == empty_path: error(errors.invalid, "a crate spec with an empty path")

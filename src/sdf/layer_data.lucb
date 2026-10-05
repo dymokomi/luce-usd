@@ -120,7 +120,7 @@ pub struct FieldKeys:
     pub var variant_set_children: u32
 
     ## The keys, interned in `names`.
-    pub static func of(names: Names*) -> FieldKeys!:
+    pub func of(names: Names*) -> FieldKeys!:
         return FieldKeys(
             active = try names.token("active"),
             allowed_tokens = try names.token("allowedTokens"),
@@ -214,9 +214,9 @@ pub struct LayerData:
         errdefer:
             self.specs.close()
             self.slots.close()
-        discard(try self.create_spec(absolute_root, SpecType.pseudo_root))
+        _ = try self.create_spec(absolute_root, SpecType.pseudo_root)
 
-    pub mutating func close():
+    pub func close():
         for index in 0..<self.specs.count:
             let spec = &self.specs.items[index]
             for field in 0..<spec.fields.count: spec.fields.items[field].value.release()
@@ -243,7 +243,7 @@ pub struct LayerData:
         return none
 
     ## A new spec at `path`; fails when one exists.
-    pub mutating func create_spec(path: u32, kind: SpecType) -> usize!:
+    pub func create_spec(path: u32, kind: SpecType) -> usize!:
         if self.slots.count == 0 or (self.specs.count + 1) * 2 >= self.slots.count:
             try self.rehash(64 if self.slots.count == 0 else self.slots.count * 2)
         let mask = self.slots.count - 1
@@ -261,7 +261,7 @@ pub struct LayerData:
         return self.specs.items[index].get(name)
 
     ## Set the field `name` of spec `index` to `value` (taken).
-    pub mutating func set(index: usize, name: u32, value: Value) -> !:
+    pub func set(index: usize, name: u32, value: Value) -> !:
         let spec = &self.specs.items[index]
         for at in 0..<spec.fields.count:
             if spec.fields.items[at].name == name:
@@ -273,7 +273,7 @@ pub struct LayerData:
         try spec.fields.push(Field(name = name, value = owned))
 
     ## Remove the field `name` of spec `index`, when present.
-    pub mutating func erase(index: usize, name: u32):
+    pub func erase(index: usize, name: u32):
         let spec = &self.specs.items[index]
         for at in 0..<spec.fields.count:
             if spec.fields.items[at].name == name:
@@ -285,7 +285,7 @@ pub struct LayerData:
                 spec.fields.count -= 1
                 return
 
-    mutating func rehash(capacity: usize) -> !:
+    func rehash(capacity: usize) -> !:
         try self.slots.fill(capacity, 0)
         let mask = capacity - 1
         for index in 0..<self.specs.count:

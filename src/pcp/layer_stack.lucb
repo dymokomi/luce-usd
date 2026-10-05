@@ -26,7 +26,7 @@ pub struct LayerStack:
     pub var source: usize?
     pub var overrides: usize?
 
-    pub mutating func close():
+    pub func close():
         self.layers.close()
         self.offsets.close()
         self.relocates.close()
@@ -45,7 +45,7 @@ pub struct Stacks:
     pub func init():
         self.stacks = Growing[LayerStack]()
 
-    pub mutating func close():
+    pub func close():
         for at in 0..<self.stacks.count: self.stacks.items[at].close()
         self.stacks.close()
 
@@ -54,7 +54,7 @@ pub struct Stacks:
 
     ## The layer stack of root layer `root` (and `session`) whose variables
     ## `overrides` (a stack's variables source) overrides, built now if new.
-    pub mutating func find_or_build(layers: Layers*, root: usize, session: usize?, overrides: usize?, problems: Problems*) -> usize!:
+    pub func find_or_build(layers: Layers*, root: usize, session: usize?, overrides: usize?, problems: Problems*) -> usize!:
         for at in 0..<self.stacks.count:
             let stack = &self.stacks.items[at]
             if stack.root == root and stack.session == session and stack.overrides == overrides: return at
@@ -88,7 +88,7 @@ extend Stacks:
     ## The stack's expression variables (Pcp_ComposeExpressionVariablesOver):
     ## later sources win; the source stays the overriding stack's when
     ## nothing changed.
-    mutating func compose_variables(layers: Layers*, stack: LayerStack*) -> !:
+    func compose_variables(layers: Layers*, stack: LayerStack*) -> !:
         let made = try Dictionary.create()
         stack.variables = Value.of_object(ValueKind.dictionary, (void*)made)
         let key = layers.layer(stack.root).keys.expression_variables

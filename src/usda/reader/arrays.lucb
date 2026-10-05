@@ -51,7 +51,7 @@ struct ArrayCount:
 extend Reader:
     ## The numeric array at the cursor (at its '['), or none to use the
     ## general parser (the cursor unchanged).
-    mutating func fast_array(kind: ValueKind) -> Value?!:
+    func fast_array(kind: ValueKind) -> Value?!:
         if not fast_kind(kind): return none
         let start = self.at
         let data = self.data

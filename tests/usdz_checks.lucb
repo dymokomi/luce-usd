@@ -5,13 +5,14 @@ import memory
 from luce_compress import zip
 from luce_usd.kernel import Names, LayerData, read_usdz, write_usdz, write_usda, package_entry, read_file, PackageFile
 from luce_geocore.core.growing import Growing
+import strings
 
 pub func exercise() -> !:
     var buffer: u8[256]
-    let package = try read_file(try format(buffer, f"tests/fixtures/usdz/package.usdz"))
+    let package = try read_file(try strings.format(buffer, f"tests/fixtures/usdz/package.usdz"))
     defer free(package) in memory.heap
     var expected_buffer: u8[256]
-    let expected = try read_file(try format(expected_buffer, f"tests/fixtures/usdc/arrays.expected.usda"))
+    let expected = try read_file(try strings.format(expected_buffer, f"tests/fixtures/usdc/arrays.expected.usda"))
     defer free(expected) in memory.heap
     var names = try Names()
     defer names.close()

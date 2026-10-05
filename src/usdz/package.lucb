@@ -66,7 +66,7 @@ pub func write_usdz(layer: const LayerData*, root_name: str, files: const Packag
     if ends_with(root_name, ".usdc"): try usdc_writer.write_usdc(layer, &root)
     elif ends_with(root_name, ".usda"): try usda_writer.write_usda(layer, &root)
     else: error(errors.invalid, "a usdz root layer must be named .usdc or .usda")
-    let entries = try alloc PackageFile[files.length + 1] in memory.heap
+    let entries = try new PackageFile[files.length + 1] --- in memory.heap
     defer free(entries) in memory.heap
     entries[0] = PackageFile(name = root_name, data = root.view())
     for index in 0..<files.length: entries[index + 1] = files[index]

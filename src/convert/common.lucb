@@ -49,11 +49,11 @@ pub struct Warnings:
     pub func init():
         self.text = Growing[u8]()
 
-    pub mutating func close():
+    pub func close():
         self.text.close()
 
     ## Add `message` unless it is there already.
-    pub mutating func add(message: str) -> !:
+    pub func add(message: str) -> !:
         let held = (str)self.text.view()
         var start: usize = 0
         while start < held.length:
@@ -65,7 +65,7 @@ pub struct Warnings:
         try self.text.push(10)
 
     ## Add `message` followed by a path's text.
-    pub mutating func add_path(message: str, names: const Names*, path: u32) -> !:
+    pub func add_path(message: str, names: const Names*, path: u32) -> !:
         var line = Growing[u8]()
         defer line.close()
         for byte in message.bytes: try line.push(byte)

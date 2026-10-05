@@ -27,7 +27,7 @@ struct MeshSource:
     var corner_base: usize
     var bad: u8
 
-    mutating func release():
+    func release():
         self.points.release()
         self.counts.release()
         self.indices.release()
@@ -62,7 +62,7 @@ pub struct MeshBuild:
         self.faces = 0
         self.corner_total = 0
 
-    mutating func close():
+    func close():
         for index in 0..<self.sources.count: self.sources.items[index].release()
         self.sources.close()
         self.positions.release()

@@ -18,7 +18,7 @@ struct ArcOptions:
     var copy_ancestor: bool
     var tasks: u32
 
-    static func plain() -> ArcOptions:
+    func plain() -> ArcOptions:
         return ArcOptions(contribute = true, ancestral = false, skip_duplicates = false, copy_ancestor = false, tasks = all_tasks)
 
 ## One composed arc: the item (asset anchored: its identifier's token) and
@@ -29,7 +29,7 @@ struct ArcItem:
 
 extend Composer:
     ## Add the references (or payloads) of `node`.
-    mutating func eval_arcs(indexer: Indexer*, node: u32, payloads: bool) -> !:
+    func eval_arcs(indexer: Indexer*, node: u32, payloads: bool) -> !:
         if not indexer.index.node(node).contributes(): return
         let stack = indexer.index.node(node).stack
         let path = indexer.index.node(node).path
@@ -46,7 +46,7 @@ extend Composer:
     ## to the prim being indexed, across stack frames
     ## (MapNodePathToPayloadInclusionPath); a path that does not map there
     ## always loads.
-    mutating func loads_payload(indexer: const Indexer*, node: u32) -> bool!:
+    func loads_payload(indexer: const Indexer*, node: u32) -> bool!:
         if self.loads_all_payloads(): return true
         var path = try self.inclusion_path(&indexer.index, node, try self.names.strip_variants(indexer.index.node(node).path))
         var frame = indexer.frame
@@ -63,7 +63,7 @@ extend Composer:
     ## (_MapPathToNodeRootPayloadInclusionPath): step by step, skipping
     ## internal arcs' root identities, when the map to the root leaves it
     ## unchanged through its root identity.
-    mutating func inclusion_path(index: const PrimIndex*, node: u32, path: u32) -> u32!:
+    func inclusion_path(index: const PrimIndex*, node: u32, path: u32) -> u32!:
         var map = try index.map_to_root(self.names, node)
         defer map.close()
         var mapped = try map.map(self.names, path, false)
@@ -76,7 +76,7 @@ extend Composer:
 
     ## `path` across one arc for payload inclusion: an internal reference's
     ## or payload's root identity does not count.
-    mutating func to_parent_inclusion(map: const MapFunction*, arc: ArcType, path: u32) -> u32!:
+    func to_parent_inclusion(map: const MapFunction*, arc: ArcType, path: u32) -> u32!:
         if not map.has_root_identity() or (arc != ArcType.reference and arc != ArcType.payload): return try map.map(self.names, path, false)
         var pairs = try map.normalized(self.names)
         defer pairs.close()
@@ -84,7 +84,7 @@ extend Composer:
         return try pairs.map(self.names, path, false)
 
     ## The site's reference (payload) list ops applied weakest layer first.
-    mutating func compose_arcs(stack: usize, path: u32, payloads: bool, out: Growing[ArcItem]*) -> !:
+    func compose_arcs(stack: usize, path: u32, payloads: bool, out: Growing[ArcItem]*) -> !:
         let layers = self.stacks.stack(stack).layers.view()
         var position = layers.length
         while position > 0:
@@ -110,7 +110,7 @@ extend Composer:
     ## Apply one layer's list op (SdfListOp::ApplyOperations), anchoring
     ## asset paths first and tagging new items with the layer; an item
     ## whose asset expression evaluates to nothing is left out.
-    mutating func apply_arcs(list: const ListOp*, stack: usize, layer: usize, position: usize, out: Growing[ArcItem]*) -> !:
+    func apply_arcs(list: const ListOp*, stack: usize, layer: usize, position: usize, out: Growing[ArcItem]*) -> !:
         if list.explicit:
             out.clear()
             for item in list.items(ListPart.explicit):
@@ -142,7 +142,7 @@ extend Composer:
 
     ## `item` with its asset path anchored at `layer`, an expression first
     ## evaluated with the stack's variables; none when that gives nothing.
-    mutating func anchored_item(item: ListItem, stack: usize, layer: usize) -> ListItem?!:
+    func anchored_item(item: ListItem, stack: usize, layer: usize) -> ListItem?!:
         var made = item
         var asset = (u32)item.a
         if is_expression(self.names.text_of(asset)):
@@ -153,7 +153,7 @@ extend Composer:
 
     ## The token of asset `asset` (a string token) anchored at `layer`; 0
     ## for an empty asset path.
-    mutating func anchor(asset: u32, layer: usize) -> u32!:
+    func anchor(asset: u32, layer: usize) -> u32!:
         let text = self.names.text_of(asset)
         if text.length == 0: return 0
         var anchored = Growing[u8]()
@@ -162,7 +162,7 @@ extend Composer:
         return try self.names.token((str)anchored.view())
 
     ## One reference or payload arc from `node`.
-    mutating func add_ref_arc(indexer: Indexer*, node: u32, arc: ArcItem, number: i32, payload: bool) -> !:
+    func add_ref_arc(indexer: Indexer*, node: u32, arc: ArcItem, number: i32, payload: bool) -> !:
         let names = self.names
         let stack = indexer.index.node(node).stack
         let node_path = indexer.index.node(node).path
@@ -207,13 +207,13 @@ extend Composer:
         options.contribute = contribute
         options.ancestral = not is_root_prim(names, prim)
         let kind = ArcType.payload if payload else ArcType.reference
-        discard(try self.add_arc(indexer, kind, node, (i32)node, target_stack, prim, map, number, namespace_depth(names, node_path), options))
+        _ = try self.add_arc(indexer, kind, node, (i32)node, target_stack, prim, map, number, namespace_depth(names, node_path), options)
 
     ## Add an arc (_AddArc): unless it closes a cycle or its site is a
     ## duplicate to skip, a new child node, or (bringing ancestral opinions)
     ## its target's own index as a subtree; then queue the new nodes'
     ## tasks. `map` is taken. The new node, if any.
-    mutating func add_arc(indexer: Indexer*, kind: ArcType, parent: u32, origin: i32, stack: usize, path: u32, map: MapFunction, sibling: i32, depth: i32, options: ArcOptions) -> u32?!:
+    func add_arc(indexer: Indexer*, kind: ArcType, parent: u32, origin: i32, stack: usize, path: u32, map: MapFunction, sibling: i32, depth: i32, options: ArcOptions) -> u32?!:
         var owned = map
         let index = &indexer.index
         var skip = options.skip_duplicates
@@ -268,8 +268,8 @@ extend Composer:
     ## Whether an arc must not be added: it closes a cycle (variant arcs
     ## never do), or with `skip` its site is one a graph up the stack
     ## frames already holds.
-    mutating func refuses_arc(index: const PrimIndex*, kind: ArcType, parent: u32, origin: u32, stack: usize, path: u32, frame: const Frame*?, skip: bool) -> bool!:
-        if kind != ArcType.variant and not self.implied_under_relocate(index, kind, parent, origin, frame):
+    func refuses_arc(index: const PrimIndex*, kind: ArcType, parent: u32, origin: u32, stack: usize, path: u32, frame: const Frame*?, skip: bool) -> bool!:
+        if kind != ArcType.variant and not Composer.implied_under_relocate(index, kind, parent, origin, frame):
             if try self.closes_cycle(index, parent, stack, path, frame):
                 try self.problems.add("Cycle detected")
                 return true
@@ -309,7 +309,7 @@ extend Composer:
     ## Whether an arc from `parent` to (`stack`, `path`) returns to a site
     ## at, above or below one on the way to the root, through every stack
     ## frame (_CheckForCycle).
-    mutating func closes_cycle(index: const PrimIndex*, parent: u32, stack: usize, path: u32, frame: const Frame*?) -> bool!:
+    func closes_cycle(index: const PrimIndex*, parent: u32, stack: usize, path: u32, frame: const Frame*?) -> bool!:
         var graph = index
         var node = (i32)parent
         var site = path

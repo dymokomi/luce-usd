@@ -7,7 +7,7 @@
 
 extend Writer:
     ## The lines inside `name.spline = { ... }`.
-    mutating func spline_body(indent: usize, value: const Value*) -> !:
+    func spline_body(indent: usize, value: const Value*) -> !:
         let spline = value.spline() else return
         if spline.has_curve_segments() or spline.curve == CurveType.hermite:
             try self.indent(indent + 1)
@@ -56,7 +56,7 @@ extend Writer:
             try self.put(",\n")
 
     ## `pre: mode,` unless held.
-    mutating func extrapolation(indent: usize, label: str, extrapolation: Extrapolation) -> !:
+    func extrapolation(indent: usize, label: str, extrapolation: Extrapolation) -> !:
         if extrapolation.equals(Extrapolation.of(ExtrapolationMode.held)): return
         try self.indent(indent + 1)
         try self.put(label)
@@ -74,7 +74,7 @@ extend Writer:
         try self.put(",\n")
 
     ## `; label (width, slope[, algorithm])`, Hermite without the width.
-    mutating func tangent(kind: ValueKind, label: str, bezier: bool, width: f64, slope: f64, algorithm: TangentAlgorithm) -> !:
+    func tangent(kind: ValueKind, label: str, bezier: bool, width: f64, slope: f64, algorithm: TangentAlgorithm) -> !:
         try self.put("; ")
         try self.put(label)
         try self.put(" (")
@@ -88,7 +88,7 @@ extend Writer:
         try self.byte(')')
 
     ## A knot value or slope as TfStringify prints the spline's value type.
-    mutating func spline_number(kind: ValueKind, value: f64) -> !:
+    func spline_number(kind: ValueKind, value: f64) -> !:
         match kind:
             .float: try numbers.write_float(self.out, (f32)value)
             .half: try numbers.write_half(self.out, ((f16)(f32)value).bits())

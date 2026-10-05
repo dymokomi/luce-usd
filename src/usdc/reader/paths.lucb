@@ -13,7 +13,7 @@ struct Branch:
     var parent: u32
 
 extend Crate:
-    mutating func read_paths(start: u64) -> !:
+    func read_paths(start: u64) -> !:
         let count = try self.u64_at(start)
         if count > (u64)self.data.length: error(errors.invalid, "a crate claims more paths than it can hold")
         try self.paths.fill((usize)count, empty_path)
@@ -23,12 +23,12 @@ extend Crate:
         let entries = try self.u64_at(start + 8)
         if entries > count: error(errors.invalid, "a crate path table with more entries than paths")
         let size = (usize)entries
-        let columns = try alloc u8[size * 12] in memory.heap
+        let columns = try new u8[size * 12] --- in memory.heap
         defer free(columns) in memory.heap
         var at = start + 16
         at = try self.compressed_ints(at, size, 4, columns[..<size * 4])
         at = try self.compressed_ints(at, size, 4, columns[size * 4..<size * 8])
-        discard(try self.compressed_ints(at, size, 4, columns[size * 8..]))
+        _ = try self.compressed_ints(at, size, 4, columns[size * 8..])
         var stack = Growing[Branch]()
         defer stack.close()
         if size == 0: return
@@ -66,7 +66,7 @@ extend Crate:
                 parent = branch.parent
 
     ## The header stream of files before 0.4.0.
-    mutating func read_path_headers(start: u64) -> !:
+    func read_path_headers(start: u64) -> !:
         let size: u64 = 16 if not self.since(1) else 12
         let skip: u64 = 4 if not self.since(1) else 0
         var stack = Growing[Branch]()
@@ -97,7 +97,7 @@ extend Crate:
                     try stack.push(Branch(at = (u64)offset, parent = parent))
                 parent = here
             elif sibling:
-                discard(0)
+                _ = 0
             else:
                 if stack.count == 0: break
                 stack.count -= 1
@@ -106,7 +106,7 @@ extend Crate:
                 parent = branch.parent
 
     ## `parent` with the element `token` appended.
-    mutating func append_element(parent: u32, token: u32, property: bool) -> u32!:
+    func append_element(parent: u32, token: u32, property: bool) -> u32!:
         if property: return try self.names.property(parent, token)
         let text = self.names.text_of(token)
         if text.length == 0: error(errors.invalid, "an empty crate path element")

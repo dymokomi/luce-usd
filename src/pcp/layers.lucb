@@ -19,7 +19,7 @@ pub struct Layers:
         self.names = names
         self.entries = Growing[LayerEntry]()
 
-    pub mutating func close():
+    pub func close():
         for at in 0..<self.entries.count:
             self.entries.items[at].identifier.close()
             self.entries.items[at].problem.close()
@@ -53,16 +53,16 @@ pub struct Layers:
         return ""
 
     ## Layer `index` to change (a session layer being authored).
-    pub mutating func editable(index: usize) -> LayerData*:
+    pub func editable(index: usize) -> LayerData*:
         return self.entries.items[index].layer else trap("a failed layer")
 
     ## The layer `identifier` names, opened now if new; none when it cannot
     ## be read (running out of memory fails).
-    pub mutating func find_or_open(identifier: str) -> usize?!:
+    pub func find_or_open(identifier: str) -> usize?!:
         for at in 0..<self.entries.count:
             if (str)self.entries.items[at].identifier.view() == identifier:
                 return at if self.entries.items[at].layer != none else none
-        let storage = try alloc LayerData[1] in memory.heap
+        let storage = try new LayerData[1] --- in memory.heap
         storage[0] = LayerData(self.names) catch failure:
             free(storage) in memory.heap
             error(failure.code, failure.message)
@@ -90,8 +90,8 @@ pub struct Layers:
         return self.entries.count - 1 if read else none
 
     ## A new empty layer named `identifier` (an anonymous layer).
-    pub mutating func anonymous(identifier: str) -> usize!:
-        let storage = try alloc LayerData[1] in memory.heap
+    pub func anonymous(identifier: str) -> usize!:
+        let storage = try new LayerData[1] --- in memory.heap
         storage[0] = LayerData(self.names) catch failure:
             free(storage) in memory.heap
             error(failure.code, failure.message)
@@ -128,7 +128,7 @@ func readable(identifier: str, layer: LayerData*, problem: Growing[u8]*) -> bool
         if failure.code == memory.exhausted: error(failure.code, failure.message)
         try problem.assign(failure.message.bytes)
         return false
-    discard(found)
+    _ = found
     return true
 
 func release_layer(layer: LayerData*?):

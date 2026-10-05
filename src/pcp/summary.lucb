@@ -45,7 +45,7 @@ struct Summary:
 
     ## Count the prim at `path` and those below it; list its variant sets
     ## when `listing` (the default prim's subtree).
-    mutating func walk(path: u32, listing: bool) -> !:
+    func walk(path: u32, listing: bool) -> !:
         let composer = self.composer
         let index = try composer.index(path)
         # UsdPrimDefaultPredicate: active, loaded, defined and not abstract.
@@ -63,7 +63,7 @@ struct Summary:
         for name in children.view(): try self.walk(try composer.names.child(path, name), listing)
 
     ## One line per variant set of the prim.
-    mutating func list_sets(index: const PrimIndex*, path: u32) -> !:
+    func list_sets(index: const PrimIndex*, path: u32) -> !:
         let composer = self.composer
         let names = composer.names
         var order = Growing[u32]()
@@ -105,7 +105,7 @@ struct Summary:
             try self.sets.push(10)
 
     ## The set's options: variantChildren across the prim's specs, sorted.
-    mutating func options_of(index: const PrimIndex*, order: const u32[], set: u32, out: Growing[u32]*) -> !:
+    func options_of(index: const PrimIndex*, order: const u32[], set: u32, out: Growing[u32]*) -> !:
         let composer = self.composer
         let names = composer.names
         for node_index in order:

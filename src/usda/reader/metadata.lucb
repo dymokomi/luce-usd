@@ -7,7 +7,7 @@
 extend Reader:
     ## The metadata block at the cursor (after its `(`) for spec `spec` of
     ## kind `applies`; `anchor` is the prim path relative paths expand from.
-    mutating func metadata(spec: usize, applies: u8, anchor: u32) -> !:
+    func metadata(spec: usize, applies: u8, anchor: u32) -> !:
         try self.expect('(', "expected '(' to start metadata")
         try self.skip_all()
         while self.peek() != ')':
@@ -16,7 +16,7 @@ extend Reader:
             try self.skip_all()
         self.at += 1
 
-    mutating func metadata_item(spec: usize, applies: u8, anchor: u32) -> !:
+    func metadata_item(spec: usize, applies: u8, anchor: u32) -> !:
         if self.sees_string():
             let text = try self.string()
             try self.set_field(spec, self.keys.comment, Value.scalar(ValueKind.string, (u64)try self.names.token(text)))
@@ -74,7 +74,7 @@ extend Reader:
         try self.keyed_value(spec, applies, key)
 
     ## A list op keyword at the cursor, consumed.
-    mutating func list_op_keyword() -> ListPart?:
+    func list_op_keyword() -> ListPart?:
         if self.keyword("add"): return ListPart.added
         if self.keyword("delete"): return ListPart.deleted
         if self.keyword("append"): return ListPart.appended
@@ -83,7 +83,7 @@ extend Reader:
         return none
 
     ## Prim-only items; whether one was read.
-    mutating func prim_metadata_item(spec: usize, anchor: u32) -> bool!:
+    func prim_metadata_item(spec: usize, anchor: u32) -> bool!:
         if self.keyword("kind"):
             try self.assignment()
             let text = try self.string()
@@ -153,7 +153,7 @@ extend Reader:
         return false
 
     ## `key = None | dictionary | value` for a schema or unregistered key.
-    mutating func keyed_value(spec: usize, applies: u8, key: str) -> !:
+    func keyed_value(spec: usize, applies: u8, key: str) -> !:
         let name = try self.names.token(key)
         if let field = find_field(key):
             if field.applies & applies != 0:
@@ -183,7 +183,7 @@ extend Reader:
         try self.set_field(spec, name, Value.scalar(ValueKind.unregistered_value, (u64)try self.names.token((str)recorded.view())))
 
     ## `op key = None | [items]` for a list-op field (or unregistered key).
-    mutating func keyed_list_op(spec: usize, applies: u8, key: str, part: ListPart) -> !:
+    func keyed_list_op(spec: usize, applies: u8, key: str, part: ListPart) -> !:
         let name = try self.names.token(key)
         var kind = ValueKind.unregistered_value_list_op
         var item_kind = ValueKind.empty
@@ -235,7 +235,7 @@ extend Reader:
 
     ## Set one part of the list op in field `name` (made when absent) to
     ## `items`; an explicit part makes the list op explicit.
-    mutating func set_list_items(spec: usize, name: u32, kind: ValueKind, part: ListPart, items: const ListItem[]) -> !:
+    func set_list_items(spec: usize, name: u32, kind: ValueKind, part: ListPart, items: const ListItem[]) -> !:
         var list: ListOp*? = none
         if let existing = self.layer.get(spec, name):
             if existing.kind == kind:
@@ -252,19 +252,19 @@ extend Reader:
         for item in items: try target.push(part, item)
 
     ## Set field `name` of `spec` to `value` (taken).
-    mutating func set_field(spec: usize, name: u32, value: Value) -> !:
+    func set_field(spec: usize, name: u32, value: Value) -> !:
         try self.layer.set(spec, name, value)
 
     ## The text of a value of unknown type, as Sdf records it: atoms
     ## re-printed (numbers as TfStringify gives them, strings quoted), lists
     ## and tuples with ", " between items.
-    mutating func recorded_value(out: Growing[u8]*) -> !:
+    func recorded_value(out: Growing[u8]*) -> !:
         if self.keyword("None"):
             try put_text(out, "None")
             return
         try self.recorded_item(out)
 
-    mutating func recorded_item(out: Growing[u8]*) -> !:
+    func recorded_item(out: Growing[u8]*) -> !:
         let byte = self.peek()
         if byte == '[' or byte == '(':
             let close: u8 = ']' if byte == '[' else ')'
@@ -304,14 +304,14 @@ extend Reader:
             return
         if byte == '<':
             let start = self.at
-            discard(try self.path_ref())
+            _ = try self.path_ref()
             try put_text(out, (str)self.data[start..<self.at])
             return
         let word = try self.identifier()
         try put_text(out, word)
 
     ## `{ "key": "value", ... }` into a dictionary of strings.
-    mutating func string_dictionary() -> Value!:
+    func string_dictionary() -> Value!:
         try self.expect('{', "expected '{'")
         let dictionary = try Dictionary.create()
         var value = Value.of_object(ValueKind.dictionary, (void*)dictionary)

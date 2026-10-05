@@ -20,17 +20,17 @@ struct Located:
 extend Composer:
     ## Prefer `selection` for variant set `set` when nothing selects one
     ## (PcpCache::SetVariantFallbacks); earlier calls are preferred.
-    pub mutating func add_variant_fallback(set: str, selection: str) -> !:
+    pub func add_variant_fallback(set: str, selection: str) -> !:
         try self.variant_fallbacks.push(try self.names.token(set))
         try self.variant_fallbacks.push(try self.names.token(selection))
 
-    mutating func eval_variant_sets(indexer: Indexer*, node: u32) -> !:
+    func eval_variant_sets(indexer: Indexer*, node: u32) -> !:
         if not indexer.index.node(node).contributes(): return
         try self.variant_sets_at(indexer, node, indexer.index.node(node).path, false)
 
     ## The variant sets of the prims above the node, up to the nearest
     ## variant selection (whose sets were evaluated already).
-    mutating func eval_ancestral_variant_sets(indexer: Indexer*, node: u32) -> !:
+    func eval_ancestral_variant_sets(indexer: Indexer*, node: u32) -> !:
         var path = self.names.parent(indexer.index.node(node).path)
         while path > relative_root:
             if indexer.index.contributes_at(self.names, node, path):
@@ -40,7 +40,7 @@ extend Composer:
 
     ## Queue a selection task for each variant set at `path` of the node's
     ## layer stack (_EvalVariantSetsAtSite).
-    mutating func variant_sets_at(indexer: Indexer*, node: u32, path: u32, ancestral: bool) -> !:
+    func variant_sets_at(indexer: Indexer*, node: u32, path: u32, ancestral: bool) -> !:
         var sets = Growing[ListItem]()
         defer sets.close()
         let layers = self.stacks.stack(indexer.index.node(node).stack).layers.view()
@@ -58,7 +58,7 @@ extend Composer:
 
     ## Select the task's variant from authored opinions, or defer it to
     ## the fallbacks.
-    mutating func eval_authored_variant(indexer: Indexer*, task: Task, ancestral: bool) -> !:
+    func eval_authored_variant(indexer: Indexer*, task: Task, ancestral: bool) -> !:
         if not indexer.index.contributes_at(self.names, task.node, task.path): return
         let prim = try self.names.strip_variants(task.path)
         let selection = try self.composed_selection(&indexer.index, task.node, prim, task.name)
@@ -70,7 +70,7 @@ extend Composer:
         try self.add_variant_arc(indexer, task, selection, ancestral)
 
     ## Select the first fallback the set offers, or wait for a retry.
-    mutating func eval_fallback_variant(indexer: Indexer*, task: Task, ancestral: bool) -> !:
+    func eval_fallback_variant(indexer: Indexer*, task: Task, ancestral: bool) -> !:
         if not indexer.index.contributes_at(self.names, task.node, task.path): return
         let set_path = try self.names.variant(task.path, task.name, 0)
         let layers = self.stacks.stack(indexer.index.node(task.node).stack).layers.view()
@@ -95,7 +95,7 @@ extend Composer:
 
     ## The selection for variant set `set` of the prim at `path` in the
     ## node's namespace; 0 when none (or the empty one) is authored.
-    mutating func composed_selection(index: const PrimIndex*, node: u32, path: u32, set: u32) -> u32!:
+    func composed_selection(index: const PrimIndex*, node: u32, path: u32, set: u32) -> u32!:
         let names = self.names
         let start = try self.toward_root(index, node, path)
         var nodes = Growing[Located]()
@@ -121,7 +121,7 @@ extend Composer:
     ## `path` (in `node`'s namespace) mapped to the root node, or to the
     ## node closest to it that it maps to, with that node's variant
     ## selections put back (Pcp_TranslatePathFromNodeToRootOrClosestNode).
-    mutating func toward_root(index: const PrimIndex*, node: u32, path: u32) -> Located!:
+    func toward_root(index: const PrimIndex*, node: u32, path: u32) -> Located!:
         let names = self.names
         if node == 0: return Located(node = 0, path = path)
         var here = Located(node = node, path = try names.strip_variants(path))
@@ -142,7 +142,7 @@ extend Composer:
 
     ## The nodes under `node` in strength order, each with `path` mapped
     ## down into its namespace (empty where it does not map).
-    mutating func walk_translated(index: const PrimIndex*, node: u32, path: u32, out: Growing[Located]*) -> !:
+    func walk_translated(index: const PrimIndex*, node: u32, path: u32, out: Growing[Located]*) -> !:
         try out.push(Located(node = node, path = path))
         for child in index.node(node).children.view():
             var below = empty_path
@@ -152,7 +152,7 @@ extend Composer:
     ## The strongest selection for `set` authored at the site, when any
     ## layer authors one (PcpComposeSiteVariantSelection); a selection
     ## expression that fails leaves the choice to weaker layers.
-    mutating func site_selection(stack: usize, path: u32, set: u32) -> u32?!:
+    func site_selection(stack: usize, path: u32, set: u32) -> u32?!:
         for layer in self.stacks.stack(stack).layers.view():
             let data = self.layers.layer(layer)
             let spec = data.find(path) else continue
@@ -167,7 +167,7 @@ extend Composer:
 
     ## A selection as authored, or its expression's string; none when the
     ## expression fails (None gives the empty selection).
-    mutating func selection_value(stack: usize, selection: u32) -> u32?!:
+    func selection_value(stack: usize, selection: u32) -> u32?!:
         let text = self.names.text_of(selection)
         if not is_expression(text): return selection
         var result = try evaluate(self.names, text, &self.stacks.stack(stack).variables)
@@ -179,7 +179,7 @@ extend Composer:
 
     ## Add the variant arc for `selection` of the task's set; a new variant
     ## may author selections pending tasks are waiting for.
-    mutating func add_variant_arc(indexer: Indexer*, task: Task, selection: u32, ancestral: bool) -> !:
+    func add_variant_arc(indexer: Indexer*, task: Task, selection: u32, ancestral: bool) -> !:
         let names = self.names
         let stack = indexer.index.node(task.node).stack
         let node_path = indexer.index.node(task.node).path

@@ -10,11 +10,11 @@ let most_atoms: usize = 16
 
 extend Reader:
     ## A value of `kind`, an array when `array` (the TypedValue rule).
-    mutating func typed_value(kind: ValueKind, array: bool) -> Value!:
+    func typed_value(kind: ValueKind, array: bool) -> Value!:
         if array: return try self.array_value(kind)
         return try self.scalar_value(kind)
 
-    mutating func scalar_value(kind: ValueKind) -> Value!:
+    func scalar_value(kind: ValueKind) -> Value!:
         let size = element_bytes(kind)
         if size == 0: error(errors.invalid, self.where("not a value type"))
         var bytes: u8[128]
@@ -28,7 +28,7 @@ extend Reader:
         return try Value.of_bytes(kind, bytes[..<size])
 
     ## `[` elements `]` (or `[]`), into one column.
-    mutating func array_value(kind: ValueKind) -> Value!:
+    func array_value(kind: ValueKind) -> Value!:
         let size = element_bytes(kind)
         if size == 0: error(errors.invalid, self.where("not a value type"))
         if self.peek() == '[':
@@ -51,7 +51,7 @@ extend Reader:
         return Value.of_array(kind, count, column)
 
     ## One element of `kind` written to `out` (element_bytes(kind) bytes).
-    mutating func element(kind: ValueKind, out: u8*) -> !:
+    func element(kind: ValueKind, out: u8*) -> !:
         match kind:
             .string, .token, .path_expression:
                 if not self.sees_string(): error(errors.invalid, self.where("expected a quoted string"))
@@ -72,7 +72,7 @@ extend Reader:
                 try self.tuple(kind, out)
 
     ## One numeric atom of a scalar kind.
-    mutating func scalar_atom(kind: ValueKind, out: u8*) -> !:
+    func scalar_atom(kind: ValueKind, out: u8*) -> !:
         if kind == ValueKind.boolean:
             memory.write[u8]((void*)out, 1 if (try self.bool_atom()) else 0)
             return
@@ -81,7 +81,7 @@ extend Reader:
 
     ## A bool: a number (non-zero is true) or true/false/yes/no/1/0 as an
     ## identifier or a string (Sdf_BoolFromString, case-insensitive).
-    mutating func bool_atom() -> bool!:
+    func bool_atom() -> bool!:
         if self.sees_number():
             let number = try self.number()
             match number.class:
@@ -96,7 +96,7 @@ extend Reader:
         error(errors.invalid, self.where("expected a bool"))
 
     ## A number atom; "inf", "-inf" and "nan" may also be strings.
-    mutating func number_atom() -> Number!:
+    func number_atom() -> Number!:
         if self.sees_number(): return try self.number()
         if self.sees_string():
             let text = try self.string()
@@ -107,7 +107,7 @@ extend Reader:
 
     ## A tuple of `components(kind)` atoms: flat for vectors and
     ## quaternions, rows of tuples for matrices.
-    mutating func tuple(kind: ValueKind, out: u8*) -> !:
+    func tuple(kind: ValueKind, out: u8*) -> !:
         let count = components(kind)
         let matrix = kind == ValueKind.matrix2d or kind == ValueKind.matrix3d or kind == ValueKind.matrix4d
         let scalar = scalar_of(kind)
@@ -176,7 +176,7 @@ extend Reader:
         return value
 
     ## `{ type key = value ... }`: a dictionary, nested with `dictionary key = {...}`.
-    mutating func dictionary_value() -> Value!:
+    func dictionary_value() -> Value!:
         try self.expect('{', "expected '{' to start a dictionary")
         let dictionary = try Dictionary.create()
         var value = Value.of_object(ValueKind.dictionary, (void*)dictionary)
@@ -204,14 +204,14 @@ extend Reader:
         return value
 
     ## A dictionary key: a quoted string or an identifier (keywords too).
-    mutating func dictionary_key() -> u32!:
+    func dictionary_key() -> u32!:
         if self.sees_string(): return try self.names.token(try self.string())
         let word = self.base_identifier()
         if word.length == 0: error(errors.invalid, self.where("expected a dictionary key"))
         return try self.names.token(word)
 
     ## `=` with inline padding around it.
-    mutating func assignment() -> !:
+    func assignment() -> !:
         try self.skip_inline()
         try self.expect('=', "expected '='")
         try self.skip_inline()

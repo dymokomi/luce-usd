@@ -5,7 +5,7 @@
 ## order, children, variant sets), and variant sets with their variants.
 
 extend Writer:
-    mutating func write_prim(spec: usize, indent: usize) -> !:
+    func write_prim(spec: usize, indent: usize) -> !:
         let prim = self.layer.spec(spec)
         var specifier = specifier_over
         if let value = prim.get(self.keys.specifier): specifier = value.bits
@@ -30,7 +30,7 @@ extend Writer:
         try self.put("}\n")
 
     ## ` (\n ... )` when the prim has a comment or metadata.
-    mutating func prim_metadata(spec: usize, indent: usize) -> !:
+    func prim_metadata(spec: usize, indent: usize) -> !:
         let prim = self.layer.spec(spec)
         var fields = Growing[u32]()
         defer fields.close()
@@ -89,7 +89,7 @@ extend Writer:
         try self.put(")")
 
     ## `variantSets = ...` lines, explicit or per list op part.
-    mutating func variant_set_names(indent: usize, value: const Value*) -> !:
+    func variant_set_names(indent: usize, value: const Value*) -> !:
         let list = value.list_op() else return
         if list.explicit:
             try self.indent(indent)
@@ -103,7 +103,7 @@ extend Writer:
         try self.variant_set_part(indent, "append variantSets = ", list.items(ListPart.appended))
         try self.variant_set_part(indent, "reorder variantSets = ", list.items(ListPart.ordered))
 
-    mutating func variant_set_part(indent: usize, lead: str, items: const ListItem[]) -> !:
+    func variant_set_part(indent: usize, lead: str, items: const ListItem[]) -> !:
         if items.length == 0: return
         try self.indent(indent)
         try self.put(lead)
@@ -111,14 +111,14 @@ extend Writer:
         try self.put("\n")
 
     ## A name vector: one quoted name, or `["a", "b"]`.
-    mutating func name_items(items: const ListItem[]) -> !:
+    func name_items(items: const ListItem[]) -> !:
         if items.length > 1: try self.byte('[')
         for index in 0..<items.length:
             if index > 0: try self.put(", ")
             try self.quoted(self.text((u32)items[index].a))
         if items.length > 1: try self.byte(']')
 
-    mutating func name_vector(ids: const u32[]) -> !:
+    func name_vector(ids: const u32[]) -> !:
         if ids.length > 1: try self.byte('[')
         for index in 0..<ids.length:
             if index > 0: try self.put(", ")
@@ -126,7 +126,7 @@ extend Writer:
         if ids.length > 1: try self.byte(']')
 
     ## Reorders, properties, children and variant sets.
-    mutating func prim_body(spec: usize, indent: usize) -> !:
+    func prim_body(spec: usize, indent: usize) -> !:
         let prim = self.layer.spec(spec)
         if let order = prim.get(self.keys.property_order):
             if order.count > 1:
@@ -167,7 +167,7 @@ extend Writer:
 
     ## Properties by name in dictionary order, attributes before
     ## relationships of the same name.
-    mutating func sort_properties(properties: Growing[usize]*) -> !:
+    func sort_properties(properties: Growing[usize]*) -> !:
         for index in 1..<properties.count:
             let current = properties.items[index]
             var at = index
@@ -185,7 +185,7 @@ extend Writer:
         return dictionary_less(a_name, b_name)
 
     ## `variantSet "name" = { ... }` with its variants in name order.
-    mutating func write_variant_set(spec: usize, name: u32, prim: u32, indent: usize) -> !:
+    func write_variant_set(spec: usize, name: u32, prim: u32, indent: usize) -> !:
         let set = self.layer.spec(spec)
         var variants = Growing[usize]()
         defer variants.close()
@@ -212,7 +212,7 @@ extend Writer:
     func variant_name(spec: usize) -> str:
         return self.text(self.names.node(self.layer.spec(spec).path).extra)
 
-    mutating func write_variant(spec: usize, indent: usize) -> !:
+    func write_variant(spec: usize, indent: usize) -> !:
         try self.indent(indent)
         try self.quoted(self.variant_name(spec))
         try self.prim_metadata(spec, indent)
@@ -228,7 +228,7 @@ func prim_extra(keys: FieldKeys, name: u32) -> bool:
 
 extend Writer:
     ## A prim's relocates, each path relative to the prim.
-    mutating func prim_relocates(indent: usize, prim: u32, value: const Value*) -> !:
+    func prim_relocates(indent: usize, prim: u32, value: const Value*) -> !:
         let pairs = value.ids()
         var column = try Column[u8].allocate(pairs.length * 4)
         let relative = column.span()

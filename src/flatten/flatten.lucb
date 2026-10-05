@@ -100,7 +100,7 @@ struct Flattener:
         self.prim_type = 0
         self.prim_applied = Growing[u32]()
 
-    mutating func close():
+    func close():
         for at in 0..<self.children.count: self.children.items[at].close()
         for at in 0..<self.properties.count: self.properties.items[at].close()
         self.children.close()
@@ -111,13 +111,13 @@ struct Flattener:
         self.instance_of.close()
         self.prim_applied.close()
 
-    mutating func grow(index: usize) -> !:
+    func grow(index: usize) -> !:
         while self.children.count <= index:
             try self.children.push(Growing[u32]())
             try self.properties.push(Growing[u32]())
 
     ## Write the children and properties fields.
-    mutating func finish() -> !:
+    func finish() -> !:
         let keys = &self.out.keys
         for spec in 0..<self.children.count:
             if self.children.items[spec].count > 0:
@@ -127,7 +127,7 @@ struct Flattener:
 
     ## Stage metadata: the session layer's fields, then the root layer's
     ## (not their sublayers'), composed (_ComposePseudoRootMetadataImpl).
-    mutating func pseudo_root(comment: bool) -> !:
+    func pseudo_root(comment: bool) -> !:
         let composer = self.composer
         let index = try composer.index(absolute_root)
         let stack = composer.stacks.stack(composer.root_stack)
@@ -150,7 +150,7 @@ struct Flattener:
 
     ## Append "Generated from Composed Stage of root layer <path>" to the
     ## flattened layer's documentation.
-    mutating func add_comment(root: str) -> !:
+    func add_comment(root: str) -> !:
         let key = self.out.keys.documentation
         var text = Growing[u8]()
         defer text.close()
@@ -166,7 +166,7 @@ struct Flattener:
 
     ## Flatten the prim whose index is at `source` into `path`, and its
     ## descendants unless it is an instance (_CopyPrim over the range).
-    mutating func prim(source: u32, path: u32) -> !:
+    func prim(source: u32, path: u32) -> !:
         let composer = self.composer
         let index = try composer.index(source)
         var opinions = Growing[Opinion]()
@@ -199,7 +199,7 @@ struct Flattener:
         for name in children.view(): try self.prim(try self.names.child(source, name), try self.names.child(path, name))
 
     ## The opinions of the prim (`property` 0) or of one of its properties.
-    mutating func gather(index: const PrimIndex*, property: u32, out: Growing[Opinion]*) -> !:
+    func gather(index: const PrimIndex*, property: u32, out: Growing[Opinion]*) -> !:
         out.clear()
         var order = Growing[u32]()
         defer order.close()
@@ -215,7 +215,7 @@ struct Flattener:
                 if let spec = data.find(path): try out.push(Opinion(node = node, layer = layers[position], position = position, spec = spec))
 
     ## The prim's typed schema and applied API schemas, for its properties.
-    mutating func definition_of(index: const PrimIndex*, opinions: const Opinion[]) -> !:
+    func definition_of(index: const PrimIndex*, opinions: const Opinion[]) -> !:
         self.prim_type = self.type_name(opinions)
         self.prim_applied.clear()
         var applied = try self.composed_value(index, opinions, try self.names.token("apiSchemas"))
@@ -230,7 +230,7 @@ struct Flattener:
     func builtin(name: u32) -> PropertyDefinition?:
         return self.schemas.find(self.prim_type, self.prim_applied.view(), name)
 
-    mutating func sort_names(names: Growing[u32]*) -> !:
+    func sort_names(names: Growing[u32]*) -> !:
         for at in 1..<names.count:
             let current = names.items[at]
             var move = at

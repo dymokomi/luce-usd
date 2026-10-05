@@ -45,33 +45,33 @@ pub struct Value:
     pub var object: void*?
 
     ## A scalar held in `bits`.
-    pub static func scalar(kind: ValueKind, bits: u64) -> Value:
+    pub func scalar(kind: ValueKind, bits: u64) -> Value:
         return Value(kind = kind, array = false, count = 0, bits = bits, data = Column[u8](), object = none)
 
     ## A kind with no payload (a value block, an animation block).
-    pub static func marker(kind: ValueKind) -> Value:
+    pub func marker(kind: ValueKind) -> Value:
         return Value.scalar(kind, 0)
 
     ## A scalar whose bytes are copied into its own column (vectors,
     ## quaternions, matrices, a payload).
-    pub static func of_bytes(kind: ValueKind, bytes: const u8[]) -> Value!:
+    pub func of_bytes(kind: ValueKind, bytes: const u8[]) -> Value!:
         return Value(kind = kind, array = false, count = 1, bits = 0, data = try Column[u8].copy_of(bytes), object = none)
 
     ## An array of `count` elements whose bytes `column` holds (taken).
-    pub static func of_array(kind: ValueKind, count: usize, column: Column[u8]) -> Value:
+    pub func of_array(kind: ValueKind, count: usize, column: Column[u8]) -> Value:
         return Value(kind = kind, array = true, count = count, bits = 0, data = column, object = none)
 
     ## A vector-shaped metadata value of `count` records in `column` (taken).
-    pub static func of_records(kind: ValueKind, count: usize, column: Column[u8]) -> Value:
+    pub func of_records(kind: ValueKind, count: usize, column: Column[u8]) -> Value:
         return Value(kind = kind, array = false, count = count, bits = 0, data = column, object = none)
 
     ## A vector-shaped metadata value of `count` records of ids (tokens or
     ## paths) copied from `ids`.
-    pub static func of_ids(kind: ValueKind, count: usize, ids: const u32[]) -> Value!:
+    pub func of_ids(kind: ValueKind, count: usize, ids: const u32[]) -> Value!:
         return Value.of_records(kind, count, try Column[u8].copy_of(u8[]((u8*)ids.data, ids.length * 4)))
 
     ## A composite (taken): a Dictionary*, ListOp*, TimeSamples* or Spline*.
-    pub static func of_object(kind: ValueKind, object: void*) -> Value:
+    pub func of_object(kind: ValueKind, object: void*) -> Value:
         return Value(kind = kind, array = false, count = 0, bits = 0, data = Column[u8](), object = object)
 
     pub func is_empty() -> bool:
@@ -142,11 +142,11 @@ pub struct Value:
 
     ## Another owner of the same value.
     pub func share() -> Value:
-        if let object = self.object: discard(((Shared*)object).users.add(1, .relaxed))
+        if let object = self.object: _ = ((Shared*)object).users.add(1, .relaxed)
         return Value(kind = self.kind, array = self.array, count = self.count, bits = self.bits, data = self.data.share(), object = self.object)
 
     ## Give up this owner; the last one frees the column and the composite.
-    pub mutating func release():
+    pub func release():
         self.data.release()
         if let object = self.object:
             self.object = none
@@ -165,7 +165,7 @@ pub struct Dictionary:
     pub var values: Growing[Value]
 
     ## A new, empty dictionary with one owner.
-    pub static func create() -> Dictionary*!:
+    pub func create() -> Dictionary*!:
         let made = try new Dictionary(users = 1, keys = Growing[u32](), values = Growing[Value]()) in memory.heap
         return made
 
@@ -179,7 +179,7 @@ pub struct Dictionary:
         return none
 
     ## Set `key` to `value` (taken), replacing an earlier value.
-    pub mutating func put(key: u32, value: Value) -> !:
+    pub func put(key: u32, value: Value) -> !:
         for index in 0..<self.keys.count:
             if self.keys.items[index] == key:
                 self.values.items[index].release()
@@ -221,7 +221,7 @@ pub struct ListOp:
     pub var explicit: bool
     pub var parts: Growing[ListItem][6]
 
-    pub static func create() -> ListOp*!:
+    pub func create() -> ListOp*!:
         let parts: Growing[ListItem][6] = [Growing[ListItem](), Growing[ListItem](), Growing[ListItem](), Growing[ListItem](), Growing[ListItem](), Growing[ListItem]()]
         let made = try new ListOp(users = 1, explicit = false, parts = parts) in memory.heap
         return made
@@ -230,7 +230,7 @@ pub struct ListOp:
         return self.parts[(usize)(u8)part].view()
 
     ## Append an item (taken, its custom data released on failure) to a part.
-    pub mutating func push(part: ListPart, item: ListItem) -> !:
+    pub func push(part: ListPart, item: ListItem) -> !:
         self.parts[(usize)(u8)part].push(item) catch failure:
             if let custom = item.custom:
                 var owned = Value.of_object(ValueKind.dictionary, (void*)custom)
@@ -250,7 +250,7 @@ pub struct TimeSamples:
     pub var times: Growing[f64]
     pub var values: Growing[Value]
 
-    pub static func create() -> TimeSamples*!:
+    pub func create() -> TimeSamples*!:
         let made = try new TimeSamples(users = 1, times = Growing[f64](), values = Growing[Value]()) in memory.heap
         return made
 
@@ -259,7 +259,7 @@ pub struct TimeSamples:
 
     ## Add a sample (the value taken); a repeated time replaces the value.
     ## Samples are kept in time order.
-    pub mutating func put(time: f64, value: Value) -> !:
+    pub func put(time: f64, value: Value) -> !:
         var owned = value
         var at = self.times.count
         while at > 0 and self.times.items[at - 1] > time: at -= 1

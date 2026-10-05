@@ -15,10 +15,10 @@ pub struct PathPairs:
     pub var targets: Growing[u32]
     pub var root_identity: bool
 
-    pub static func empty(root_identity: bool) -> PathPairs:
+    pub func empty(root_identity: bool) -> PathPairs:
         return PathPairs(sources = Growing[u32](), targets = Growing[u32](), root_identity = root_identity)
 
-    pub mutating func close():
+    pub func close():
         self.sources.close()
         self.targets.close()
 
@@ -86,11 +86,11 @@ pub struct MapFunction:
     pub var offset: Offset
 
     ## The identity map (PcpMapFunction::Identity).
-    pub static func identity() -> MapFunction:
+    pub func identity() -> MapFunction:
         return MapFunction(pairs = PathPairs.empty(true), chain = Growing[PathPairs](), offset = Offset.identity())
 
     ## The map of one pair; "/" to "/" becomes the root identity.
-    pub static func of_pair(source: u32, target: u32, offset: Offset) -> MapFunction!:
+    pub func of_pair(source: u32, target: u32, offset: Offset) -> MapFunction!:
         var made = MapFunction(pairs = PathPairs.empty(false), chain = Growing[PathPairs](), offset = offset)
         errdefer made.close()
         if source == absolute_root and target == absolute_root: made.pairs.root_identity = true
@@ -101,7 +101,7 @@ pub struct MapFunction:
 
     ## The map of `pairs` (taken), its composition deferred
     ## (PcpMapFunction::DeferredComposition); the identity stays plain.
-    pub static func deferred_of(pairs: PathPairs) -> MapFunction!:
+    pub func deferred_of(pairs: PathPairs) -> MapFunction!:
         var owned = pairs
         if owned.is_identity(): return MapFunction(pairs = owned, chain = Growing[PathPairs](), offset = Offset.identity())
         var made = MapFunction(pairs = PathPairs.empty(true), chain = Growing[PathPairs](), offset = Offset.identity())
@@ -110,7 +110,7 @@ pub struct MapFunction:
             error(failure.code, failure.message)
         return made
 
-    pub mutating func close():
+    pub func close():
         self.pairs.close()
         for at in 0..<self.chain.count: self.chain.items[at].close()
         self.chain.close()
@@ -171,7 +171,7 @@ pub struct MapFunction:
         try made.append_sets(inner)
         return made
 
-    mutating func append_sets(other: const MapFunction*) -> !:
+    func append_sets(other: const MapFunction*) -> !:
         if not other.deferred():
             var copied = try other.pairs.copy()
             self.chain.push(copied) catch failure:

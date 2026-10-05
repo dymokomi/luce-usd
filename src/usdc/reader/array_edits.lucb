@@ -4,7 +4,7 @@
 ## and a former 'isDense' bool.
 
 extend Crate:
-    mutating func array_edit_at(rep: u64) -> Value!:
+    func array_edit_at(rep: u64) -> Value!:
         let kind = (ValueKind)rep_type(rep)
         if element_bytes(kind) == 0: error(errors.invalid, "a crate array edit of a type that cannot form arrays")
         let edit = try ArrayEdit.create(kind)

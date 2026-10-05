@@ -8,7 +8,7 @@
 
 extend Reader:
     ## One property statement in the body of the prim at `prim`.
-    mutating func property_spec(prim: u32, properties: Growing[u32]*) -> !:
+    func property_spec(prim: u32, properties: Growing[u32]*) -> !:
         if let part = self.list_op_keyword():
             try self.skip_inline()
             if self.sees_relationship():
@@ -42,7 +42,7 @@ extend Reader:
         return starts_with_word(rest, "rel") or starts_with_word(rest, "varying")
 
     ## `[custom] [varying] rel name`: the property path and its spec.
-    mutating func relationship_head(prim: u32, properties: Growing[u32]*) -> (u32, usize)!:
+    func relationship_head(prim: u32, properties: Growing[u32]*) -> (u32, usize)!:
         var custom = false
         var variability = variability_uniform
         if self.keyword("custom"):
@@ -65,7 +65,7 @@ extend Reader:
         if custom: try self.set_field(spec, self.keys.custom, Value.scalar(ValueKind.boolean, 1))
         return (path, spec)
 
-    mutating func relationship(prim: u32, properties: Growing[u32]*) -> !:
+    func relationship(prim: u32, properties: Growing[u32]*) -> !:
         let (path, spec) = try self.relationship_head(prim, properties)
         let before = self.at
         try self.skip_inline()
@@ -89,14 +89,14 @@ extend Reader:
         if self.peek() == '(': try self.metadata(spec, applies_relationship, prim)
 
     ## `None | <path> | [<path>, ...]` as the targets of `path`.
-    mutating func targets(path: u32, spec: usize, part: ListPart, prim: u32) -> !:
+    func targets(path: u32, spec: usize, part: ListPart, prim: u32) -> !:
         var items = Growing[ListItem]()
         defer items.close()
         let none_given = self.sees("None")
         try self.path_list(&items, prim)
         if items.count == 0 and part != ListPart.explicit:
             error(errors.invalid, self.where("None or an empty list is only allowed for explicit targets"))
-        discard(none_given)
+        _ = none_given
         for item in items.view(): try self.check_target_path((u32)item.a)
         try self.check_unique(items.view())
         if part == ListPart.explicit or part == ListPart.added:
@@ -106,7 +106,7 @@ extend Reader:
             for item in items.view():
                 let target_path = try self.names.target(path, (u32)item.a)
                 if self.layer.find(target_path) == none:
-                    discard(try self.layer.create_spec(target_path, SpecType.relationship_target))
+                    _ = try self.layer.create_spec(target_path, SpecType.relationship_target)
                     try children.push((u32)item.a)
             if children.count > 0:
                 var column = try Column[u8].allocate(children.count * 4)
@@ -116,7 +116,7 @@ extend Reader:
 
     ## `[custom] [uniform|config] type[[]] name`: the property path, its
     ## spec, its value kind and whether it is an array.
-    mutating func attribute_head(prim: u32, properties: Growing[u32]*) -> (u32, usize, ValueKind, bool)!:
+    func attribute_head(prim: u32, properties: Growing[u32]*) -> (u32, usize, ValueKind, bool)!:
         var custom = false
         var variability = variability_varying
         if self.keyword("custom"):
@@ -126,7 +126,7 @@ extend Reader:
             variability = variability_uniform
             try self.skip_inline()
         let type_start = self.at
-        discard(try self.identifier())
+        _ = try self.identifier()
         let type_end = self.at
         let array = try self.array_brackets()
         let type_text = (str)self.data[type_start..<type_end]
@@ -166,7 +166,7 @@ extend Reader:
             try self.set_field(spec, self.keys.variability, Value.scalar(ValueKind.variability, variability))
         return (path, spec, entry_kind, array)
 
-    mutating func attribute(prim: u32, properties: Growing[u32]*) -> !:
+    func attribute(prim: u32, properties: Growing[u32]*) -> !:
         let (path, spec, kind, array) = try self.attribute_head(prim, properties)
         let before = self.at
         try self.skip_inline()
@@ -196,7 +196,7 @@ extend Reader:
         if self.peek() == '(': try self.metadata(spec, applies_attribute, prim)
 
     ## An attribute value: None (a value block), AnimationBlock, or a typed value.
-    mutating func attribute_value(kind: ValueKind, array: bool) -> Value!:
+    func attribute_value(kind: ValueKind, array: bool) -> Value!:
         if self.keyword("None"): return Value.marker(ValueKind.value_block)
         if self.keyword("AnimationBlock"): return Value.marker(ValueKind.animation_block)
         # A path reference is a path value, whatever the attribute's type.
@@ -211,7 +211,7 @@ extend Reader:
         return try self.typed_value(kind, array)
 
     ## `{ time: value, ... }` into the timeSamples field.
-    mutating func time_samples(spec: usize, kind: ValueKind, array: bool) -> !:
+    func time_samples(spec: usize, kind: ValueKind, array: bool) -> !:
         try self.expect('{', "expected '{' to open time samples")
         let samples = try TimeSamples.create()
         var value = Value.of_object(ValueKind.time_samples, (void*)samples)
@@ -230,7 +230,7 @@ extend Reader:
         try self.set_field(spec, self.keys.time_samples, value)
 
     ## `None | <path> | [<path>, ...]` as the connections of `path`.
-    mutating func connections(path: u32, spec: usize, part: ListPart, prim: u32) -> !:
+    func connections(path: u32, spec: usize, part: ListPart, prim: u32) -> !:
         var items = Growing[ListItem]()
         defer items.close()
         try self.path_list(&items, prim)
@@ -243,7 +243,7 @@ extend Reader:
             defer children.close()
             for item in items.view():
                 let connection = try self.names.target(path, (u32)item.a)
-                if self.layer.find(connection) == none: discard(try self.layer.create_spec(connection, SpecType.connection))
+                if self.layer.find(connection) == none: _ = try self.layer.create_spec(connection, SpecType.connection)
                 try children.push((u32)item.a)
             var column = try Column[u8].allocate(children.count * 4)
             if children.count > 0: memory.copy(column.span(), u8[]((u8*)children.items.data, children.count * 4), children.count * 4)

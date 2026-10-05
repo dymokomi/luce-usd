@@ -10,7 +10,7 @@ struct Section:
     var size: u64
 
 extend Crate:
-    mutating func read_structure() -> !:
+    func read_structure() -> !:
         if self.data.length < 88: error(errors.invalid, "not a crate file: too short for its bootstrap")
         if (str)self.data[..<8] != "PXR-USDC": error(errors.invalid, "not a crate file: no PXR-USDC bootstrap")
         let major = self.data[8]
@@ -37,7 +37,7 @@ extend Crate:
         if let paths = find_section(all, "PATHS"): try self.read_paths(paths.start)
         if let specs = find_section(all, "SPECS"): try self.read_specs(specs.start)
 
-    mutating func read_tokens(start: u64) -> !:
+    func read_tokens(start: u64) -> !:
         let count = try self.u64_at(start)
         var chars: const u8[] = try self.bytes_at(start, 0)
         var owned: u8[]
@@ -47,7 +47,7 @@ extend Crate:
             let size = try self.u64_at(start + 8)
             let packed = try self.u64_at(start + 16)
             if size > 1 << 32: error(errors.invalid, "a crate token section too large")
-            owned = try alloc u8[(usize)size] in memory.heap
+            owned = try new u8[(usize)size] --- in memory.heap
             let used = try compression.decompress(try self.bytes_at(start + 24, packed), owned)
             if (u64)used != size: error(errors.invalid, "a crate token section of the wrong size")
             chars = owned
@@ -65,14 +65,14 @@ extend Crate:
             try self.tokens.push(try self.names.token((str)chars[at..<end]))
             at = end + 1
 
-    mutating func read_strings(start: u64) -> !:
+    func read_strings(start: u64) -> !:
         let count = try self.u64_at(start)
         let indexes = try self.bytes_at(start + 8, count * 4)
         try self.strings.reserve((usize)count)
         for index in 0..<(usize)count:
             try self.strings.push(try self.token((u64)memory.read[u32]((void*)&indexes[index * 4])))
 
-    mutating func read_fields(start: u64) -> !:
+    func read_fields(start: u64) -> !:
         let count = try self.u64_at(start)
         if not self.since(4):
             let records = try self.bytes_at(start + 8, count * 16)
@@ -81,12 +81,12 @@ extend Crate:
                 try self.field_reps.push(memory.read[u64]((void*)&records[index * 16 + 8]))
             return
         if count > (u64)self.data.length: error(errors.invalid, "a crate claims more fields than it can hold")
-        let tokens = try alloc u8[(usize)count * 4] in memory.heap
+        let tokens = try new u8[(usize)count * 4] --- in memory.heap
         defer free(tokens) in memory.heap
         var at = start + 8
         at = try self.compressed_ints(at, (usize)count, 4, tokens)
         let reps_size = try self.u64_at(at)
-        let reps = try alloc u8[(usize)count * 8] in memory.heap
+        let reps = try new u8[(usize)count * 8] --- in memory.heap
         defer free(reps) in memory.heap
         if count > 0:
             let used = try compression.decompress(try self.bytes_at(at + 8, reps_size), reps)
@@ -95,23 +95,23 @@ extend Crate:
             try self.field_tokens.push(try self.token((u64)memory.read[u32]((void*)&tokens[index * 4])))
             try self.field_reps.push(memory.read[u64]((void*)&reps[index * 8]))
 
-    mutating func read_field_sets(start: u64) -> !:
+    func read_field_sets(start: u64) -> !:
         let count = try self.u64_at(start)
         if count > (u64)self.data.length: error(errors.invalid, "a crate claims more field set entries than it can hold")
         try self.field_sets.extend((usize)count, 0)
         let out = u8[]((u8*)self.field_sets.items.data, (usize)count * 4)
         if self.since(4):
-            discard(try self.compressed_ints(start + 8, (usize)count, 4, out))
+            _ = try self.compressed_ints(start + 8, (usize)count, 4, out)
         else:
             memory.copy(out, try self.bytes_at(start + 8, count * 4), (usize)count * 4)
         if count > 0 and self.field_sets.items[(usize)count - 1] != 0xFFFFFFFF:
             error(errors.invalid, "crate field sets must end with a terminator")
 
-    mutating func read_specs(start: u64) -> !:
+    func read_specs(start: u64) -> !:
         let count = try self.u64_at(start)
         if count > (u64)self.data.length: error(errors.invalid, "a crate claims more specs than it can hold")
         if self.since(4):
-            let columns = try alloc u8[(usize)count * 12] in memory.heap
+            let columns = try new u8[(usize)count * 12] --- in memory.heap
             defer free(columns) in memory.heap
             var at = start + 8
             at = try self.compressed_ints(at, (usize)count, 4, columns[..<(usize)count * 4])

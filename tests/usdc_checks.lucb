@@ -4,6 +4,7 @@
 import memory
 from luce_usd.kernel import Names, LayerData, read_usda, read_usdc, write_usda, write_usdc, read_file, decode_integers, encode_integers, encoded_bound, invalid, unsupported
 from luce_geocore.core.growing import Growing
+import strings
 
 pub func fixtures() -> !:
     try fixture("values")
@@ -13,16 +14,19 @@ pub func fixtures() -> !:
 
 ## Each fixture alone, so allocation failure reaches every one of them.
 pub func values_fixture() -> !: try fixture("values")
+
 pub func properties_fixture() -> !: try fixture("properties")
+
 pub func composition_fixture() -> !: try fixture("composition")
+
 pub func arrays_fixture() -> !: try fixture("arrays")
 
 func fixture(name: str) -> !:
     var buffer: u8[256]
-    let crate = try read_file(try format(buffer, f"tests/fixtures/usdc/{name}.usdc"))
+    let crate = try read_file(try strings.format(buffer, f"tests/fixtures/usdc/{name}.usdc"))
     defer free(crate) in memory.heap
     var expected_buffer: u8[256]
-    let expected = try read_file(try format(expected_buffer, f"tests/fixtures/usdc/{name}.expected.usda"))
+    let expected = try read_file(try strings.format(expected_buffer, f"tests/fixtures/usdc/{name}.expected.usda"))
     defer free(expected) in memory.heap
     var names = try Names()
     defer names.close()
@@ -40,7 +44,7 @@ func fixture(name: str) -> !:
 ## Encode then decode integers of both widths, with every code in play.
 pub func integers() -> !:
     let count: usize = 1000
-    var values = try alloc i64[count] in memory.heap
+    var values = try new i64[count] --- in memory.heap
     defer free(values) in memory.heap
     var state: u64 = 7
     for index in 0..<count:
@@ -53,15 +57,15 @@ pub func integers() -> !:
         values[index] = (values[index - 1] if index > 0 else 0) + step
     let widths: usize[2] = [4, 8]
     for width in widths:
-        let raw = try alloc u8[count * width] in memory.heap
+        let raw = try new u8[count * width] --- in memory.heap
         defer free(raw) in memory.heap
         for index in 0..<count:
             if width == 4: memory.write[i32]((void*)&raw[index * 4], (i32)values[index])
             else: memory.write[i64]((void*)&raw[index * 8], values[index] * 1000003)
-        let encoded = try alloc u8[encoded_bound(count, width)] in memory.heap
+        let encoded = try new u8[encoded_bound(count, width)] --- in memory.heap
         defer free(encoded) in memory.heap
         let length = try encode_integers(raw, count, width, encoded)
-        let back = try alloc u8[count * width] in memory.heap
+        let back = try new u8[count * width] --- in memory.heap
         defer free(back) in memory.heap
         try decode_integers(encoded[..<length], count, width, back)
         for index in 0..<raw.length: assert(back[index] == raw[index])
@@ -70,9 +74,9 @@ pub func integers() -> !:
 ## they never read out of bounds.
 pub func damaged() -> !:
     var buffer: u8[256]
-    let crate = try read_file(try format(buffer, f"tests/fixtures/usdc/arrays.usdc"))
+    let crate = try read_file(try strings.format(buffer, f"tests/fixtures/usdc/arrays.usdc"))
     defer free(crate) in memory.heap
-    let copy = try alloc u8[crate.length] in memory.heap
+    let copy = try new u8[crate.length] --- in memory.heap
     defer free(copy) in memory.heap
     var names = try Names()
     defer names.close()
@@ -107,11 +111,11 @@ pub func writes() -> !:
 
 func rewrite(folder: str, name: str, crate: bool) -> !:
     var buffer: u8[256]
-    let path = try format(buffer, f"tests/fixtures/{folder}/{name}.{folder}")
+    let path = try strings.format(buffer, f"tests/fixtures/{folder}/{name}.{folder}")
     let input = try read_file(path)
     defer free(input) in memory.heap
     var expected_buffer: u8[256]
-    let expected = try read_file(try format(expected_buffer, f"tests/fixtures/{folder}/{name}.expected.usda"))
+    let expected = try read_file(try strings.format(expected_buffer, f"tests/fixtures/{folder}/{name}.expected.usda"))
     defer free(expected) in memory.heap
     var names = try Names()
     defer names.close()

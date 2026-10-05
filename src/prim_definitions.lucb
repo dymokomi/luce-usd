@@ -30,7 +30,7 @@ struct SchemaEntry:
     var builtins: Growing[str]
     var properties: Growing[PropertyEntry]
 
-    mutating func close():
+    func close():
         self.builtins.close()
         self.properties.close()
 
@@ -45,11 +45,11 @@ pub struct Schemas:
         errdefer self.close()
         for row in table.schema_table: try self.parse(row)
 
-    pub mutating func close():
+    pub func close():
         for at in 0..<self.entries.count: self.entries.items[at].close()
         self.entries.close()
 
-    mutating func parse(row: str) -> !:
+    func parse(row: str) -> !:
         let first = find_byte(row, '|', 0)
         let second = find_byte(row, '|', first + 1)
         var name = (str)row.bytes[..<first]

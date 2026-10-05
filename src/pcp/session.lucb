@@ -7,7 +7,7 @@
 extend Composer:
     ## Select `selection` for variant set `set` of the prim at `prim` (a
     ## prim path), in the session layer.
-    pub mutating func select_variant(prim: u32, set: u32, selection: u32) -> !:
+    pub func select_variant(prim: u32, set: u32, selection: u32) -> !:
         let session = self.stacks.stack(self.root_stack).session else error(errors.invalid, "the stage has no session layer to author in")
         let layer = self.layers.editable(session)
         let spec = try over_spec(self.names, layer, prim)
@@ -31,7 +31,7 @@ extend Composer:
     ## selections, as SdfPath writes them, separated by blanks outside the
     ## braces ("/Kitchen{look=clean} /Kitchen/Chair{size=big}"). Selections
     ## go in before any prim is composed.
-    pub mutating func select_variants(text: str) -> !:
+    pub func select_variants(text: str) -> !:
         var at: usize = 0
         while at < text.length:
             while at < text.length and is_blank(text.bytes[at]): at += 1
@@ -51,7 +51,7 @@ extend Composer:
     ## Load payloads only of prims whose path matches one of the glob
     ## `patterns` (blank separated; `*` any run, `?` any character). A
     ## pattern that is no path, such as "-", matches nothing.
-    pub mutating func include_payloads_matching(patterns: str) -> !:
+    pub func include_payloads_matching(patterns: str) -> !:
         var at: usize = 0
         while at < patterns.length:
             while at < patterns.length and is_blank(patterns.bytes[at]): at += 1

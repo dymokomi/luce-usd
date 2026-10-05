@@ -7,7 +7,7 @@
 ## then get Ts's algorithmic tangents and anti-regression.
 
 extend Crate:
-    mutating func spline_at(at: u64) -> Value!:
+    func spline_at(at: u64) -> Value!:
         let size = try self.u64_at(at)
         let blob = try self.bytes_at(at + 8, size)
         var cursor = BlobCursor(data = blob, at = 0)
@@ -40,23 +40,23 @@ struct BlobCursor:
     var data: const u8[]
     var at: usize
 
-    mutating func take(count: usize) -> const u8[]!:
+    func take(count: usize) -> const u8[]!:
         if count > self.data.length - self.at: error(errors.invalid, "a crate spline read past its end")
         let bytes = self.data[self.at..<self.at + count]
         self.at += count
         return bytes
 
-    mutating func byte() -> u8!:
+    func byte() -> u8!:
         return (try self.take(1))[0]
 
-    mutating func double() -> f64!:
+    func double() -> f64!:
         return memory.read[f64]((void*)&(try self.take(8))[0])
 
-    mutating func int32() -> i32!:
+    func int32() -> i32!:
         return memory.read[i32]((void*)&(try self.take(4))[0])
 
     ## A knot value or slope in the spline's storage type.
-    mutating func typed(kind: ValueKind) -> f64!:
+    func typed(kind: ValueKind) -> f64!:
         match kind:
             .float: return (f64)memory.read[f32]((void*)&(try self.take(4))[0])
             .half: return (f64)f16.bits(memory.read[u16]((void*)&(try self.take(2))[0]))

@@ -16,7 +16,7 @@ import sdf.identifiers
 extend Names:
     ## The id of the path `text`; "" is the empty path. Fails with `invalid`
     ## on text that is not a path.
-    pub mutating func parse_path(text: str) -> u32!:
+    pub func parse_path(text: str) -> u32!:
         if text.length == 0: return empty_path
         var cursor = PathCursor(data = text.bytes, at = 0)
         let path = try self.parse_at(&cursor, true)
@@ -25,7 +25,7 @@ extend Names:
         return path
 
     ## One path at the cursor; `whole` allows the lone relative root ".".
-    mutating func parse_at(cursor: PathCursor*, whole: bool) -> u32!:
+    func parse_at(cursor: PathCursor*, whole: bool) -> u32!:
         if cursor.peek() == 47:
             cursor.at += 1
             if identifier_at(cursor.data, cursor.at) > 0:
@@ -53,7 +53,7 @@ extend Names:
         return try self.path_elements(cursor, relative_root)
 
     ## Prim elements then optional property elements, or property elements alone.
-    mutating func path_elements(cursor: PathCursor*, parent: u32) -> u32!:
+    func path_elements(cursor: PathCursor*, parent: u32) -> u32!:
         if identifier_at(cursor.data, cursor.at) > 0:
             let prim = try self.prim_elements(cursor, parent)
             return try self.property_elements(cursor, prim)
@@ -61,7 +61,7 @@ extend Names:
             error(errors.invalid, "not a path: expected a prim or property name")
         return try self.property_elements(cursor, parent)
 
-    mutating func prim_elements(cursor: PathCursor*, parent: u32) -> u32!:
+    func prim_elements(cursor: PathCursor*, parent: u32) -> u32!:
         var at = try self.child(parent, try self.identifier(cursor))
         while true:
             if cursor.peek() == 47:
@@ -77,7 +77,7 @@ extend Names:
                 return at
 
     ## One or more `{set=variant}` after `at`.
-    mutating func selections(cursor: PathCursor*, parent: u32) -> u32!:
+    func selections(cursor: PathCursor*, parent: u32) -> u32!:
         var at = parent
         while cursor.peek() == 123:
             cursor.at += 1
@@ -113,7 +113,7 @@ extend Names:
             at = try self.variant(at, set, selection)
         return at
 
-    mutating func property_elements(cursor: PathCursor*, parent: u32) -> u32!:
+    func property_elements(cursor: PathCursor*, parent: u32) -> u32!:
         if cursor.peek() != 46: return parent
         cursor.at += 1
         let property = try self.property(parent, try self.property_name(cursor))
@@ -133,7 +133,7 @@ extend Names:
             return try self.mapper_or_expression(cursor, property)
         return property
 
-    mutating func mapper_or_expression(cursor: PathCursor*, parent: u32) -> u32!:
+    func mapper_or_expression(cursor: PathCursor*, parent: u32) -> u32!:
         if cursor.keyword("expression"): return try self.expression(parent)
         if not cursor.keyword("mapper"):
             error(errors.invalid, "not a path: expected 'mapper' or 'expression'")
@@ -151,7 +151,7 @@ extend Names:
         return try self.mapper_arg(mapper, try self.tokens.intern((str)cursor.data[start..<cursor.at]))
 
     ## `[path]`.
-    mutating func bracketed(cursor: PathCursor*) -> u32!:
+    func bracketed(cursor: PathCursor*) -> u32!:
         if cursor.peek() != 91: error(errors.invalid, "not a path: expected '['")
         cursor.at += 1
         let path = try self.parse_at(cursor, false)
@@ -160,7 +160,7 @@ extend Names:
         return path
 
     ## A ":"-joined property name at the cursor.
-    mutating func property_name(cursor: PathCursor*) -> u32!:
+    func property_name(cursor: PathCursor*) -> u32!:
         let start = cursor.at
         let first = identifier_at(cursor.data, cursor.at)
         if first == 0: error(errors.invalid, "not a path: expected a property name")
@@ -171,7 +171,7 @@ extend Names:
             cursor.at += 1 + next
         return try self.tokens.intern((str)cursor.data[start..<cursor.at])
 
-    mutating func identifier(cursor: PathCursor*) -> u32!:
+    func identifier(cursor: PathCursor*) -> u32!:
         let start = cursor.at
         let width = identifier_at(cursor.data, cursor.at)
         if width == 0: error(errors.invalid, "not a path: expected a name")
@@ -190,11 +190,11 @@ struct PathCursor:
     func peek_at(offset: usize) -> u8:
         return self.data[self.at + offset] if self.at + offset < self.data.length else 0
 
-    mutating func blanks():
+    func blanks():
         while self.peek() == 32 or self.peek() == 9: self.at += 1
 
     ## Consume `word` when it is next and not followed by an identifier character.
-    mutating func keyword(word: str) -> bool:
+    func keyword(word: str) -> bool:
         if self.data.length - self.at < word.length: return false
         for index in 0..<word.length:
             if self.data[self.at + index] != word.bytes[index]: return false

@@ -3,7 +3,7 @@
 ## root prim order, and each root prim after a blank line.
 
 extend Writer:
-    mutating func write_layer() -> !:
+    func write_layer() -> !:
         try self.put("#usda 1.0\n")
         let root = self.layer.spec(0)
         # The metadata section is written only when it holds something.
@@ -54,7 +54,7 @@ extend Writer:
         try self.put("\n")
 
     ## `subLayers = [ @a@ (offset = 1; scale = 2), ... ]`.
-    mutating func sublayers(root: const Spec*, value: const Value*) -> !:
+    func sublayers(root: const Spec*, value: const Value*) -> !:
         try self.indent(1)
         try self.put("subLayers = [\n")
         let paths = value.ids()

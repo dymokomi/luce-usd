@@ -12,7 +12,7 @@ struct Written:
     var size: u64
 
 extend CrateWriter:
-    mutating func write_sections() -> !:
+    func write_sections() -> !:
         var sections: Written[6] = ---
         # TOKENS: count, then the NUL-separated texts compressed.
         var at = self.tell()
@@ -53,7 +53,7 @@ extend CrateWriter:
         memory.write[u64]((void*)&boot[16], toc)
         for index in 24..<88: boot[index] = 0
 
-    mutating func write_tokens() -> !:
+    func write_tokens() -> !:
         var text = Growing[u8]()
         defer text.close()
         for id in self.tokens.view():
@@ -62,33 +62,33 @@ extend CrateWriter:
             try text.push(0)
         try self.put_u64((u64)self.tokens.count)
         try self.put_u64((u64)text.count)
-        let packed = try alloc u8[compression.compressed_bound(text.count)] in memory.heap
+        let packed = try new u8[compression.compressed_bound(text.count)] --- in memory.heap
         defer free(packed) in memory.heap
         let size = try compression.compress(text.view(), packed)
         try self.put_u64((u64)size)
         try self.put_bytes(packed[..<size])
 
-    mutating func write_fields() -> !:
+    func write_fields() -> !:
         let count = self.fields.count
         try self.put_u64((u64)count)
-        let tokens = try alloc u8[count * 4] in memory.heap
+        let tokens = try new u8[count * 4] --- in memory.heap
         defer free(tokens) in memory.heap
-        let reps = try alloc u8[count * 8] in memory.heap
+        let reps = try new u8[count * 8] --- in memory.heap
         defer free(reps) in memory.heap
         for index in 0..<count:
             memory.write[u32]((void*)&tokens[index * 4], self.fields.items[index].token)
             memory.write[u64]((void*)&reps[index * 8], self.fields.items[index].rep)
         try self.compressed_ints(tokens, count, 4)
-        let packed = try alloc u8[compression.compressed_bound(reps.length)] in memory.heap
+        let packed = try new u8[compression.compressed_bound(reps.length)] --- in memory.heap
         defer free(packed) in memory.heap
         let size = try compression.compress(reps, packed)
         try self.put_u64((u64)size)
         try self.put_bytes(packed[..<size])
 
-    mutating func write_specs() -> !:
+    func write_specs() -> !:
         let count = self.specs.count
         try self.put_u64((u64)count)
-        let column = try alloc u8[count * 4] in memory.heap
+        let column = try new u8[count * 4] --- in memory.heap
         defer free(column) in memory.heap
         for index in 0..<count: memory.write[u32]((void*)&column[index * 4], self.specs.items[index].path)
         try self.compressed_ints(column, count, 4)
@@ -98,7 +98,7 @@ extend CrateWriter:
         try self.compressed_ints(column, count, 4)
 
     ## The path table's size, then the tree's three compressed columns.
-    mutating func write_paths() -> !:
+    func write_paths() -> !:
         try self.put_u64((u64)self.paths.count)
         # The tree holds every non-empty path, in SdfPath order.
         var order = Growing[u32]()
@@ -108,21 +108,21 @@ extend CrateWriter:
         try self.sort_paths(&order)
         let count = order.count
         try self.put_u64((u64)count)
-        let indexes = try alloc u8[count * 4] in memory.heap
+        let indexes = try new u8[count * 4] --- in memory.heap
         defer free(indexes) in memory.heap
-        let elements = try alloc u8[count * 4] in memory.heap
+        let elements = try new u8[count * 4] --- in memory.heap
         defer free(elements) in memory.heap
-        let jumps = try alloc u8[count * 4] in memory.heap
+        let jumps = try new u8[count * 4] --- in memory.heap
         defer free(jumps) in memory.heap
         var next: usize = 0
-        discard(try self.build_tree(order.view(), 0, &next, indexes, elements, jumps))
+        _ = try self.build_tree(order.view(), 0, &next, indexes, elements, jumps)
         try self.compressed_ints(indexes, count, 4)
         try self.compressed_ints(elements, count, 4)
         try self.compressed_ints(jumps, count, 4)
 
     ## Emit the entries from `cur` on that share its parent, each followed
     ## by its subtree; the position after them.
-    mutating func build_tree(order: const u32[], origin: usize, next: usize*, indexes: u8[], elements: u8[], jumps: u8[]) -> usize!:
+    func build_tree(order: const u32[], origin: usize, next: usize*, indexes: u8[], elements: u8[], jumps: u8[]) -> usize!:
         var cur = origin
         while cur < order.length:
             let path = self.paths.items[(usize)order[cur]]
@@ -149,11 +149,11 @@ extend CrateWriter:
         return order.length
 
     ## Sort crate path indexes by SdfPath order.
-    mutating func sort_paths(order: Growing[u32]*) -> !:
+    func sort_paths(order: Growing[u32]*) -> !:
         # Merge sort: path tables can be large.
         let count = order.count
         if count < 2: return
-        let scratch = try alloc u32[count] in memory.heap
+        let scratch = try new u32[count] --- in memory.heap
         defer free(scratch) in memory.heap
         var width: usize = 1
         var source = order.items[..<count]
@@ -193,14 +193,14 @@ extend CrateWriter:
 
     ## `count` integers of `width`, encoded and compressed: a u64 size, then
     ## the bytes (_WriteCompressedInts).
-    mutating func compressed_ints(values: const u8[], count: usize, width: usize) -> !:
+    func compressed_ints(values: const u8[], count: usize, width: usize) -> !:
         if count == 0:
             try self.put_u64(0)
             return
-        let encoded = try alloc u8[compression.encoded_bound(count, width)] in memory.heap
+        let encoded = try new u8[compression.encoded_bound(count, width)] --- in memory.heap
         defer free(encoded) in memory.heap
         let length = try compression.encode_integers(values, count, width, encoded)
-        let packed = try alloc u8[compression.compressed_bound(length)] in memory.heap
+        let packed = try new u8[compression.compressed_bound(length)] --- in memory.heap
         defer free(packed) in memory.heap
         let size = try compression.compress(encoded[..<length], packed)
         try self.put_u64((u64)size)

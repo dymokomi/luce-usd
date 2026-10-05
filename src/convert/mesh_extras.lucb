@@ -24,7 +24,7 @@ func put_paths(stage: Stage*, gathered: const Gathered*, build: const MeshBuild*
     if not any_material: return
     var materials = TableBuilder()
     defer materials.close()
-    discard(try materials.intern(""))
+    _ = try materials.intern("")
     for index in 0..<build.sources.count:
         let source = &build.sources.items[index]
         let material = gathered.gprims.items[source.gprim].material
@@ -57,7 +57,7 @@ struct SubsetMaterials:
         self.faces = Growing[i32]()
         self.materials = Growing[u32]()
 
-    mutating func close():
+    func close():
         self.faces.close()
         self.materials.close()
 
@@ -172,7 +172,7 @@ func put_group(stage: const Stage*, group: PendingGroup*, build: const MeshBuild
         let edges = (usize)(try mesh.edge_count())
         var bits = try BitsBuilder.zeros(edges)
         defer bits.close()
-        discard(try edge_bits_from_pairs(mesh, group.pairs.view(), &bits))
+        _ = try edge_bits_from_pairs(mesh, group.pairs.view(), &bits)
         try put_attribute(mesh, try Attribute.group_of(name, Domain.edge, edges, bits.words()))
     else:
         let elements = build.faces if group.domain == Domain.face else build.points

@@ -125,7 +125,7 @@ extend Composer:
     ## (_CreateMapExpressionForArc): source to target (variant selections
     ## stripped), after the target layer stack's relocations at and below
     ## the target when it has any.
-    mutating func arc_map(stack: usize, source: u32, target_path: u32, offset: Offset) -> MapFunction!:
+    func arc_map(stack: usize, source: u32, target_path: u32, offset: Offset) -> MapFunction!:
         let names = self.names
         let target = try names.strip_variants(target_path)
         var arc = try MapFunction.of_pair(source, target, offset)
@@ -139,7 +139,7 @@ extend Composer:
     ## The relocations affecting namespace at and below `path`
     ## (_FilterRelocationsForPath): origin to target, then incremental
     ## source to target for targets not yet seen, and the root identity.
-    mutating func relocation_pairs(stack: usize, path: u32) -> PathPairs!:
+    func relocation_pairs(stack: usize, path: u32) -> PathPairs!:
         let names = self.names
         let relocates = self.stacks.stack(stack).relocates.view()
         var pairs = PathPairs.empty(true)
@@ -160,7 +160,7 @@ extend Composer:
     ## A node at a relocation's target brings the relocated source
     ## (_EvalNodeRelocations): its other arcs are elided, and a relocate
     ## arc adds the source's index, which only holds opinions below it.
-    mutating func eval_relocations(indexer: Indexer*, node: u32) -> !:
+    func eval_relocations(indexer: Indexer*, node: u32) -> !:
         let index = &indexer.index
         if not index.node(node).contributes(): return
         let stack = index.node(node).stack
@@ -190,7 +190,7 @@ extend Composer:
 
     ## A relocation node implies its source to its grandparent, mapped
     ## across its parent's arc (_EvalImpliedRelocations).
-    mutating func eval_implied_relocations(indexer: Indexer*, node: u32) -> !:
+    func eval_implied_relocations(indexer: Indexer*, node: u32) -> !:
         let index = &indexer.index
         let entry = index.node(node)
         if entry.arc != ArcType.relocate or entry.due_to_ancestor or entry.parent < 0: return
@@ -204,7 +204,7 @@ extend Composer:
         var options = ArcOptions.plain()
         options.contribute = false
         let stack = index.node((u32)grandparent).stack
-        discard(try self.add_arc(indexer, ArcType.relocate, (u32)grandparent, (i32)node, stack, source, MapFunction.identity(), 0, namespace_depth(self.names, index.node((u32)grandparent).path), options))
+        _ = try self.add_arc(indexer, ArcType.relocate, (u32)grandparent, (i32)node, stack, source, MapFunction.identity(), 0, namespace_depth(self.names, index.node((u32)grandparent).path), options)
 
     ## Whether the index is of a prim a relocation moved away
     ## (_ComposeIsProhibitedPrimChild): a contributing node's site is a

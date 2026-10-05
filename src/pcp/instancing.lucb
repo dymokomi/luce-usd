@@ -24,7 +24,7 @@ pub struct InstanceKey:
         self.arcs = Growing[InstanceArc]()
         self.selections = Growing[u32]()
 
-    pub mutating func close():
+    pub func close():
         self.arcs.close()
         self.selections.close()
 
@@ -85,7 +85,7 @@ extend Composer:
     ## Whether the parent a nested build extends is an instance: the
     ## cached index's answer when the parent is an ancestor of the prim
     ## being composed, else the rebuilt parent's.
-    mutating func ancestor_is_instance(stack: usize, parent: u32, index: const PrimIndex*) -> bool!:
+    func ancestor_is_instance(stack: usize, parent: u32, index: const PrimIndex*) -> bool!:
         if stack == self.root_stack and self.names.has_prefix(self.composing, parent):
             if let found = self.cached_index(parent): return found.instanceable
         return try self.is_instanceable(index)
@@ -93,7 +93,7 @@ extend Composer:
     ## The index's instance key (PcpInstanceKey): the instanceable arcs met
     ## strongest first (below one only when the index has payloads, which
     ## may be left unloaded), and the authored variant selections.
-    pub mutating func instance_key(index: const PrimIndex*, out: InstanceKey*) -> !:
+    pub func instance_key(index: const PrimIndex*, out: InstanceKey*) -> !:
         out.arcs.clear()
         out.selections.clear()
         if not index.instanceable: return
@@ -114,7 +114,7 @@ extend Composer:
                     if let selection = try self.selection_value(entry.stack, pairs[at + 1]): try self.add_selection(out, pairs[at], selection)
                     at += 2
 
-    mutating func collect_arcs(index: const PrimIndex*, node: u32, out: InstanceKey*) -> !:
+    func collect_arcs(index: const PrimIndex*, node: u32, out: InstanceKey*) -> !:
         if index.node(node).culled: return
         if index.node_instanceable(node):
             let entry = index.node(node)

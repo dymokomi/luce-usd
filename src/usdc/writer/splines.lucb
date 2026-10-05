@@ -6,7 +6,7 @@
 ## by time.
 
 extend CrateWriter:
-    mutating func pack_spline(value: const Value*) -> u64!:
+    func pack_spline(value: const Value*) -> u64!:
         let spline = value.spline() else error(errors.invalid, "a spline value without a spline")
         let version = blob_version(spline)
         self.require(12 if version == 1 else (13 if version == 2 else 15))

@@ -5,11 +5,11 @@
 ## are printed through TfStringify, which requests no upgrade.
 
 extend Writer:
-    mutating func array_edit_text(value: const Value*) -> !:
+    func array_edit_text(value: const Value*) -> !:
         let edit = value.array_edit() else return
         match edit.kind:
             .string, .token, .asset, .path_expression: self.need_version(2)
-            _: discard(0)
+            _: _ = 0
         var steps = Growing[EditInstruction]()
         defer steps.close()
         try edit.instructions(&steps)
@@ -46,14 +46,14 @@ extend Writer:
         try self.byte(']')
 
     ## A literal (by its index) or `[index]`.
-    mutating func edit_operand(edit: const ArrayEdit*, index: i64, reference: bool) -> !:
+    func edit_operand(edit: const ArrayEdit*, index: i64, reference: bool) -> !:
         if reference:
             try self.edit_index(index)
             return
         if index < 0 or index >= (i64)edit.literal_count(): error(errors.invalid, "an array edit literal out of range")
         try self.element(edit.kind, &edit.literal((usize)index)[0])
 
-    mutating func edit_index(index: i64) -> !:
+    func edit_index(index: i64) -> !:
         try self.byte('[')
         try self.integer(index)
         try self.byte(']')

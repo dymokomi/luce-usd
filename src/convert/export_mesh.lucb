@@ -24,7 +24,7 @@ struct MeshPart:
     var all_points: usize
     var all_corners: usize
 
-    mutating func close():
+    func close():
         self.faces.close()
         self.points.close()
         self.corners.close()
@@ -52,7 +52,7 @@ struct MeshExport:
     ## Edge attributes' marked edges, found once for all the parts.
     var marked: Growing[MarkedEdges]
 
-    mutating func close():
+    func close():
         for at in 0..<self.marked.count: self.marked.items[at].edges.close()
         self.marked.close()
 
@@ -181,7 +181,7 @@ func write_part(work: MeshExport*, part: const MeshPart*, numbers: const i32[]) 
             if precise: memory.write[f64]((void*)&out[(at * 3 + axis) * 8], xyz[axis])
             else: memory.write[f32]((void*)&out[(at * 3 + axis) * 4], (f32)xyz[axis])
     let taken = column.take()
-    discard(try author.attribute(part.path, spec, "points", "point3d[]" if precise else "point3f[]", false, Value.of_array(ValueKind.vec3d if precise else ValueKind.vec3f, points, taken)))
+    _ = try author.attribute(part.path, spec, "points", "point3d[]" if precise else "point3f[]", false, Value.of_array(ValueKind.vec3d if precise else ValueKind.vec3f, points, taken))
     let offsets = mesh.offset_span()
     var counts = try Column[u8].allocate(part.faces.count * 4)
     errdefer counts.release()
@@ -190,7 +190,7 @@ func write_part(work: MeshExport*, part: const MeshPart*, numbers: const i32[]) 
         let face = (usize)part.faces.items[at]
         count_out[at] = offsets[face + 1] - offsets[face]
     let counts_taken = counts.take()
-    discard(try author.attribute(part.path, spec, "faceVertexCounts", "int[]", false, Value.of_array(ValueKind.int, part.faces.count, counts_taken)))
+    _ = try author.attribute(part.path, spec, "faceVertexCounts", "int[]", false, Value.of_array(ValueKind.int, part.faces.count, counts_taken))
     let corners = mesh.corner_span()
     let corner_total = part.corner_count()
     var indices = try Column[u8].allocate(corner_total * 4)
@@ -200,9 +200,9 @@ func write_part(work: MeshExport*, part: const MeshPart*, numbers: const i32[]) 
     else:
         for at in 0..<corner_total: index_out[at] = numbers[(usize)corners[part.corner_at(at)]]
     let indices_taken = indices.take()
-    discard(try author.attribute(part.path, spec, "faceVertexIndices", "int[]", false, Value.of_array(ValueKind.int, corner_total, indices_taken)))
+    _ = try author.attribute(part.path, spec, "faceVertexIndices", "int[]", false, Value.of_array(ValueKind.int, corner_total, indices_taken))
     let extent: f32[6] = [(f32)low[0], (f32)low[1], (f32)low[2], (f32)high[0], (f32)high[1], (f32)high[2]]
-    discard(try author.attribute(part.path, spec, "extent", "float3[]", false, try array_of(ValueKind.vec3f, 2, u8[]((u8*)&extent[0], 24))))
+    _ = try author.attribute(part.path, spec, "extent", "float3[]", false, try array_of(ValueKind.vec3f, 2, u8[]((u8*)&extent[0], 24)))
     for index in 0..<(usize)mesh.attribute_count():
         try write_primvar(work, part, spec, try mesh.attribute_entry((i64)index))
     try write_subsets(work, part, spec, numbers)

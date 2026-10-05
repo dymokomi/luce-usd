@@ -25,7 +25,7 @@ extend Reader:
         return self.at >= self.data.length
 
     ## Skip a comment at the cursor (`single` allows # and //); whether one was.
-    mutating func comment(single: bool) -> bool!:
+    func comment(single: bool) -> bool!:
         let byte = self.peek()
         if byte == '/' and self.peek_at(1) == '*':
             self.at += 2
@@ -41,34 +41,34 @@ extend Reader:
         return false
 
     ## Spaces, tabs and /* */ comments.
-    mutating func skip_inline() -> !:
+    func skip_inline() -> !:
         while true:
             let byte = self.peek()
             if byte == ' ' or byte == '\t': self.at += 1
             elif not (try self.comment(false)): return
 
     ## Spaces, tabs and every comment, up to a line end.
-    mutating func skip_line() -> !:
+    func skip_line() -> !:
         while true:
             let byte = self.peek()
             if byte == ' ' or byte == '\t': self.at += 1
             elif not (try self.comment(true)): return
 
     ## Spaces, tabs, line ends and comments.
-    mutating func skip_all() -> !:
+    func skip_all() -> !:
         while true:
             let byte = self.peek()
             if byte == ' ' or byte == '\t' or byte == '\n' or byte == '\r': self.at += 1
             elif not (try self.comment(true)): return
 
     ## Consume `byte`, or fail saying what was expected.
-    mutating func expect(byte: u8, what: str) -> !:
+    func expect(byte: u8, what: str) -> !:
         if self.peek() != byte: error(errors.invalid, self.where(what))
         self.at += 1
 
     ## After a statement in a block closed by `close`: a `;` or a line end
     ## separates it from the next; the close may follow directly.
-    mutating func statement_end(close: u8) -> !:
+    func statement_end(close: u8) -> !:
         try self.skip_line()
         let byte = self.peek()
         if byte == ';' or byte == '\n' or byte == '\r':
@@ -78,7 +78,7 @@ extend Reader:
         error(errors.invalid, self.where("expected a line end or ';' after a statement"))
 
     ## After a list item closed by `close`: a comma, or the close.
-    mutating func list_end(close: u8) -> bool!:
+    func list_end(close: u8) -> bool!:
         try self.skip_inline()
         if self.peek() == ',':
             self.at += 1
@@ -89,7 +89,7 @@ extend Reader:
         error(errors.invalid, self.where("expected ',' between list items"))
 
     ## Consume `word` when it is next and not followed by a name character.
-    mutating func keyword(word: str) -> bool:
+    func keyword(word: str) -> bool:
         if self.data.length - self.at < word.length: return false
         for index in 0..<word.length:
             if self.data[self.at + index] != word.bytes[index]: return false
@@ -107,14 +107,14 @@ extend Reader:
         return not ((next >= 'a' and next <= 'z') or (next >= 'A' and next <= 'Z') or (next >= '0' and next <= '9') or next == '_')
 
     ## The identifier (keywords included) at the cursor, consumed; "" if none.
-    mutating func base_identifier() -> str:
+    func base_identifier() -> str:
         let width = identifier_at(self.data, self.at)
         let start = self.at
         self.at += width
         return (str)self.data[start..<self.at]
 
     ## An Identifier: identifiers that are not keywords, joined by `::`.
-    mutating func identifier() -> str!:
+    func identifier() -> str!:
         let start = self.at
         while true:
             let width = identifier_at(self.data, self.at)
@@ -133,7 +133,7 @@ extend Reader:
         return width > 0 and not is_reserved((str)self.data[self.at..<self.at + width])
 
     ## A property name: identifiers joined by ':', or a keyword.
-    mutating func namespaced_name() -> str!:
+    func namespaced_name() -> str!:
         let start = self.at
         let first = identifier_at(self.data, self.at)
         if first == 0: error(errors.invalid, self.where("expected a property name"))
@@ -145,7 +145,7 @@ extend Reader:
         return (str)self.data[start..<self.at]
 
     ## `[]` after a type name (inline padding inside), consumed; whether seen.
-    mutating func array_brackets() -> bool!:
+    func array_brackets() -> bool!:
         let start = self.at
         try self.skip_inline()
         if self.peek() != '[':

@@ -3,7 +3,6 @@
 ## Composition maps namespaces with these; a rebuilt path re-interns each
 ## element, so the result is again one id per distinct path.
 
-
 extend Names:
     ## The ancestor of `path` at `depth` (the roots are depth 0).
     pub func ancestor_at(path: u32, depth: u32) -> u32:
@@ -22,7 +21,7 @@ extend Names:
 
     ## `path` with its prefix `prefix` replaced by `replacement`, and every target path
     ## inside it too; `path` itself when `prefix` is not its prefix.
-    pub mutating func replace_prefix(path: u32, prefix: u32, replacement: u32) -> u32!:
+    pub func replace_prefix(path: u32, prefix: u32, replacement: u32) -> u32!:
         if path == empty_path or prefix == replacement: return path
         if self.has_prefix(path, prefix):
             return try self.rebuilt(path, self.node(prefix).depth, replacement, prefix, replacement)
@@ -31,7 +30,7 @@ extend Names:
         return try self.rebuilt(path, 0, root, prefix, replacement)
 
     ## `path` with every variant selection removed, targets included.
-    pub mutating func strip_variants(path: u32) -> u32!:
+    pub func strip_variants(path: u32) -> u32!:
         if path <= relative_root: return path
         var chain: u32[4096] = ---
         let count = try self.chain_of(path, 0, chain)
@@ -48,7 +47,7 @@ extend Names:
 
     ## `path` anchored at the prim path `anchor` when it is relative: `..`
     ## steps to the parent prim. Target paths inside are anchored too.
-    pub mutating func make_absolute(path: u32, anchor: u32) -> u32!:
+    pub func make_absolute(path: u32, anchor: u32) -> u32!:
         if path == empty_path or self.node(path).absolute: return path
         if path == relative_root: return anchor
         var chain: u32[4096] = ---
@@ -69,7 +68,7 @@ extend Names:
 
     ## `path`'s elements below `depth`, re-appended onto `base`, with target
     ## paths' `prefix` prefixes replaced by `replacement`.
-    mutating func rebuilt(path: u32, depth: u32, base: u32, prefix: u32, replacement: u32) -> u32!:
+    func rebuilt(path: u32, depth: u32, base: u32, prefix: u32, replacement: u32) -> u32!:
         var chain: u32[4096] = ---
         let count = try self.chain_of(path, depth, chain)
         var at = base
@@ -103,7 +102,7 @@ extend Names:
 
     ## `path` relative to the prim (or variant, or root) path `anchor`, with
     ## the fewest `..` steps (SdfPath::MakeRelativePath).
-    pub mutating func make_relative(path: u32, anchor: u32) -> u32!:
+    pub func make_relative(path: u32, anchor: u32) -> u32!:
         if path == empty_path: return empty_path
         if not self.node(path).absolute:
             return try self.make_relative(try self.make_absolute(path, anchor), anchor)

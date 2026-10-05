@@ -73,7 +73,7 @@ func format_numeric(kind: ValueKind, at: const u8*, out: Growing[u8]*) -> !:
                 try out.push(')')
             try put_bytes(out, " )".bytes)
             return
-        _: discard(0)
+        _: _ = 0
     let count = components(kind)
     let scalar = scalar_of(kind)
     let size = element_bytes(scalar)
@@ -139,7 +139,7 @@ func format_array(kind: ValueKind, bytes: const u8[], count: usize, out: Growing
         try out.push(']')
         return
     let chunks = (count + chunk_elements - 1) // chunk_elements
-    let outputs = try alloc Growing[u8][chunks] in memory.heap
+    let outputs = try new Growing[u8][chunks] --- in memory.heap
     defer free(outputs) in memory.heap
     for index in 0..<chunks: outputs[index] = Growing[u8]()
     defer:

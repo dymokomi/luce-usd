@@ -63,7 +63,7 @@ struct LoopResolver:
     var extrap_knot1: Knot
     var extrap_knot2: Knot
 
-    static func make(spline: const Spline*, time: f64) -> LoopResolver:
+    func make(spline: const Spline*, time: f64) -> LoopResolver:
         var made = LoopResolver(time = time, pre = false, value_offset = 0.0, inner = false, first_proto = 0, first_time = 0.0, last_time = 0.0,
                                 first_looped = false, last_looped = false, between_last_proto_and_end = false, between_pre_unlooped_and_looped = false,
                                 between_looped_and_post_unlooped = false, invalid_pre_loop = false, invalid_post_loop = false,
@@ -95,7 +95,7 @@ struct LoopResolver:
         return made
 
     ## _ResolveInner.
-    mutating func resolve_inner(spline: const Spline*):
+    func resolve_inner(spline: const Spline*):
         let loops = spline.loops
         let span = loops.proto_end - loops.proto_start
         let looped_low = loops.proto_start - (f64)loops.pre_loops * span
@@ -116,17 +116,17 @@ struct LoopResolver:
             if self.time > spline.knots.items[end - 1].time: self.between_last_proto_and_end = true
         elif self.time < self.first_time:
             if self.first_looped:
-                self.extrap_knot1 = self.proto_copy(spline, self.first_proto, -(f64)loops.pre_loops)
+                self.extrap_knot1 = LoopResolver.proto_copy(spline, self.first_proto, -(f64)loops.pre_loops)
                 let second = self.first_proto + 1
                 if second < count and inside(spline.knots.items[second].time, loops.proto_start, loops.proto_end, true, false):
-                    self.extrap_knot2 = self.proto_copy(spline, second, -(f64)loops.pre_loops)
+                    self.extrap_knot2 = LoopResolver.proto_copy(spline, second, -(f64)loops.pre_loops)
                 else:
-                    self.extrap_knot2 = self.proto_copy(spline, self.first_proto, -(f64)loops.pre_loops + 1.0)
+                    self.extrap_knot2 = LoopResolver.proto_copy(spline, self.first_proto, -(f64)loops.pre_loops + 1.0)
         elif self.time > self.last_time:
             if self.last_looped:
-                self.extrap_knot1 = self.proto_copy(spline, self.first_proto, (f64)loops.post_loops + 1.0)
+                self.extrap_knot1 = LoopResolver.proto_copy(spline, self.first_proto, (f64)loops.post_loops + 1.0)
                 let last_proto = lower_bound(spline, self.first_proto, count, loops.proto_end) - 1
-                self.extrap_knot2 = self.proto_copy(spline, last_proto, (f64)loops.post_loops)
+                self.extrap_knot2 = LoopResolver.proto_copy(spline, last_proto, (f64)loops.post_loops)
         elif self.time < looped_low:
             let at = lower_bound(spline, 0, self.first_proto, looped_low)
             if at > 0 and self.time > spline.knots.items[at - 1].time: self.between_pre_unlooped_and_looped = true
@@ -137,7 +137,7 @@ struct LoopResolver:
             if at < count and self.time < spline.knots.items[at].time: self.between_looped_and_post_unlooped = true
 
     ## _ResolveExtrap.
-    mutating func resolve_extrapolation(spline: const Spline*, pre_loops: bool, post_loops: bool):
+    func resolve_extrapolation(spline: const Spline*, pre_loops: bool, post_loops: bool):
         if inside(self.time, self.first_time, self.last_time, not self.pre, self.pre): return
         let do_pre = pre_loops and self.time < self.last_time
         let do_post = post_loops and self.time > self.first_time
@@ -145,7 +145,7 @@ struct LoopResolver:
         elif do_post: self.extrapolate(spline, spline.post, self.time - self.last_time, false)
 
     ## _DoExtrap: hop whole loop iterations back into the knots.
-    mutating func extrapolate(spline: const Spline*, extrapolation: Extrapolation, distance: f64, is_pre: bool):
+    func extrapolate(spline: const Spline*, extrapolation: Extrapolation, distance: f64, is_pre: bool):
         var loop_start = self.first_time
         var loop_end = self.last_time
         if extrapolation.has_boundary:
@@ -258,9 +258,9 @@ func eval_main(spline: const Spline*, loops: const LoopResolver*) -> f64?:
         let slope = extrapolation_slope(spline.post, multiple, previous, second, false) else return none
         return previous.value + slope * (time - previous.time)
     # Between knots, with the inner-loop boundary cases.
-    if loops.between_last_proto_and_end: next = loops.proto_copy(spline, loops.first_proto, 1.0)
-    elif loops.between_pre_unlooped_and_looped: next = loops.proto_copy(spline, loops.first_proto, -(f64)spline.loops.pre_loops)
-    elif loops.between_looped_and_post_unlooped: previous = loops.proto_copy(spline, loops.first_proto, (f64)spline.loops.post_loops + 1.0)
+    if loops.between_last_proto_and_end: next = LoopResolver.proto_copy(spline, loops.first_proto, 1.0)
+    elif loops.between_pre_unlooped_and_looped: next = LoopResolver.proto_copy(spline, loops.first_proto, -(f64)spline.loops.pre_loops)
+    elif loops.between_looped_and_post_unlooped: previous = LoopResolver.proto_copy(spline, loops.first_proto, (f64)spline.loops.post_loops + 1.0)
     return interpolate(spline.curve, previous, next, time)
 
 ## _GetExtrapolationSlope: `end` is the first (pre) or last knot, `adjacent`
@@ -270,7 +270,7 @@ func extrapolation_slope(extrapolation: Extrapolation, multiple: bool, end: Knot
         .value_block: return none
         .held: return 0.0
         .sloped: return extrapolation.slope
-        _: discard(0)
+        _: _ = 0
     if not multiple or end.dual: return 0.0
     let segment = end.next if pre else adjacent.next
     if segment == Interpolation.held or segment == Interpolation.value_block: return 0.0
@@ -287,7 +287,7 @@ func interpolate(curve: CurveType, begin: Knot, end: Knot, time: f64) -> f64?:
         .linear:
             let slope = (end.left_value() - begin.value) / (end.time - begin.time)
             return begin.value + slope * (time - begin.time)
-        _: discard(0)
+        _: _ = 0
     if curve == CurveType.hermite: return hermite(begin, end, time)
     return bezier(begin, end, time)
 

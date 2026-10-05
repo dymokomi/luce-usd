@@ -16,7 +16,7 @@ struct ElementSource:
     var face_base: usize
     var face_count: usize
 
-    mutating func release():
+    func release():
         self.vertices.release()
         self.map.close()
 
@@ -108,7 +108,7 @@ func element_attribute(stage: Stage*, sources: const ElementSource[], candidates
     if let role = attribute_role(first.role): attribute.role = role
     var table = TableBuilder()
     defer table.close()
-    if kind == DataType.text: discard(try table.intern(""))
+    if kind == DataType.text: _ = try table.intern("")
     for at in 0..<candidates.length:
         let candidate = &candidates[at]
         if candidate.name != name or candidate.width != first.width or candidate.domain == Domain.corner: continue

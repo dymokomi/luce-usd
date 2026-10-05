@@ -12,7 +12,7 @@ struct ElementPart:
     var path: u32
     var elements: Growing[i32]
 
-    mutating func close():
+    func close():
         self.elements.close()
 
 func close_element_parts(parts: Growing[ElementPart]*):
@@ -63,9 +63,9 @@ func write_positions(author: Author*, path: u32, spec: usize, positions: const F
             if precise: memory.write[f64]((void*)&out[(at * 3 + axis) * 8], xyz[axis])
             else: memory.write[f32]((void*)&out[(at * 3 + axis) * 4], (f32)xyz[axis])
     let taken = column.take()
-    discard(try author.attribute(path, spec, "points", "point3d[]" if precise else "point3f[]", false, Value.of_array(ValueKind.vec3d if precise else ValueKind.vec3f, points.length, taken)))
+    _ = try author.attribute(path, spec, "points", "point3d[]" if precise else "point3f[]", false, Value.of_array(ValueKind.vec3d if precise else ValueKind.vec3f, points.length, taken))
     let extent: f32[6] = [(f32)low[0], (f32)low[1], (f32)low[2], (f32)high[0], (f32)high[1], (f32)high[2]]
-    discard(try author.attribute(path, spec, "extent", "float3[]", false, try array_of(ValueKind.vec3f, 2, u8[]((u8*)&extent[0], 24))))
+    _ = try author.attribute(path, spec, "extent", "float3[]", false, try array_of(ValueKind.vec3f, 2, u8[]((u8*)&extent[0], 24)))
 
 ## The attributes of `store` on `domain` over `elements` as the prim's
 ## primvars with interpolation `interpolation`.

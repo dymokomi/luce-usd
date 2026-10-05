@@ -4,6 +4,7 @@
 import memory
 from luce_usd.kernel import Names, ValueKind, Role, find_type, element_bytes, Value, Dictionary, ListOp, ListItem, ListPart, TimeSamples, same_value, array_column, apply_list_op, LayerData, SpecType, absolute_root, invalid
 from luce_geocore.core.growing import Growing
+import strings
 
 func item(a: u64) -> ListItem:
     return ListItem(a = a, b = 0, offset = 0.0, scale = 1.0, custom = none)
@@ -118,7 +119,7 @@ pub func exercise() -> !:
     let spec = try layer.create_spec(world, SpecType.prim)
     assert(layer.find(world) == spec)
     var duplicate = false
-    discard(layer.create_spec(world, SpecType.prim)) catch failure:
+    _ = layer.create_spec(world, SpecType.prim) catch failure:
         assert(failure.code == invalid)
         duplicate = true
     assert(duplicate)
@@ -133,11 +134,11 @@ pub func exercise() -> !:
     # Many specs rehash and stay found.
     var buffer: u8[32]
     for index: usize in 0..<2000:
-        let path = try names.child(world, try names.token(try format(buffer, f"P{index}")))
-        discard(try layer.create_spec(path, SpecType.prim))
+        let path = try names.child(world, try names.token(try strings.format(buffer, f"P{index}")))
+        _ = try layer.create_spec(path, SpecType.prim)
     assert(layer.spec_count() == 2002 and layer.find(world) == spec)
     for index: usize in 0..<2000:
-        let path = try names.child(world, try names.token(try format(buffer, f"P{index}")))
+        let path = try names.child(world, try names.token(try strings.format(buffer, f"P{index}")))
         assert(layer.find(path) == index + 2)
 
 func double_bits(value: f64) -> u64:

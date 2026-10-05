@@ -18,21 +18,21 @@ struct Author:
         self.children = Growing[Growing[u32]]()
         self.properties = Growing[Growing[u32]]()
 
-    mutating func close():
+    func close():
         for at in 0..<self.children.count: self.children.items[at].close()
         for at in 0..<self.properties.count: self.properties.items[at].close()
         self.children.close()
         self.properties.close()
 
     ## Room for spec `index`'s lists.
-    mutating func grow(index: usize) -> !:
+    func grow(index: usize) -> !:
         while self.children.count <= index:
             try self.children.push(Growing[u32]())
             try self.properties.push(Growing[u32]())
 
     ## The spec index of prim `path`, defined (typed `type_name`, 0 for
     ## none) when new; its missing ancestors become Xforms.
-    mutating func define(path: u32, type_name: u32, xform: u32) -> usize!:
+    func define(path: u32, type_name: u32, xform: u32) -> usize!:
         if let found = self.layer.find(path): return found
         let parent = self.names.parent(path)
         let parent_spec = (try self.define(parent, xform, xform)) if parent != absolute_root else 0
@@ -46,7 +46,7 @@ struct Author:
 
     ## A new attribute `name` of prim `prim` (spec `prim_spec`): its type
     ## name, variability and default value (taken).
-    mutating func attribute(prim: u32, prim_spec: usize, name: str, type_name: str, uniform: bool, value: Value) -> usize!:
+    func attribute(prim: u32, prim_spec: usize, name: str, type_name: str, uniform: bool, value: Value) -> usize!:
         var owned = value
         errdefer owned.release()
         let token = try self.names.token(name)
@@ -62,11 +62,11 @@ struct Author:
         return spec
 
     ## A token metadata field on spec `spec`.
-    mutating func token_field(spec: usize, key: u32, text: str) -> !:
+    func token_field(spec: usize, key: u32, text: str) -> !:
         try self.layer.set(spec, key, Value.scalar(ValueKind.token, (u64)(try self.names.token(text))))
 
     ## A relationship `name` of prim `prim` targeting `targets` explicitly.
-    mutating func relationship(prim: u32, prim_spec: usize, name: str, targets: const u32[]) -> !:
+    func relationship(prim: u32, prim_spec: usize, name: str, targets: const u32[]) -> !:
         let token = try self.names.token(name)
         let path = try self.names.property(prim, token)
         let spec = try self.layer.create_spec(path, SpecType.relationship)
@@ -78,11 +78,11 @@ struct Author:
         list.explicit = true
         for target in targets:
             try list.push(ListPart.explicit, ListItem(a = (u64)target, b = 0, offset = 0.0, scale = 1.0, custom = none))
-            discard(try self.layer.create_spec(try self.names.target(path, target), SpecType.relationship_target))
+            _ = try self.layer.create_spec(try self.names.target(path, target), SpecType.relationship_target)
         try self.layer.set(spec, self.layer.keys.target_children, try id_vector(ValueKind.path_vector, targets))
 
     ## Write every prim's primChildren and properties fields.
-    mutating func finish() -> !:
+    func finish() -> !:
         for spec in 0..<self.children.count:
             if self.children.items[spec].count > 0:
                 try self.layer.set(spec, self.layer.keys.prim_children, try id_vector(ValueKind.token_vector, self.children.items[spec].view()))

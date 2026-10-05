@@ -61,5 +61,5 @@ struct Reader:
         while index < end:
             if self.data[index] == '\n': line += 1
             index += 1
-        return format(message_text, f"line {line}: {message}") catch failure:
+        return strings.format(message_text, f"line {line}: {message}") catch failure:
             recover message

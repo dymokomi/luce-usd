@@ -26,7 +26,7 @@ struct Rows:
         self.matrices = Growing[Matrix4d]()
         self.visible = Growing[bool]()
 
-    mutating func close():
+    func close():
         self.prototypes.close()
         self.proto.close()
         self.matrices.close()
@@ -116,7 +116,7 @@ func import_instances(stage: Stage*, gathered: const Gathered*, options: const I
                     slot = slots.items[at]
                     found = true
             if not found:
-                discard(try instances.add_prototype(try import_prototype(stage, gprim.prototype, options, warnings, depth + 1)))
+                _ = try instances.add_prototype(try import_prototype(stage, gprim.prototype, options, warnings, depth + 1))
                 try roots.push(gprim.prototype)
                 try slots.push(slot)
             let placement = placement_of(&gprim.world, &sheared_scene)
@@ -134,7 +134,7 @@ func import_instances(stage: Stage*, gathered: const Gathered*, options: const I
         if rows.proto.count == 0: continue
         let base = instances.prototype_count()
         for prototype in rows.prototypes.view():
-            discard(try instances.add_prototype(try import_root(stage, prototype, options, warnings, depth + 1)))
+            _ = try instances.add_prototype(try import_root(stage, prototype, options, warnings, depth + 1))
         var named = try stage.value(gprim.path, try stage.names.token("primvars:path"))
         defer named.release()
         let has_names = named.array and named.count == rows.proto.count and (named.kind == ValueKind.string or named.kind == ValueKind.token)
@@ -172,16 +172,16 @@ struct RowPaths:
         self.text = Growing[u8]()
         self.named = false
 
-    mutating func add(path: str) -> !:
+    func add(path: str) -> !:
         try self.values.push(try self.table.intern(path))
         if path.length > 0: self.named = true
 
     ## The path in `text`.
-    mutating func add_text() -> !:
+    func add_text() -> !:
         try self.values.push(try self.table.intern((str)self.text.view()))
         if self.text.count > 0: self.named = true
 
-    mutating func close():
+    func close():
         self.table.close()
         self.values.close()
         self.text.close()

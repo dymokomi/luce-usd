@@ -89,13 +89,13 @@ pub struct Names:
         self.mapper_word = mapper_word
         self.expression_word = expression_word
 
-    pub mutating func close():
+    pub func close():
         self.tokens.close()
         self.nodes.close()
         self.slots.close()
 
     ## The id of `text`, interned.
-    pub mutating func token(text: str) -> u32!:
+    pub func token(text: str) -> u32!:
         return try self.tokens.intern(text)
 
     ## The text of `token`.
@@ -164,39 +164,39 @@ pub struct Names:
         return false
 
     ## The child prim `name` of a prim, variant or root path.
-    pub mutating func child(parent: u32, name: u32) -> u32!:
+    pub func child(parent: u32, name: u32) -> u32!:
         return try self.find_or_add(parent, PathKind.prim, name, 0)
 
     ## The variant selection `{set=selection}` of a prim path.
-    pub mutating func variant(parent: u32, set: u32, selection: u32) -> u32!:
+    pub func variant(parent: u32, set: u32, selection: u32) -> u32!:
         return try self.find_or_add(parent, PathKind.variant, set, selection)
 
     ## The property `name` of a prim, variant or relative root path.
-    pub mutating func property(parent: u32, name: u32) -> u32!:
+    pub func property(parent: u32, name: u32) -> u32!:
         return try self.find_or_add(parent, PathKind.property, name, 0)
 
     ## The target `[target]` of a property path.
-    pub mutating func target(parent: u32, target: u32) -> u32!:
+    pub func target(parent: u32, target: u32) -> u32!:
         return try self.find_or_add(parent, PathKind.target, target, 0)
 
     ## The relational attribute `name` of a target path.
-    pub mutating func relational(parent: u32, name: u32) -> u32!:
+    pub func relational(parent: u32, name: u32) -> u32!:
         return try self.find_or_add(parent, PathKind.relational, name, 0)
 
     ## The mapper `.mapper[target]` of a property path.
-    pub mutating func mapper(parent: u32, target: u32) -> u32!:
+    pub func mapper(parent: u32, target: u32) -> u32!:
         return try self.find_or_add(parent, PathKind.mapper, target, 0)
 
     ## The mapper argument `name` of a mapper path.
-    pub mutating func mapper_arg(parent: u32, name: u32) -> u32!:
+    pub func mapper_arg(parent: u32, name: u32) -> u32!:
         return try self.find_or_add(parent, PathKind.mapper_arg, name, 0)
 
     ## The expression `.expression` of a property path.
-    pub mutating func expression(parent: u32) -> u32!:
+    pub func expression(parent: u32) -> u32!:
         return try self.find_or_add(parent, PathKind.expression, 0, 0)
 
     ## The node for (parent, kind, element, extra), added when new.
-    pub mutating func find_or_add(parent: u32, kind: PathKind, element: u32, extra: u32) -> u32!:
+    pub func find_or_add(parent: u32, kind: PathKind, element: u32, extra: u32) -> u32!:
         if self.slots.count == 0 or self.nodes.count * 2 >= self.slots.count:
             try self.rehash(1024 if self.slots.count == 0 else self.slots.count * 2)
         let mask = self.slots.count - 1
@@ -214,7 +214,7 @@ pub struct Names:
         self.slots.items[slot] = id + 1
         return id
 
-    mutating func rehash(capacity: usize) -> !:
+    func rehash(capacity: usize) -> !:
         try self.slots.fill(capacity, 0)
         let mask = capacity - 1
         for id in 3..<self.nodes.count:

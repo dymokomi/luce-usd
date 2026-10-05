@@ -8,7 +8,7 @@
 
 extend Reader:
     ## `{ item, ... }` into the spec's spline field.
-    mutating func spline(spec: usize, kind: ValueKind, array: bool) -> !:
+    func spline(spec: usize, kind: ValueKind, array: bool) -> !:
         let supported = kind == ValueKind.double or kind == ValueKind.float or kind == ValueKind.half or kind == ValueKind.time_code
         if array or not supported: error(errors.invalid, self.where("an unsupported spline value type"))
         try self.skip_inline()
@@ -26,7 +26,7 @@ extend Reader:
         try self.set_field(spec, self.keys.spline, value)
 
     ## One SplineItem.
-    mutating func spline_item(spline: Spline*) -> !:
+    func spline_item(spline: Spline*) -> !:
         if self.keyword("bezier"):
             spline.curve = CurveType.bezier
             return
@@ -35,7 +35,7 @@ extend Reader:
             return
         if self.sees("pre") or self.sees("post"):
             let pre = self.keyword("pre")
-            if not pre: discard(self.keyword("post"))
+            if not pre: _ = self.keyword("post")
             try self.skip_inline()
             try self.expect(':', "expected ':' after a spline extrapolation side")
             try self.skip_inline()
@@ -74,7 +74,7 @@ extend Reader:
         try self.knot(spline)
 
     ## SplineExtrapolationType.
-    mutating func extrapolation() -> Extrapolation!:
+    func extrapolation() -> Extrapolation!:
         if self.keyword("none"): return Extrapolation.of(ExtrapolationMode.value_block)
         if self.keyword("held"): return Extrapolation.of(ExtrapolationMode.held)
         if self.keyword("linear"): return Extrapolation.of(ExtrapolationMode.linear)
@@ -99,7 +99,7 @@ extend Reader:
         error(errors.invalid, self.where("expected a spline extrapolation"))
 
     ## `( number )` with inline padding.
-    mutating func parenthesized_number() -> f64!:
+    func parenthesized_number() -> f64!:
         try self.skip_inline()
         try self.expect('(', "expected '('")
         try self.skip_inline()
@@ -110,7 +110,7 @@ extend Reader:
 
     ## SplineKnotItem: `time: [pre &] value` and its parameters. A knot at
     ## a time already given is dropped (TsKnotMap::insert).
-    mutating func knot(spline: Spline*) -> !:
+    func knot(spline: Spline*) -> !:
         var made = Knot.at((try self.number()).as_double())
         errdefer made.custom.release()
         try self.skip_inline()
@@ -142,7 +142,7 @@ extend Reader:
         try spline.put(made)
 
     ## SplineKnotParam: a pre tangent, the post shaping, or custom data.
-    mutating func knot_parameter(spline: const Spline*, knot: Knot*) -> !:
+    func knot_parameter(spline: const Spline*, knot: Knot*) -> !:
         if self.peek() == '{':
             let custom = try self.dictionary_value()
             knot.custom.release()
@@ -177,13 +177,13 @@ extend Reader:
         knot.post_algorithm = algorithm
 
     ## TokenSeparator: at least one space or comment.
-    mutating func separator() -> !:
+    func separator() -> !:
         let before = self.at
         try self.skip_inline()
         if self.at == before: error(errors.invalid, self.where("expected a space"))
 
     ## SplineTangent: `(width, slope[, algorithm])` or `(slope[, algorithm])`.
-    mutating func tangent(spline: const Spline*) -> (f64, f64, TangentAlgorithm)!:
+    func tangent(spline: const Spline*) -> (f64, f64, TangentAlgorithm)!:
         try self.expect('(', "expected '(' to open a tangent")
         try self.skip_inline()
         var given: f64[2] = [0.0, 0.0]

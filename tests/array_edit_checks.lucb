@@ -53,6 +53,6 @@ func applied(names: Names*, layer: const LayerData*, path: str) -> u8[]!:
     defer bytes.close()
     var empty: u8[]
     try apply_array_edit(edit, empty, &bytes)
-    let result = try alloc u8[bytes.count] in memory.heap
+    let result = try new u8[bytes.count] --- in memory.heap
     for at in 0..<bytes.count: result[at] = bytes.items[at]
     return result

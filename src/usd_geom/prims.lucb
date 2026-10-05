@@ -63,7 +63,7 @@ pub struct Gathered:
         self.skipped_types = Growing[u32]()
         self.anchor = absolute_root
 
-    pub mutating func close():
+    pub func close():
         self.gprims.close()
         self.inherited.close()
         self.skipped_types.close()

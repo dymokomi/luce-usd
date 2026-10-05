@@ -35,7 +35,7 @@ extend Reader:
         return self.sees("inf") or self.sees("nan")
 
     ## The Number grammar rule at the cursor, consumed and classified.
-    mutating func number() -> Number!:
+    func number() -> Number!:
         let start = self.at
         if self.keyword("nan"): return Number(class = NumberClass.real, unsigned = 0, signed = 0, real = f64.bits(0x7FF8000000000000))
         let negative = self.peek() == '-'
@@ -87,7 +87,7 @@ extend Reader:
 
     ## The quoted string at the cursor with its escapes evaluated; a view of
     ## the scratch buffer, valid until the next string.
-    mutating func string() -> str!:
+    func string() -> str!:
         let quote = self.peek()
         if quote != '"' and quote != '\'': error(errors.invalid, self.where("expected a quoted string"))
         let triple = self.peek_at(1) == quote and self.peek_at(2) == quote
@@ -110,7 +110,7 @@ extend Reader:
     ## Sdf_EvalQuotedString's escapes: \\ \a \b \f \n \r \t \v, \x with up
     ## to two hex digits, up to three octal digits; any other escaped byte is
     ## itself.
-    mutating func unescape(raw: const u8[]) -> str!:
+    func unescape(raw: const u8[]) -> str!:
         var plain = true
         for byte in raw:
             if byte == '\\':
@@ -159,7 +159,7 @@ extend Reader:
 
     ## The asset path at the cursor: @path@, or @@@path@@@ (closed by three
     ## to five @, the last three closing) with \@@@ unescaped.
-    mutating func asset_path() -> str!:
+    func asset_path() -> str!:
         if self.peek() != '@': error(errors.invalid, self.where("expected an asset path"))
         if self.peek_at(1) == '@' and self.peek_at(2) == '@':
             self.at += 3
@@ -200,7 +200,7 @@ extend Reader:
         return (str)raw
 
     ## The path reference `<path>` at the cursor; the empty path for `<>`.
-    mutating func path_ref() -> u32!:
+    func path_ref() -> u32!:
         if self.peek() != '<': error(errors.invalid, self.where("expected a path reference"))
         self.at += 1
         let start = self.at

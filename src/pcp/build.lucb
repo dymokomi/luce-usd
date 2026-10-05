@@ -9,6 +9,8 @@
 ## added as a subtree. The finished index culls subtrees with no opinions
 ## and is stored in strength order.
 
+import strings
+
 ## The session identifier that stands for a stage's anonymous session
 ## layer (UsdStage::Open makes one).
 pub let anonymous_session: str = "anon:session.usda"
@@ -87,7 +89,7 @@ pub struct Composer:
         self.cached = Growing[PrimIndex*]()
         self.slots = Growing[u32]()
 
-    pub mutating func close():
+    pub func close():
         for at in 0..<self.unloaded.count: self.unloaded.items[at].close()
         self.unloaded.close()
         for at in 0..<self.loaded_containing.count: self.loaded_containing.items[at].close()
@@ -109,7 +111,7 @@ pub struct Composer:
 
     ## The index of prim `path` of the root layer stack (built once):
     ## culled and stored in strength order (PcpComputePrimIndex).
-    pub mutating func index(path: u32) -> const PrimIndex*!:
+    pub func index(path: u32) -> const PrimIndex*!:
         if let found = self.cached_index(path): return found
         let outer = self.composing
         self.composing = path
@@ -120,7 +122,7 @@ pub struct Composer:
         built.instanceable = try self.is_instanceable(&built)
         var made = try finalized(&built)
         errdefer made.close()
-        let storage = try alloc PrimIndex[1] in memory.heap
+        let storage = try new PrimIndex[1] --- in memory.heap
         storage[0] = made
         self.cached.push(storage.data) catch failure:
             free(storage) in memory.heap
@@ -139,7 +141,7 @@ pub struct Composer:
     ## The index of `path` in layer stack `stack` (Pcp_BuildPrimIndex).
     ## `outer`: an outermost build, which evaluates variant sets and
     ## implied specializes.
-    mutating func build(stack: usize, path: u32, frame: const Frame*?, contribute_root: bool, outer: bool) -> PrimIndex!:
+    func build(stack: usize, path: u32, frame: const Frame*?, contribute_root: bool, outer: bool) -> PrimIndex!:
         if path == absolute_root:
             var index = try PrimIndex.rooted(stack, path)
             index.nodes.items[0].has_specs = self.site_has_specs(stack, path)
@@ -169,7 +171,7 @@ pub struct Composer:
         return done
 
     ## The parent's index with every site extended by the prim's name.
-    mutating func ancestral(stack: usize, path: u32, frame: const Frame*?, outer: bool) -> PrimIndex!:
+    func ancestral(stack: usize, path: u32, frame: const Frame*?, outer: bool) -> PrimIndex!:
         let parent_path = self.names.parent(path)
         var index = PrimIndex()
         errdefer index.close()
@@ -223,7 +225,7 @@ pub struct Composer:
         return self.layers.layer(self.stacks.stack(self.root_stack).root)
 
     ## Leave the payloads of prims whose path text starts with `prefix` unloaded.
-    pub mutating func exclude_payloads(prefix: str) -> !:
+    pub func exclude_payloads(prefix: str) -> !:
         var text = Growing[u8]()
         errdefer text.close()
         try text.assign(prefix.bytes)
@@ -231,7 +233,7 @@ pub struct Composer:
 
     ## Load payloads only for prims whose path text contains `part` (with
     ## several calls, any of them).
-    pub mutating func include_payloads_containing(part: str) -> !:
+    pub func include_payloads_containing(part: str) -> !:
         var text = Growing[u8]()
         errdefer text.close()
         try text.assign(part.bytes)
@@ -242,7 +244,7 @@ pub struct Composer:
         return self.unloaded.count == 0 and self.loaded_containing.count == 0 and self.loaded_matching.count == 0
 
     ## Whether the payloads of the prim at `path` load.
-    mutating func payload_included(path: u32) -> bool!:
+    func payload_included(path: u32) -> bool!:
         var text = Growing[u8]()
         defer text.close()
         try self.names.write_path(path, &text)
@@ -268,7 +270,7 @@ pub struct Composer:
 
     ## Run the queue's tasks until none is left; tasks add nodes, and the
     ## nodes' own tasks.
-    mutating func run_tasks(indexer: Indexer*) -> !:
+    func run_tasks(indexer: Indexer*) -> !:
         while true:
             let task = indexer.pop(self.names) else return
             let kind = task.kind
@@ -396,5 +398,5 @@ func can_cull(index: const PrimIndex*, node: u32, names: const Names*, root_stac
 local var unreadable_text: u8[1536]
 
 func unreadable(role: str, identifier: str, problem: str) -> str:
-    return format(unreadable_text, f"cannot read the {role} layer {identifier}: {problem}") catch failure:
+    return strings.format(unreadable_text, f"cannot read the {role} layer {identifier}: {problem}") catch failure:
         recover "cannot read a stage layer"

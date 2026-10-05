@@ -98,7 +98,7 @@ pub func decode_integers(data: const u8[], count: usize, width: usize, out: u8[]
 pub func decompress_integers(input: const u8[], count: usize, width: usize, out: u8[]) -> !:
     if count == 0: return
     let bound = encoded_bound(count, width)
-    let scratch = try alloc u8[bound] in memory.heap
+    let scratch = try new u8[bound] --- in memory.heap
     defer free(scratch) in memory.heap
     let length = try decompress(input, scratch)
     try decode_integers(scratch[..<length], count, width, out)
@@ -162,7 +162,7 @@ func most_common_delta(values: const u8[], count: usize, width: usize) -> i64!:
     var capacity: usize = 64
     while capacity < count * 2: capacity *= 2
     if capacity > 1 << 26: capacity = 1 << 26
-    let keys = try alloc i64[capacity] in memory.heap
+    let keys = try new i64[capacity] --- in memory.heap
     defer free(keys) in memory.heap
     let counts = try new u32[capacity] in memory.heap
     defer free(counts) in memory.heap

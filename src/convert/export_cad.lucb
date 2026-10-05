@@ -65,21 +65,21 @@ func write_patch(author: Author*, path: u32, nurbs: u32, xform: u32, patch: cons
             low[k] = math.min(low[k], xyz[k])
             high[k] = math.max(high[k], xyz[k])
     let extent: f32[6] = [(f32)low[0], (f32)low[1], (f32)low[2], (f32)high[0], (f32)high[1], (f32)high[2]]
-    discard(try author.attribute(path, spec, "extent", "float3[]", false, try array_of(ValueKind.vec3f, 2, u8[]((u8*)&extent[0], 24))))
+    _ = try author.attribute(path, spec, "extent", "float3[]", false, try array_of(ValueKind.vec3f, 2, u8[]((u8*)&extent[0], 24)))
     if not patch.right_handed:
-        discard(try author.attribute(path, spec, "orientation", "token", true, Value.scalar(ValueKind.token, (u64)(try author.names.token("leftHanded")))))
-    discard(try author.attribute(path, spec, "points", "point3f[]", false, try array_of(ValueKind.vec3f, count, u8[]((u8*)points.items.data, count * 12))))
-    discard(try author.attribute(path, spec, "pointWeights", "double[]", false, try array_of(ValueKind.double, count, u8[]((u8*)patch.weights.items.data, count * 8))))
-    discard(try author.attribute(path, spec, "uVertexCount", "int", false, Value.scalar(ValueKind.int, (u64)patch.nu)))
-    discard(try author.attribute(path, spec, "vVertexCount", "int", false, Value.scalar(ValueKind.int, (u64)patch.nv)))
-    discard(try author.attribute(path, spec, "uOrder", "int", false, Value.scalar(ValueKind.int, (u64)patch.order_u)))
-    discard(try author.attribute(path, spec, "vOrder", "int", false, Value.scalar(ValueKind.int, (u64)patch.order_v)))
-    discard(try author.attribute(path, spec, "uKnots", "double[]", false, try array_of(ValueKind.double, patch.knots_u.count, u8[]((u8*)patch.knots_u.items.data, patch.knots_u.count * 8))))
-    discard(try author.attribute(path, spec, "vKnots", "double[]", false, try array_of(ValueKind.double, patch.knots_v.count, u8[]((u8*)patch.knots_v.items.data, patch.knots_v.count * 8))))
+        _ = try author.attribute(path, spec, "orientation", "token", true, Value.scalar(ValueKind.token, (u64)(try author.names.token("leftHanded"))))
+    _ = try author.attribute(path, spec, "points", "point3f[]", false, try array_of(ValueKind.vec3f, count, u8[]((u8*)points.items.data, count * 12)))
+    _ = try author.attribute(path, spec, "pointWeights", "double[]", false, try array_of(ValueKind.double, count, u8[]((u8*)patch.weights.items.data, count * 8)))
+    _ = try author.attribute(path, spec, "uVertexCount", "int", false, Value.scalar(ValueKind.int, (u64)patch.nu))
+    _ = try author.attribute(path, spec, "vVertexCount", "int", false, Value.scalar(ValueKind.int, (u64)patch.nv))
+    _ = try author.attribute(path, spec, "uOrder", "int", false, Value.scalar(ValueKind.int, (u64)patch.order_u))
+    _ = try author.attribute(path, spec, "vOrder", "int", false, Value.scalar(ValueKind.int, (u64)patch.order_v))
+    _ = try author.attribute(path, spec, "uKnots", "double[]", false, try array_of(ValueKind.double, patch.knots_u.count, u8[]((u8*)patch.knots_u.items.data, patch.knots_u.count * 8)))
+    _ = try author.attribute(path, spec, "vKnots", "double[]", false, try array_of(ValueKind.double, patch.knots_v.count, u8[]((u8*)patch.knots_v.items.data, patch.knots_v.count * 8)))
     let u_range: f64[2] = [patch.knots_u.items[patch.order_u - 1], patch.knots_u.items[patch.nu]]
     let v_range: f64[2] = [patch.knots_v.items[patch.order_v - 1], patch.knots_v.items[patch.nv]]
-    discard(try author.attribute(path, spec, "uRange", "double2", false, try Value.of_bytes(ValueKind.vec2d, u8[]((u8*)&u_range[0], 16))))
-    discard(try author.attribute(path, spec, "vRange", "double2", false, try Value.of_bytes(ValueKind.vec2d, u8[]((u8*)&v_range[0], 16))))
+    _ = try author.attribute(path, spec, "uRange", "double2", false, try Value.of_bytes(ValueKind.vec2d, u8[]((u8*)&u_range[0], 16)))
+    _ = try author.attribute(path, spec, "vRange", "double2", false, try Value.of_bytes(ValueKind.vec2d, u8[]((u8*)&v_range[0], 16)))
     try write_trims(author, path, spec, patch)
 
 ## The trim loops as closed order-2 curves, one per loop:
@@ -118,9 +118,9 @@ func write_trims(author: Author*, path: u32, spec: usize, patch: const Patch*) -
             try points.push(1.0)
         start += size
     let curves = counts.count
-    discard(try author.attribute(path, spec, "trimCurve:counts", "int[]", false, try array_of(ValueKind.int, loops, u8[]((u8*)counts.items.data, loops * 4))))
-    discard(try author.attribute(path, spec, "trimCurve:orders", "int[]", false, try array_of(ValueKind.int, curves, u8[]((u8*)orders.items.data, curves * 4))))
-    discard(try author.attribute(path, spec, "trimCurve:vertexCounts", "int[]", false, try array_of(ValueKind.int, curves, u8[]((u8*)vertex_counts.items.data, curves * 4))))
-    discard(try author.attribute(path, spec, "trimCurve:knots", "double[]", false, try array_of(ValueKind.double, knots.count, u8[]((u8*)knots.items.data, knots.count * 8))))
-    discard(try author.attribute(path, spec, "trimCurve:ranges", "double2[]", false, try array_of(ValueKind.vec2d, curves, u8[]((u8*)ranges.items.data, curves * 16))))
-    discard(try author.attribute(path, spec, "trimCurve:points", "double3[]", false, try array_of(ValueKind.vec3d, points.count // 3, u8[]((u8*)points.items.data, points.count * 8))))
+    _ = try author.attribute(path, spec, "trimCurve:counts", "int[]", false, try array_of(ValueKind.int, loops, u8[]((u8*)counts.items.data, loops * 4)))
+    _ = try author.attribute(path, spec, "trimCurve:orders", "int[]", false, try array_of(ValueKind.int, curves, u8[]((u8*)orders.items.data, curves * 4)))
+    _ = try author.attribute(path, spec, "trimCurve:vertexCounts", "int[]", false, try array_of(ValueKind.int, curves, u8[]((u8*)vertex_counts.items.data, curves * 4)))
+    _ = try author.attribute(path, spec, "trimCurve:knots", "double[]", false, try array_of(ValueKind.double, knots.count, u8[]((u8*)knots.items.data, knots.count * 8)))
+    _ = try author.attribute(path, spec, "trimCurve:ranges", "double2[]", false, try array_of(ValueKind.vec2d, curves, u8[]((u8*)ranges.items.data, curves * 16)))
+    _ = try author.attribute(path, spec, "trimCurve:points", "double3[]", false, try array_of(ValueKind.vec3d, points.count // 3, u8[]((u8*)points.items.data, points.count * 8)))

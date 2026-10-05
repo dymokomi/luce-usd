@@ -7,7 +7,7 @@
 let array_edit_bit: u64 = 1 << 60
 
 extend CrateWriter:
-    mutating func pack_array_edit(value: const Value*) -> u64!:
+    func pack_array_edit(value: const Value*) -> u64!:
         let edit = value.array_edit() else error(errors.invalid, "an array edit value without an edit")
         self.require(14)
         let base = ((u64)(u8)edit.kind << 48) | array_edit_bit

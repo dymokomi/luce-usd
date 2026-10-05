@@ -19,7 +19,7 @@ struct PrimvarSource:
     var element_size: usize
     var role: usd_types.Role
 
-    mutating func release():
+    func release():
         self.value.release()
         self.indices.release()
 
@@ -253,7 +253,7 @@ func made_attribute(stage: Stage*, build: const MeshBuild*, candidates: PrimvarS
     if let geometry_role = attribute_role(role): attribute.role = geometry_role
     var table = TableBuilder()
     defer table.close()
-    if kind == DataType.text: discard(try table.intern(""))
+    if kind == DataType.text: _ = try table.intern("")
     for at in 0..<candidates.length:
         let candidate = &candidates[at]
         if candidate.name != name: continue

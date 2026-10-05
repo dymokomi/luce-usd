@@ -17,7 +17,7 @@ struct Preformatted:
         self.keys = Growing[usize]()
         self.texts = Growing[Growing[u8]]()
 
-    mutating func close():
+    func close():
         for at in 0..<self.texts.count: self.texts.items[at].close()
         self.texts.close()
         self.keys.close()
@@ -37,7 +37,7 @@ struct Preformatted:
 
     ## Format every field's numeric array of `preformat_elements` to
     ## `parallel_elements` elements in `layer`.
-    mutating func gather(layer: const LayerData*) -> !:
+    func gather(layer: const LayerData*) -> !:
         var found = Growing[Pending]()
         defer found.close()
         for index in 0..<layer.spec_count():

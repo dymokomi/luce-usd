@@ -19,7 +19,7 @@ pub func exercise() -> !:
     rejected("solid cube\n")
 
 func rejected(text: str):
-    discard(detect_format(text.bytes)) catch failure:
+    _ = detect_format(text.bytes) catch failure:
         assert(failure.code == invalid)
         return
     assert(false)

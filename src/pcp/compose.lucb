@@ -13,7 +13,7 @@ pub struct Site:
 
 extend Composer:
     ## The prim's specs, strongest first.
-    pub mutating func prim_stack(index: const PrimIndex*, out: Growing[Site]*) -> !:
+    pub func prim_stack(index: const PrimIndex*, out: Growing[Site]*) -> !:
         out.clear()
         var order = Growing[u32]()
         defer order.close()
@@ -28,13 +28,13 @@ extend Composer:
     ## its instanceable nodes only (_ComposePrimChildNamesForInstance).
     ## Relocations rename, remove and add children; names relocated away
     ## are prohibited and left out.
-    pub mutating func child_names(index: const PrimIndex*, out: Growing[u32]*) -> !:
+    pub func child_names(index: const PrimIndex*, out: Growing[u32]*) -> !:
         var prohibited = Growing[u32]()
         defer prohibited.close()
         try self.prohibited_names(index, out, &prohibited)
 
     ## The prim's child names, and the names relocations prohibit.
-    pub mutating func prohibited_names(index: const PrimIndex*, out: Growing[u32]*, prohibited: Growing[u32]*) -> !:
+    pub func prohibited_names(index: const PrimIndex*, out: Growing[u32]*, prohibited: Growing[u32]*) -> !:
         out.clear()
         prohibited.clear()
         if index.nodes.count > 0: try self.names_at(index, 0, true, index.instanceable, out, prohibited)
@@ -47,13 +47,13 @@ extend Composer:
         out.count = kept
 
     ## The prim's property names in order.
-    pub mutating func property_names(index: const PrimIndex*, out: Growing[u32]*) -> !:
+    pub func property_names(index: const PrimIndex*, out: Growing[u32]*) -> !:
         out.clear()
         var unused = Growing[u32]()
         defer unused.close()
         if index.nodes.count > 0: try self.names_at(index, 0, false, false, out, &unused)
 
-    mutating func names_at(index: const PrimIndex*, node: u32, prims: bool, instance: bool, out: Growing[u32]*, prohibited: Growing[u32]*) -> !:
+    func names_at(index: const PrimIndex*, node: u32, prims: bool, instance: bool, out: Growing[u32]*, prohibited: Growing[u32]*) -> !:
         let entry = index.node(node)
         if entry.culled: return
         var at = entry.children.count
@@ -82,7 +82,7 @@ extend Composer:
     ## (_ComposePrimChildNamesAtNode): a child relocated under the same
     ## parent is renamed, one relocated elsewhere removed (both prohibited),
     ## and one relocated here from elsewhere added (in name order).
-    mutating func relocate_names(stack: usize, path: u32, out: Growing[u32]*, prohibited: Growing[u32]*) -> !:
+    func relocate_names(stack: usize, path: u32, out: Growing[u32]*, prohibited: Growing[u32]*) -> !:
         let names = self.names
         var renamed_from = Growing[u32]()
         defer renamed_from.close()
@@ -122,7 +122,7 @@ extend Composer:
         for name in added.view(): try out.push(name)
 
     ## The specs of property `name` of the prim, strongest first.
-    pub mutating func property_stack(index: const PrimIndex*, name: u32, out: Growing[Site]*) -> !:
+    pub func property_stack(index: const PrimIndex*, name: u32, out: Growing[Site]*) -> !:
         out.clear()
         var order = Growing[u32]()
         defer order.close()
@@ -148,7 +148,7 @@ extend Composer:
     ## `deleted` gets the paths deletes named since the last explicit list.
     ## `validate` (PcpCache's validation): a target a class authors that
     ## leaves the class for one of its instances is left out.
-    pub mutating func target_paths(index: const PrimIndex*, name: u32, connections: bool, validate: bool, out: Growing[u32]*, deleted: Growing[u32]*) -> !:
+    pub func target_paths(index: const PrimIndex*, name: u32, connections: bool, validate: bool, out: Growing[u32]*, deleted: Growing[u32]*) -> !:
         out.clear()
         deleted.clear()
         var order = Growing[u32]()
@@ -201,7 +201,7 @@ extend Composer:
     ## _TargetInClassAndTargetsInstance: a target authored in an inherited
     ## class that points outside the class, at an object whose prim
     ## inherits that class too (an instance).
-    mutating func targets_instance(index: const PrimIndex*, node: u32, authored: u32, mapped: u32) -> bool!:
+    func targets_instance(index: const PrimIndex*, node: u32, authored: u32, mapped: u32) -> bool!:
         let entry = index.node(node)
         if entry.arc != ArcType.inherit: return false
         let class_path = index.path_at_introduction(self.names, node)

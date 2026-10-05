@@ -27,7 +27,7 @@ struct Prepared:
     var usable: bool
     var failed: bool
 
-    mutating func close():
+    func close():
         self.table.close()
         self.packed.close()
 
@@ -41,7 +41,7 @@ func compressible(kind: ValueKind, count: usize) -> bool:
 extend CrateWriter:
     ## Find every compressible array (once per column) and compress them in
     ## parallel.
-    mutating func prepare_arrays() -> !:
+    func prepare_arrays() -> !:
         for index in 0..<self.layer.spec_count():
             for field in self.layer.spec(index).fields.view():
                 try self.collect(&field.value)
@@ -49,7 +49,7 @@ extend CrateWriter:
         for index in 0..<self.prepared.count:
             if self.prepared.items[index].failed: error(memory.exhausted, "out of memory compressing a crate array")
 
-    mutating func collect(value: const Value*) -> !:
+    func collect(value: const Value*) -> !:
         if value.array and compressible(value.kind, value.count):
             let id = value.data.id()
             for prepared in self.prepared.view():
@@ -60,7 +60,7 @@ extend CrateWriter:
             for index in 0..<samples.count(): try self.collect(&samples.values.items[index])
 
     ## An array's rep, its bytes written (or shared) now.
-    mutating func pack_array(value: const Value*) -> u64!:
+    func pack_array(value: const Value*) -> u64!:
         let kind = value.kind
         let rep_base = array_bit | ((u64)(u8)kind << 48)
         if value.count == 0: return rep_base
@@ -80,7 +80,7 @@ extend CrateWriter:
 
     ## An uncompressed array: aligned to 8 bytes (floats and the rest) or
     ## not (short integer arrays), a u64 count, the elements.
-    mutating func write_plain(value: const Value*) -> u64!:
+    func write_plain(value: const Value*) -> u64!:
         let kind = value.kind
         let integers = kind == ValueKind.int or kind == ValueKind.uint or kind == ValueKind.int64 or kind == ValueKind.uint64
         if not integers: try self.align(8)
@@ -98,7 +98,7 @@ extend CrateWriter:
 
     ## A compressible array from its prepared form (or plain when its
     ## encoding did not pay).
-    mutating func write_compressed(value: const Value*) -> u64!:
+    func write_compressed(value: const Value*) -> u64!:
         let id = value.data.id()
         var found: Prepared*? = none
         for index in 0..<self.prepared.count:
@@ -137,7 +137,7 @@ func compress_array(prepared: Prepared*) -> !:
 
 ## Integer-encode and compress `count` integers of `width` into `packed`.
 func pack_integers(prepared: Prepared*, values: const u8[], count: usize, width: usize) -> !:
-    let encoded = try alloc u8[compression.encoded_bound(count, width)] in memory.heap
+    let encoded = try new u8[compression.encoded_bound(count, width)] --- in memory.heap
     defer free(encoded) in memory.heap
     let length = try compression.encode_integers(values, count, width, encoded)
     try prepared.packed.reserve(compression.compressed_bound(length))
@@ -150,7 +150,7 @@ func compress_reals(prepared: Prepared*) -> !:
     let count = prepared.count
     let size = element_bytes(prepared.kind)
     let bytes = prepared.bytes
-    let ints = try alloc u8[count * 4] in memory.heap
+    let ints = try new u8[count * 4] --- in memory.heap
     defer free(ints) in memory.heap
     var integral = true
     for index in 0..<count:

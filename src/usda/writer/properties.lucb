@@ -5,7 +5,7 @@
 ## targets on their own lines.
 
 extend Writer:
-    mutating func write_attribute(spec: usize, indent: usize) -> !:
+    func write_attribute(spec: usize, indent: usize) -> !:
         let attribute = self.layer.spec(spec)
         let name = self.names.name_text(attribute.path)
         let uniform = if_uniform(attribute.get(self.keys.variability))
@@ -94,7 +94,7 @@ extend Writer:
             try self.connection_list(indent, value, uniform, type_text, name)
 
     ## `.connect` statements: explicit, or one per list op part.
-    mutating func connection_list(indent: usize, value: const Value*, uniform: bool, type_text: str, name: str) -> !:
+    func connection_list(indent: usize, value: const Value*, uniform: bool, type_text: str, name: str) -> !:
         let list = value.list_op() else return
         if list.explicit:
             try self.connection_statement(indent, list.items(ListPart.explicit), "", uniform, type_text, name)
@@ -105,11 +105,11 @@ extend Writer:
         try self.connection_part(indent, list.items(ListPart.appended), "append ", uniform, type_text, name)
         try self.connection_part(indent, list.items(ListPart.ordered), "reorder ", uniform, type_text, name)
 
-    mutating func connection_part(indent: usize, items: const ListItem[], lead: str, uniform: bool, type_text: str, name: str) -> !:
+    func connection_part(indent: usize, items: const ListItem[], lead: str, uniform: bool, type_text: str, name: str) -> !:
         if items.length == 0: return
         try self.connection_statement(indent, items, lead, uniform, type_text, name)
 
-    mutating func connection_statement(indent: usize, items: const ListItem[], lead: str, uniform: bool, type_text: str, name: str) -> !:
+    func connection_statement(indent: usize, items: const ListItem[], lead: str, uniform: bool, type_text: str, name: str) -> !:
         try self.indent(indent)
         try self.put(lead)
         if uniform: try self.put("uniform ")
@@ -131,7 +131,7 @@ extend Writer:
             try self.indent(indent)
             try self.put("]\n")
 
-    mutating func write_relationship(spec: usize, indent: usize) -> !:
+    func write_relationship(spec: usize, indent: usize) -> !:
         let relationship = self.layer.spec(spec)
         let name = self.names.name_text(relationship.path)
         var comment = ""
@@ -213,7 +213,7 @@ extend Writer:
                 try self.indent(indent)
                 try self.put("\n")
 
-    mutating func target_part(indent: usize, items: const ListItem[], lead: str, varying: bool, name: str) -> !:
+    func target_part(indent: usize, items: const ListItem[], lead: str, varying: bool, name: str) -> !:
         if items.length == 0: return
         try self.indent(indent)
         try self.put(lead)
@@ -223,7 +223,7 @@ extend Writer:
         try self.target_list(indent, items, true)
 
     ## ` = <path>` or ` = [ ... ]`, with a line end when `newline`.
-    mutating func target_list(indent: usize, items: const ListItem[], newline: bool) -> !:
+    func target_list(indent: usize, items: const ListItem[], newline: bool) -> !:
         if items.length > 1:
             try self.put(" = [\n")
             for item in items:

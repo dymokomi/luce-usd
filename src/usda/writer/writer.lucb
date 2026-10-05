@@ -49,30 +49,30 @@ struct Writer:
     var header: usize
     var minor: u8
 
-    mutating func put(text: str) -> !:
+    func put(text: str) -> !:
         try self.out.reserve(self.out.count + text.length)
         memory.copy(self.out.items[self.out.count..], text.bytes, text.length)
         self.out.count += text.length
 
     ## RequestWriteVersionUpgrade to 1.`minor`.
-    mutating func need_version(minor: u8):
+    func need_version(minor: u8):
         if minor > self.minor: self.minor = minor
 
-    mutating func byte(value: u8) -> !:
+    func byte(value: u8) -> !:
         try self.out.push(value)
 
     ## Four spaces per level.
-    mutating func indent(levels: usize) -> !:
+    func indent(levels: usize) -> !:
         for _ in 0..<levels: try self.put("    ")
 
-    mutating func token_text(token: u32) -> !:
+    func token_text(token: u32) -> !:
         try self.put(self.names.text_of(token))
 
-    mutating func quoted(text: str) -> !:
+    func quoted(text: str) -> !:
         try quote_into(self.out, text)
 
     ## `<path>`.
-    mutating func path_ref(path: u32) -> !:
+    func path_ref(path: u32) -> !:
         try self.byte('<')
         try self.names.write_path(path, self.out)
         try self.byte('>')

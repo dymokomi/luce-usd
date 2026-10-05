@@ -99,7 +99,7 @@ struct CrateWriter:
         self.array_reps = Growing[u64]()
         self.prepared = Growing[Prepared]()
 
-    mutating func close():
+    func close():
         self.token_slots.close()
         self.tokens.close()
         self.string_slots.close()
@@ -117,11 +117,11 @@ struct CrateWriter:
         self.prepared.close()
 
     ## Raise the file's version to at least 0.minor.
-    mutating func require(minor: u8):
+    func require(minor: u8):
         if self.minor < minor: self.minor = minor
 
     ## The whole file.
-    mutating func write() -> !:
+    func write() -> !:
         # The bootstrap is written last; reserve it.
         try self.out.extend(self.start + 88, 0)
         try self.prepare_arrays()
@@ -130,7 +130,7 @@ struct CrateWriter:
         try self.write_sections()
 
     ## A spec: its fields packed and deduplicated, its field set added.
-    mutating func add_spec(spec: const Spec*) -> !:
+    func add_spec(spec: const Spec*) -> !:
         var set = Growing[u32]()
         defer set.close()
         for field in spec.fields.view():
@@ -146,7 +146,7 @@ struct CrateWriter:
         try self.specs.push(CrateSpecRecord(path = try self.path(spec.path), field_set = set_index, kind = (u32)(u8)spec.kind))
 
     ## The crate index of token `id`, added when new.
-    mutating func token(id: u32) -> u32!:
+    func token(id: u32) -> u32!:
         if (usize)id >= self.token_slots.count: try self.token_slots.extend(self.names.tokens.count() if self.names.tokens.count() > (usize)id else (usize)id + 1, 0)
         let slot = self.token_slots.items[(usize)id]
         if slot != 0: return slot - 1
@@ -156,7 +156,7 @@ struct CrateWriter:
         return index
 
     ## The crate string index of the text of token `id`, added when new.
-    mutating func string(id: u32) -> u32!:
+    func string(id: u32) -> u32!:
         if (usize)id >= self.string_slots.count: try self.string_slots.extend(self.names.tokens.count() if self.names.tokens.count() > (usize)id else (usize)id + 1, 0)
         let slot = self.string_slots.items[(usize)id]
         if slot != 0: return slot - 1
@@ -168,17 +168,17 @@ struct CrateWriter:
 
     ## The crate index of path `id`, with its ancestors, target paths and
     ## element tokens added (CrateFile::_AddPath).
-    mutating func path(id: u32) -> u32!:
+    func path(id: u32) -> u32!:
         if (usize)id >= self.path_slots.count: try self.path_slots.extend(self.names.path_count() if self.names.path_count() > (usize)id else (usize)id + 1, 0)
         let slot = self.path_slots.items[(usize)id]
         if slot != 0: return slot - 1
         if id == empty_path: error(errors.invalid, "an empty path in a crate spec")
         let node = self.names.node(id)
-        if node.kind == PathKind.target or node.kind == PathKind.mapper: discard(try self.path(node.element))
+        if node.kind == PathKind.target or node.kind == PathKind.mapper: _ = try self.path(node.element)
         if id != absolute_root:
             if node.parent == empty_path or not node.absolute: error(errors.invalid, "a relative path cannot be written to a crate")
-            discard(try self.path(node.parent))
-        discard(try self.token(try self.element_token(id)))
+            _ = try self.path(node.parent)
+        _ = try self.token(try self.element_token(id))
         let index = (u32)self.paths.count
         try self.paths.push(id)
         self.path_slots.items[(usize)id] = index + 1
@@ -186,12 +186,12 @@ struct CrateWriter:
 
     ## The crate index for a path value: the empty path is index 0 of no
     ## entry... it is written as the index of a path the tree never fills.
-    mutating func path_value(id: u32) -> u32!:
+    func path_value(id: u32) -> u32!:
         if id == empty_path: return try self.empty_path_index()
         return try self.path(id)
 
     ## An index for the empty path: one past the tree, reserved once.
-    mutating func empty_path_index() -> u32!:
+    func empty_path_index() -> u32!:
         for index in 0..<self.paths.count:
             if self.paths.items[index] == empty_path: return (u32)index
         let index = (u32)self.paths.count
@@ -200,12 +200,12 @@ struct CrateWriter:
 
     ## The token a path's last element is stored under: a prim property's
     ## name, otherwise the element's text ("{set=sel}", "[/target]", ".name").
-    mutating func element_token(id: u32) -> u32!:
+    func element_token(id: u32) -> u32!:
         let node = self.names.node(id)
         match node.kind:
             .root: return 0
             .prim, .property: return node.element
-            _: discard(0)
+            _: _ = 0
         var text = Growing[u8]()
         defer text.close()
         match node.kind:
@@ -231,7 +231,7 @@ struct CrateWriter:
         return try self.names.token((str)text.view())
 
     ## The index of `field`, deduplicated.
-    mutating func field(field: CrateField) -> u32!:
+    func field(field: CrateField) -> u32!:
         if self.field_slots.count == 0 or (self.fields.count + 1) * 2 >= self.field_slots.count:
             try self.rehash_fields(1024 if self.field_slots.count == 0 else self.field_slots.count * 2)
         let mask = self.field_slots.count - 1
@@ -246,7 +246,7 @@ struct CrateWriter:
         self.field_slots.items[slot] = index + 1
         return index
 
-    mutating func rehash_fields(capacity: usize) -> !:
+    func rehash_fields(capacity: usize) -> !:
         try self.field_slots.fill(capacity, 0)
         let mask = capacity - 1
         for index in 0..<self.fields.count:
@@ -256,7 +256,7 @@ struct CrateWriter:
 
     ## The start of a field set equal to `set`, added (with its ~0
     ## terminator) when new.
-    mutating func field_set(set: const u32[]) -> u32!:
+    func field_set(set: const u32[]) -> u32!:
         if self.set_slots.count == 0 or (self.specs.count + 1) * 2 >= self.set_slots.count:
             try self.rehash_sets(1024 if self.set_slots.count == 0 else self.set_slots.count * 2)
         let mask = self.set_slots.count - 1
@@ -276,7 +276,7 @@ struct CrateWriter:
             if start + index >= self.field_sets.count or self.field_sets.items[start + index] != set[index]: return false
         return start + set.length < self.field_sets.count and self.field_sets.items[start + set.length] == 0xFFFFFFFF
 
-    mutating func rehash_sets(capacity: usize) -> !:
+    func rehash_sets(capacity: usize) -> !:
         try self.set_slots.fill(capacity, 0)
         let mask = capacity - 1
         var start: usize = 0
@@ -292,30 +292,30 @@ struct CrateWriter:
     func tell() -> u64:
         return (u64)(self.out.count - self.start)
 
-    mutating func put_bytes(bytes: const u8[]) -> !:
+    func put_bytes(bytes: const u8[]) -> !:
         try self.out.reserve(self.out.count + bytes.length)
         if bytes.length > 0: memory.copy(self.out.items[self.out.count..], bytes, bytes.length)
         self.out.count += bytes.length
 
-    mutating func put_u64(value: u64) -> !:
+    func put_u64(value: u64) -> !:
         try self.out.reserve(self.out.count + 8)
         memory.write[u64]((void*)&self.out.items[self.out.count], value)
         self.out.count += 8
 
-    mutating func put_u32(value: u32) -> !:
+    func put_u32(value: u32) -> !:
         try self.out.reserve(self.out.count + 4)
         memory.write[u32]((void*)&self.out.items[self.out.count], value)
         self.out.count += 4
 
-    mutating func put_f64(value: f64) -> !:
+    func put_f64(value: f64) -> !:
         try self.put_u64(value.bits())
 
     ## Pad with zeros to a multiple of `alignment` from the file's start.
-    mutating func align(alignment: u64) -> !:
+    func align(alignment: u64) -> !:
         while self.tell() % alignment != 0: try self.out.push(0)
 
     ## Write `value` at `offset` (a u64 patch).
-    mutating func patch_u64(offset: u64, value: u64):
+    func patch_u64(offset: u64, value: u64):
         memory.write[u64]((void*)&self.out.items[self.start + (usize)offset], value)
 
 func field_hash(field: CrateField) -> u64:

@@ -35,13 +35,13 @@ pub struct Evaluated:
     pub var items: Growing[i64]
     pub var failed: bool
 
-    pub static func of(kind: ExpressionKind, number: i64) -> Evaluated:
+    pub func of(kind: ExpressionKind, number: i64) -> Evaluated:
         return Evaluated(kind = kind, number = number, items = Growing[i64](), failed = false)
 
-    pub static func failure() -> Evaluated:
+    pub func failure() -> Evaluated:
         return Evaluated(kind = ExpressionKind.nothing, number = 0, items = Growing[i64](), failed = true)
 
-    pub mutating func close():
+    pub func close():
         self.items.close()
 
     func is_list() -> bool:
@@ -75,10 +75,10 @@ struct Evaluator:
     ## Variables being evaluated, to catch circular ones.
     var stack: Growing[u32]
 
-    mutating func close():
+    func close():
         self.stack.close()
 
-    mutating func evaluate(expression: str) -> Evaluated!:
+    func evaluate(expression: str) -> Evaluated!:
         var parser = Parser(text = expression, at = 0, broken = false)
         if not parser.take('`'): return Evaluated.failure()
         var result = try self.body(&parser, false)
@@ -88,11 +88,11 @@ struct Evaluator:
         return result
 
     ## ExpressionBody: a list or a scalar.
-    mutating func body(parser: Parser*, skip: bool) -> Evaluated!:
+    func body(parser: Parser*, skip: bool) -> Evaluated!:
         if parser.peek() == '[': return try self.list(parser, skip)
         return try self.scalar(parser, skip)
 
-    mutating func scalar(parser: Parser*, skip: bool) -> Evaluated!:
+    func scalar(parser: Parser*, skip: bool) -> Evaluated!:
         let byte = parser.peek()
         if byte == '$':
             let name = parser.variable() else return parser.fail()
@@ -115,7 +115,7 @@ struct Evaluator:
         return dictionary.find(name)
 
     ## The value of variable `name` (a failure when it has none).
-    mutating func variable(name: u32) -> Evaluated!:
+    func variable(name: u32) -> Evaluated!:
         for held in self.stack.view():
             if held == name: return Evaluated.failure()
         let value = self.lookup(name) else return Evaluated.failure()
@@ -130,7 +130,7 @@ struct Evaluator:
 
     ## A quoted string, with `${NAME}` substituted and escapes processed
     ## (TfEscapeString).
-    mutating func quoted(parser: Parser*, quote: u8, skip: bool) -> Evaluated!:
+    func quoted(parser: Parser*, quote: u8, skip: bool) -> Evaluated!:
         parser.at += 1
         var text = Growing[u8]()
         defer text.close()
@@ -168,7 +168,7 @@ struct Evaluator:
 
     ## A list of scalars of one type: spaces only around its commas, or
     ## alone in an empty list.
-    mutating func list(parser: Parser*, skip: bool) -> Evaluated!:
+    func list(parser: Parser*, skip: bool) -> Evaluated!:
         parser.at += 1
         var result = Evaluated.of(ExpressionKind.empty_list, 0)
         errdefer result.close()
@@ -180,7 +180,7 @@ struct Evaluator:
         while true:
             var element = try self.scalar(parser, skip)
             defer element.close()
-            if parser.broken: return element.take_failure(&result)
+            if parser.broken: return Evaluated.take_failure(&result)
             if not skip:
                 if element.failed or element.is_list() or element.kind == ExpressionKind.nothing: result.failed = true
                 elif not result.failed:
@@ -196,7 +196,7 @@ struct Evaluator:
 
     ## A function call: its arguments, then the function. Spaces pad its
     ## parentheses and commas.
-    mutating func function(parser: Parser*, name: str, skip: bool) -> Evaluated!:
+    func function(parser: Parser*, name: str, skip: bool) -> Evaluated!:
         parser.spaces()
         if not parser.take('('): return parser.fail()
         parser.spaces()
@@ -226,7 +226,7 @@ struct Evaluator:
         if skip: return Evaluated.of(ExpressionKind.nothing, 0)
         return try self.call(name, arguments.view())
 
-    mutating func call(name: str, arguments: const Evaluated[]) -> Evaluated!:
+    func call(name: str, arguments: const Evaluated[]) -> Evaluated!:
         let count = arguments.length
         if name == "if":
             if count != 2 and count != 3: return Evaluated.failure()
@@ -285,24 +285,24 @@ struct Parser:
     func peek() -> u8:
         return self.text.bytes[self.at] if self.at < self.text.length else 0
 
-    mutating func take(byte: u8) -> bool:
+    func take(byte: u8) -> bool:
         if self.peek() != byte: return false
         self.at += 1
         return true
 
-    mutating func spaces():
+    func spaces():
         while self.peek() == ' ': self.at += 1
 
-    mutating func fail() -> Evaluated:
+    func fail() -> Evaluated:
         self.broken = true
         return Evaluated.failure()
 
-    mutating func fail_with(held: Evaluated*) -> Evaluated:
+    func fail_with(held: Evaluated*) -> Evaluated:
         held.close()
         return self.fail()
 
     ## A C identifier.
-    mutating func identifier() -> str:
+    func identifier() -> str:
         let start = self.at
         let first = self.peek()
         if not (first == '_' or (first >= 'a' and first <= 'z') or (first >= 'A' and first <= 'Z')): return ""
@@ -314,14 +314,14 @@ struct Parser:
         return (str)self.text.bytes[start..<self.at]
 
     ## `${NAME}`: the name.
-    mutating func variable() -> str?:
+    func variable() -> str?:
         if not self.take('$') or not self.take('{'): return none
         let name = self.identifier()
         if name.length == 0 or not self.take('}'): return none
         return name
 
     ## An optionally negative decimal integer.
-    mutating func integer() -> i64?:
+    func integer() -> i64?:
         let negative = self.take('-')
         var value: i64 = 0
         var digits: usize = 0
@@ -484,6 +484,6 @@ func element_at(names: Names*, source: const Evaluated*, index: i64) -> Evaluate
 
 extend Evaluated:
     ## Close `held` and give a failure (for a broken parse).
-    mutating func take_failure(held: Evaluated*) -> Evaluated:
+    func take_failure(held: Evaluated*) -> Evaluated:
         held.close()
         return Evaluated.failure()

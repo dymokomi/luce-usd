@@ -32,7 +32,7 @@ pub struct Offset:
     pub var offset: f64
     pub var scale: f64
 
-    pub static func identity() -> Offset:
+    pub func identity() -> Offset:
         return Offset(offset = 0.0, scale = 1.0)
 
     ## `self` after `inner` (SdfLayerOffset's operator*).
@@ -77,15 +77,15 @@ pub struct Problems:
     pub func init():
         self.text = Growing[u8]()
 
-    pub mutating func close():
+    pub func close():
         self.text.close()
 
-    pub mutating func add(message: str) -> !:
+    pub func add(message: str) -> !:
         for byte in message.bytes: try self.text.push(byte)
         try self.text.push(10)
 
     ## `message` followed by `detail` and "@".
-    pub mutating func add_with(message: str, detail: str) -> !:
+    pub func add_with(message: str, detail: str) -> !:
         for byte in message.bytes: try self.text.push(byte)
         for byte in detail.bytes: try self.text.push(byte)
         try self.text.push('@')

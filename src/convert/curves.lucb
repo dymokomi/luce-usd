@@ -174,7 +174,7 @@ func nurbs_rows(stage: Stage*, source: ElementSource*, vertex_counts: const i32[
     for curve in 0..<vertex_counts.length:
         let n = (usize)vertex_counts[curve]
         let order = (usize)order_list[curve] if curve < order_list.length else 4
-        discard(try keep_range(source, handles, first, n))
+        _ = try keep_range(source, handles, first, n)
         let wanted = n + order
         let custom = knot_values.array and knot_at + wanted <= knot_values.count
         if custom:

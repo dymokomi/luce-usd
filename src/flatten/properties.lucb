@@ -8,7 +8,7 @@
 
 extend Flattener:
     ## Flatten property `name` of the prim at `path` (output spec `prim`).
-    mutating func property(index: const PrimIndex*, path: u32, prim: usize, name: u32) -> !:
+    func property(index: const PrimIndex*, path: u32, prim: usize, name: u32) -> !:
         var opinions = Growing[Opinion]()
         defer opinions.close()
         try self.gather(index, name, &opinions)
@@ -77,7 +77,7 @@ extend Flattener:
 
     ## An attribute's samples (when its strongest value opinion is samples)
     ## and default (when any opinion has one).
-    mutating func attribute_values(index: const PrimIndex*, opinions: const Opinion[], spec: usize) -> !:
+    func attribute_values(index: const PrimIndex*, opinions: const Opinion[], spec: usize) -> !:
         let keys = &self.out.keys
         let composer = self.composer
         for opinion in opinions:
@@ -108,7 +108,7 @@ extend Flattener:
         if blocked: try self.out.set(spec, keys.default, Value.marker(ValueKind.value_block))
 
     ## Time samples in stage time, their values moved too.
-    mutating func samples_to_stage(index: const PrimIndex*, opinion: Opinion, samples: const TimeSamples*) -> Value!:
+    func samples_to_stage(index: const PrimIndex*, opinion: Opinion, samples: const TimeSamples*) -> Value!:
         let offset = self.layer_offset(index, opinion)
         let made = try TimeSamples.create()
         var owner = Value.of_object(ValueKind.time_samples, (void*)made)
@@ -125,7 +125,7 @@ extend Flattener:
     ## The strongest default, an array edit, composed over the weaker
     ## defaults (VtValue's ComposeOver): edits stack down to an array, or to
     ## the empty background.
-    mutating func composed_edits(index: const PrimIndex*, opinions: const Opinion[]) -> Value!:
+    func composed_edits(index: const PrimIndex*, opinions: const Opinion[]) -> Value!:
         let keys = &self.out.keys
         var stack = Growing[const Value*]()
         defer stack.close()
@@ -149,7 +149,7 @@ extend Flattener:
 
     ## An attribute value in stage terms (_MakeResolvedAssetPathsValue and
     ## Usd_ApplyLayerOffsetToValue): asset paths anchored, time codes moved.
-    mutating func value_to_stage(index: const PrimIndex*, opinion: Opinion, value: const Value*) -> Value!:
+    func value_to_stage(index: const PrimIndex*, opinion: Opinion, value: const Value*) -> Value!:
         return try self.to_stage(index, opinion, value)
 
 ## Whether a value is an array edit flattening composes (asset edits stay

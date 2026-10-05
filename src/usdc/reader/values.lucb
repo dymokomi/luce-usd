@@ -11,7 +11,7 @@ let most_depth: usize = 64
 
 extend Crate:
     ## The value `rep` holds (arrays included, decoded here).
-    mutating func value(rep: u64) -> Value!:
+    func value(rep: u64) -> Value!:
         if rep_array_edit(rep): return try self.array_edit_at(rep)
         if rep_array(rep): return try self.array(rep)
         let kind = rep_type(rep)
@@ -115,7 +115,7 @@ extend Crate:
 
     ## A vector, quaternion or matrix: inline (int8 components or diagonal)
     ## or its bytes at the payload.
-    mutating func tuple_value(kind: ValueKind, rep: u64) -> Value!:
+    func tuple_value(kind: ValueKind, rep: u64) -> Value!:
         let size = element_bytes(kind)
         let payload = rep_payload(rep)
         if not rep_inlined(rep): return try Value.of_bytes(kind, try self.bytes_at(payload, (u64)size))
@@ -141,7 +141,7 @@ extend Crate:
         return try Value.of_bytes(kind, bytes[..<size])
 
     ## A token, path or string vector: u64 count, then u32 indexes.
-    mutating func id_vector(kind: ValueKind, at: u64) -> Value!:
+    func id_vector(kind: ValueKind, at: u64) -> Value!:
         let count = try self.u64_at(at)
         let raw = try self.bytes_at(at + 8, count * 4)
         var column = try Column[u8].allocate((usize)count * 4)
@@ -159,7 +159,7 @@ extend Crate:
 
     ## A dictionary at `*at`: u64 count, then (string index, nested value)
     ## pairs; `*at` moves past it.
-    mutating func dictionary_at(at: u64*) -> Value!:
+    func dictionary_at(at: u64*) -> Value!:
         if self.depth >= most_depth: error(errors.invalid, "crate values nested too deeply")
         self.depth += 1
         defer self.depth -= 1
@@ -177,7 +177,7 @@ extend Crate:
 
     ## A nested VtValue at `*at`: an int64 offset (relative to `*at`) to its
     ## ValueRep; `*at` moves past the rep, as the reader's stream does.
-    mutating func nested(at: u64*) -> Value!:
+    func nested(at: u64*) -> Value!:
         if self.depth >= most_depth: error(errors.invalid, "crate values nested too deeply")
         self.depth += 1
         defer self.depth -= 1
@@ -189,7 +189,7 @@ extend Crate:
         return try self.value(rep)
 
     ## A variant selection map: u64 count, then (string, string) index pairs.
-    mutating func selection_map(at: u64) -> Value!:
+    func selection_map(at: u64) -> Value!:
         let count = try self.u64_at(at)
         let raw = try self.bytes_at(at + 8, count * 8)
         var column = try Column[u8].allocate((usize)count * 8)
@@ -200,7 +200,7 @@ extend Crate:
         return Value.of_records(ValueKind.variant_selection_map, (usize)count, column)
 
     ## Relocates: u64 count, then (source, target) path index pairs.
-    mutating func relocates_at(at: u64) -> Value!:
+    func relocates_at(at: u64) -> Value!:
         let count = try self.u64_at(at)
         let raw = try self.bytes_at(at + 8, count * 8)
         var column = try Column[u8].allocate((usize)count * 8)
@@ -212,7 +212,7 @@ extend Crate:
 
     ## A list op: a header byte (explicit, then which parts follow), then
     ## each part as a u64 count and its items.
-    mutating func list_op_at(kind: ValueKind, at: u64) -> Value!:
+    func list_op_at(kind: ValueKind, at: u64) -> Value!:
         let list = try ListOp.create()
         var value = Value.of_object(kind, (void*)list)
         errdefer value.release()
@@ -234,7 +234,7 @@ extend Crate:
         return value
 
     ## One list op item at `*at`, advancing it.
-    mutating func list_item(kind: ValueKind, at: u64*) -> ListItem!:
+    func list_item(kind: ValueKind, at: u64*) -> ListItem!:
         var item = ListItem(a = 0, b = 0, offset = 0.0, scale = 1.0, custom = none)
         match kind:
             .token_list_op:
@@ -283,7 +283,7 @@ extend Crate:
         return item
 
     ## A payload at `*at`: asset string, prim path, and (from 0.8.0) a layer offset.
-    mutating func payload_item(at: u64*) -> ListItem!:
+    func payload_item(at: u64*) -> ListItem!:
         var item = ListItem(a = (u64)try self.string((u64)try self.u32_at(*at)), b = 0, offset = 0.0, scale = 1.0, custom = none)
         item.b = (u64)try self.path((u64)try self.u32_at(*at + 4))
         *at += 8
@@ -295,7 +295,7 @@ extend Crate:
 
     ## Time samples: an offset to the times' ValueRep, an offset to the
     ## values, then a u64 count and that many ValueReps.
-    mutating func time_samples_at(at: u64) -> Value!:
+    func time_samples_at(at: u64) -> Value!:
         let samples = try TimeSamples.create()
         var value = Value.of_object(ValueKind.time_samples, (void*)samples)
         errdefer value.release()

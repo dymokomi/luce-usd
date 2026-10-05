@@ -5,7 +5,7 @@
 
 extend Reader:
     ## `None | item | [items]` of references (or payloads) into part `part`.
-    mutating func reference_list(spec: usize, part: ListPart, payload: bool) -> !:
+    func reference_list(spec: usize, part: ListPart, payload: bool) -> !:
         var items = Growing[ListItem]()
         defer items.close()
         errdefer release_items(&items)
@@ -28,7 +28,7 @@ extend Reader:
         try self.set_list_items(spec, field, kind, part, items.view())
 
     ## `@asset@[<prim>] [( params )]` or `<prim> [( params )]`.
-    mutating func reference_item(payload: bool) -> ListItem!:
+    func reference_item(payload: bool) -> ListItem!:
         var item = ListItem(a = 0, b = (u64)empty_path, offset = 0.0, scale = 1.0, custom = none)
         errdefer release_item(&item)
         if self.peek() == '<':
@@ -69,7 +69,7 @@ extend Reader:
 
     ## `None | <path> | [<path>, ...]` of inherits or specializes, anchored
     ## at the prim, into part `part` of field `field`.
-    mutating func class_paths(spec: usize, field: u32, part: ListPart, anchor: u32) -> !:
+    func class_paths(spec: usize, field: u32, part: ListPart, anchor: u32) -> !:
         var items = Growing[ListItem]()
         defer items.close()
         try self.path_list(&items, anchor)
@@ -81,7 +81,7 @@ extend Reader:
 
     ## `None | <path> | [<path>, ...]`, relative paths made absolute at
     ## `anchor` with its variant selections stripped.
-    mutating func path_list(items: Growing[ListItem]*, anchor: u32) -> !:
+    func path_list(items: Growing[ListItem]*, anchor: u32) -> !:
         if self.keyword("None"): return
         let base = try self.names.strip_variants(anchor)
         if self.peek() == '[':
@@ -99,7 +99,7 @@ extend Reader:
 
     ## `variantSets = "name" | ["a", "b"]`: the string list op, and for
     ## explicit and added names the variant set specs and children.
-    mutating func variant_set_names(spec: usize, part: ListPart, anchor: u32) -> !:
+    func variant_set_names(spec: usize, part: ListPart, anchor: u32) -> !:
         var items = Growing[ListItem]()
         defer items.close()
         if self.peek() == '[':
@@ -120,11 +120,11 @@ extend Reader:
                 let name = (u32)items.items[index].a
                 memory.write[u32]((void*)&ids[index * 4], name)
                 let set_path = try self.names.variant(prim, name, 0)
-                if self.layer.find(set_path) == none: discard(try self.layer.create_spec(set_path, SpecType.variant_set))
+                if self.layer.find(set_path) == none: _ = try self.layer.create_spec(set_path, SpecType.variant_set)
             try self.set_field(spec, self.keys.variant_set_children, Value.of_records(ValueKind.token_vector, items.count, column))
 
     ## `variants = { string set = "selection" ... }` into the selection map.
-    mutating func variant_selections(spec: usize) -> !:
+    func variant_selections(spec: usize) -> !:
         var parsed = try self.dictionary_value()
         defer parsed.release()
         let dictionary = parsed.dictionary() else trap("dictionary")
@@ -147,7 +147,7 @@ extend Reader:
 
     ## `relocates = { <source>: <target>, ... }`. On a prim (a non-empty
     ## `anchor`) the paths are made absolute there; on the layer they are kept.
-    mutating func relocates(spec: usize, anchor: u32) -> !:
+    func relocates(spec: usize, anchor: u32) -> !:
         try self.expect('{', "expected '{' after relocates")
         try self.skip_all()
         var pairs = Growing[u32]()
@@ -175,7 +175,7 @@ extend Reader:
         try self.set_field(spec, field, Value.of_records(ValueKind.relocates, pairs.count // 2, column))
 
     ## `subLayers = [ @path@ (offset = o; scale = s), ... ]`.
-    mutating func sublayers(spec: usize) -> !:
+    func sublayers(spec: usize) -> !:
         try self.expect('[', "expected '[' after subLayers")
         try self.skip_all()
         var assets = Growing[u32]()
