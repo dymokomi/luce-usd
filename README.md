@@ -52,7 +52,7 @@ Usd.flatten("Kitchen_set.usd", "flat.usda")     # the composed stage, as usdcat 
 `./test.sh` builds `tests/main.lucb` (the Base module checks) at native
 optimization levels 0 and 2 and through the C backend, then the Luce API
 tests in `tests/api/` natively and through C. CI runs the same on macOS and
-Linux against the compilers and packages pinned in `bootstrap/PACKAGES`.
+Linux against the compilers and packages at main.
 Fixtures in `tests/fixtures/` are our own.
 
 Parity with OpenUSD itself (byte-identical `usdcat` output over OpenUSD's
