@@ -49,14 +49,12 @@ Usd.flatten("Kitchen_set.usd", "flat.usda")     # the composed stage, as usdcat 
 
 ## Tests
 
-`./test.sh` builds `tests/main.lucb` (the Base module checks) at native
-optimization levels 0 and 2 and through the C backend, then the Luce API
-tests in `tests/api/` natively and through C. CI runs the same on macOS and
-Linux against the compilers and packages at main.
-Fixtures in `tests/fixtures/` are our own.
+`luc test` runs two test programs: `tests/checks` (the Base module checks,
+under a heap that counts live blocks and fails allocations in turn) and
+`tests/api` (the Luce API tests). Fixtures in `tests/fixtures/` are our own.
 
 Parity with OpenUSD itself (byte-identical `usdcat` output over OpenUSD's
-test corpus, composition baselines) is checked locally, never in CI; see
+test corpus, composition baselines) is checked locally, not by `luc test`; see
 `docs/PARITY.md`.
 
 `python3 bench/run.py` prints the benchmark table (`docs/BENCHMARKS.md`).

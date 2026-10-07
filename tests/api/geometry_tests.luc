@@ -3,8 +3,9 @@ from luce_usd.usd import Usd
 from luce_geocore.geocore import invalid, Mesh
 from luce_cad.solids import CadSolids
 from luce_cad.cad_geometry import CadGeometry
+from luce_std import paths
 
-pub func geometry_tests() -> unit!:
+pub func geometry_tests(scratch: str) -> unit!:
     let loaded = Usd.load("tests/fixtures/geom/meshes.usda")
     let mesh = loaded.mesh() else error(invalid, "no mesh")
     assert(mesh.face_count() == 3)
@@ -12,13 +13,14 @@ pub func geometry_tests() -> unit!:
     assert(loaded.detail_value("usd.time") == 1.0)
     let later = Usd.load("tests/fixtures/geom/meshes.usda", time = 2.0)
     assert((later.mesh() else error(invalid, "no mesh")).point(6).x == 2.0)
-    for name in ["saved.usda", "saved.usdc", "saved.usdz"]:
+    for extension in ["usda", "usdc", "usdz"]:
+        let name = paths.join(scratch, f"saved.{extension}")
         Usd.save(loaded, name)
         let again = Usd.load(name)
         assert((again.mesh() else error(invalid, "no mesh")).face_count() == 3)
-    assert(Usd.serialization("saved.usdz") == "usdz")
-    Usd.convert("saved.usdc", "converted.usda")
-    assert(Usd.serialization("converted.usda") == "usda")
+    assert(Usd.serialization(paths.join(scratch, "saved.usdz")) == "usdz")
+    Usd.convert(paths.join(scratch, "saved.usdc"), paths.join(scratch, "converted.usda"))
+    assert(Usd.serialization(paths.join(scratch, "converted.usda")) == "usda")
     let info = Usd.info("tests/fixtures/geom/meshes.usda")
     assert(info.contains("upAxis: Z") and info.contains("type Mesh: 2") and info.contains("prims: "))
     let flat = Usd.load("tests/fixtures/geom/instancer.usda", flatten = true)
@@ -27,8 +29,8 @@ pub func geometry_tests() -> unit!:
     assert(placed.instance_count() == 3)
     # CAD saves as NurbsPatch prims, one per face.
     let solid = CadGeometry.of_model(CadSolids.cylinder(1.0, 2.0))
-    Usd.save(solid, "cylinder.usda")
-    assert(Usd.info("cylinder.usda").contains("type NurbsPatch: 3"))
+    Usd.save(solid, paths.join(scratch, "cylinder.usda"))
+    assert(Usd.info(paths.join(scratch, "cylinder.usda")).contains("type NurbsPatch: 3"))
     # A spline-animated size: 2 halfway, 3 once held after its last knot.
     let halfway = Usd.load("tests/fixtures/geom/spline_size.usda", time = 5.0, subdivide = false)
     assert(largest_x(halfway.mesh() else error(invalid, "no mesh")) == 1.0)
@@ -37,11 +39,11 @@ pub func geometry_tests() -> unit!:
 
 ## A composed stage: the museum's time-offset case loads through its
 ## references and sublayers, and flattens to a file.
-pub func composed_tests() -> unit!:
+pub func composed_tests(scratch: str) -> unit!:
     let loaded = Usd.load("tests/fixtures/openusd/museum/BasicAncestralReference/root.usda")
     assert(loaded.is_empty())
-    Usd.flatten("tests/fixtures/openusd/museum/BasicTimeOffset/root.usda", "flat.usda")
-    assert(Usd.info("flat.usda").contains("prims: "))
+    Usd.flatten("tests/fixtures/openusd/museum/BasicTimeOffset/root.usda", paths.join(scratch, "flat.usda"))
+    assert(Usd.info(paths.join(scratch, "flat.usda")).contains("prims: "))
     stage_option_tests()
 
 ## Variant selections and payload masks, and the composition summary the

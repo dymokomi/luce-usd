@@ -1,9 +1,13 @@
 # luce-usd's Luce API tests: what luced-3d calls.
+from luce_std import files, process
 from format_tests import format_tests
 from geometry_tests import geometry_tests, composed_tests
 
 pub func main(arguments: list[str]) -> int!:
-    format_tests()
-    geometry_tests()
-    composed_tests()
+    # the fixtures are named from the package root, tests/fixtures/...
+    process.change_directory("../..")
+    with files.TemporaryDirectory() as directory:
+        format_tests()
+        geometry_tests(directory.path())
+        composed_tests(directory.path())
     return 0

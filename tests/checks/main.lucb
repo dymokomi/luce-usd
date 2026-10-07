@@ -3,6 +3,7 @@
 ## fails a check's allocations one at a time: every failure must surface as
 ## memory.exhausted and leave nothing allocated.
 import memory
+import os
 import sync
 from luce_geocore.core import parallel as geocore_parallel
 import sniff_checks
@@ -74,6 +75,8 @@ func inject(tracker: Tracker*, stages: usize, check: func() -> unit!):
         if not failed: return
 
 pub func main(arguments: str[]) -> i32!:
+    # the fixtures are named from the package root, tests/fixtures/...
+    try os.change_dir("../..")
     # Start the pool first: its starting threads free blocks in the current heap.
     geocore_parallel.warm()
     try cad_checks.warm()
