@@ -1,0 +1,111 @@
+## A splat cloud written as one ParticleField3DGaussianSplat prim (see
+## particle_fields.lucb for the schema and the SH convention): float
+## positions with their extent, `orientations` (orient normalized), linear
+## `scales` and `opacities`, and `radiance:sphericalHarmonicsCoefficients`
+## per splat: the file DC (the cloud's `Cd` encoded back into its color
+## space, as luce-geocore's unbaked_store gives f_dc) then its SH bands, in
+## the world frame (a `restorient` is baked in). The hints come from the
+## detail texts `gsplat_sorting_mode` and `gsplat_projection_mode` (zDepth
+## and perspective by default); a linear cloud says so in the custom
+## `luce:gsplatColorSpace`. Other point attributes are left out.
+
+## `cloud`'s splats as a ParticleField3DGaussianSplat at `path`; `detail` is
+## the set's detail.
+func export_splats(cloud: const PointCloud*, detail: const AttributeStore*, author: Author*, path: u32, warnings: Warnings*) -> !:
+    let names = author.names
+    let store = cloud_store(cloud)
+    let count = cloud.count()
+    let space = detail_color_space(detail)
+    var raw = try unbaked_store(store, count, space)
+    defer raw.close()
+    let items = sh_items(store)
+    let degree = sh_degree(items)
+    let per_particle = (degree + 1) * (degree + 1)
+    var work = SplatWrite(count = count, per_particle = per_particle, items = sh_count(degree))
+    for k in 0..<(usize)3:
+        work.dc[k] = point_floats(&raw, f_dc_name(k), 1) else error(errors.invalid, "a splat cloud lost its DC color in unbaking")
+    work.orient = point_floats(store, orient_name, 4) else error(errors.invalid, "a splat cloud has no orient")
+    work.scale = point_floats(store, scale_name, 3) else error(errors.invalid, "a splat cloud has no scale")
+    work.opacity = point_floats(store, opacity_name, 1) else error(errors.invalid, "a splat cloud has no opacity")
+    let rest = raw.find("f_rest", Domain.point)
+    if rest >= 0: work.rest = raw.entry((usize)rest)
+    var orientations = try Column[u8].allocate(count * 16)
+    defer orientations.release()
+    var scales = try Column[u8].allocate(count * 12)
+    defer scales.release()
+    var opacities = try Column[u8].allocate(count * 4)
+    defer opacities.release()
+    var coefficients = try Column[u8].allocate(count * per_particle * 12)
+    defer coefficients.release()
+    work.orientations = f32[]((f32*)orientations.span().data, count * 4)
+    work.scales = f32[]((f32*)scales.span().data, count * 3)
+    work.opacities = f32[]((f32*)opacities.span().data, count)
+    work.coefficients = f32[]((f32*)coefficients.span().data, count * per_particle * 3)
+    try parallel.for_each_range(count, grain, (void*)&work, write_splats)
+    let tokens = try GeomTokens.of(names)
+    let spec = try author.define(path, tokens.particle_field_splat, tokens.xform)
+    var all = Growing[i32]()
+    defer all.close()
+    for at in 0..<count: try all.push((i32)at)
+    try write_positions(author, path, spec, cloud_positions(cloud), cloud_origin(cloud), all.view(), false, "positions")
+    _ = try author.attribute(path, spec, "orientations", "quatf[]", false, Value.of_array(ValueKind.quatf, count, orientations.take()))
+    _ = try author.attribute(path, spec, "scales", "float3[]", false, Value.of_array(ValueKind.vec3f, count, scales.take()))
+    _ = try author.attribute(path, spec, "opacities", "float[]", false, Value.of_array(ValueKind.float, count, opacities.take()))
+    _ = try author.attribute(path, spec, "radiance:sphericalHarmonicsDegree", "int", true, Value.scalar(ValueKind.int, (u64)degree))
+    _ = try author.attribute(path, spec, "radiance:sphericalHarmonicsCoefficients", "float3[]", false, Value.of_array(ValueKind.vec3f, count * per_particle, coefficients.take()))
+    _ = try author.attribute(path, spec, "sortingModeHint", "token", true, Value.scalar(ValueKind.token, (u64)(try names.token(detail_text(detail, "gsplat_sorting_mode", "zDepth")))))
+    _ = try author.attribute(path, spec, "projectionModeHint", "token", true, Value.scalar(ValueKind.token, (u64)(try names.token(detail_text(detail, "gsplat_projection_mode", "perspective")))))
+    if space == ColorSpace.linear:
+        let marked = try author.attribute(path, spec, "luce:gsplatColorSpace", "token", true, Value.scalar(ValueKind.token, (u64)(try names.token("linear"))))
+        try author.layer.set(marked, author.layer.keys.custom, Value.scalar(ValueKind.boolean, 1))
+    for index in 0..<store.count():
+        let entry = store.entry(index)
+        if entry.domain != Domain.point: continue
+        let name = entry.name()
+        if name == orient_name or name == restorient_name or name == scale_name or name == opacity_name or name == color_name or name == sh_name: continue
+        try warnings.add("Point attributes other than the splats' were left out of the ParticleField3DGaussianSplat")
+        break
+
+## "f_dc_0", "f_dc_1" or "f_dc_2".
+func f_dc_name(k: usize) -> str:
+    return "f_dc_0" if k == 0 else ("f_dc_1" if k == 1 else "f_dc_2")
+
+## Detail text `name`, or `fallback`.
+func detail_text(detail: const AttributeStore*, name: str, fallback: str) -> str:
+    let index = detail.find(name, Domain.detail)
+    if index < 0 or detail.entry((usize)index).kind != DataType.text: return fallback
+    let text = detail.entry((usize)index).text_at(0)
+    return text if text.length > 0 else fallback
+
+## A cloud's splats and the arrays they fill.
+struct SplatWrite:
+    var count: usize
+    var per_particle: usize
+    ## SH items written per splat (bands 1..degree).
+    var items: usize
+    var dc: Floats[3]
+    var orient: Floats
+    var scale: Floats
+    var opacity: Floats
+    var rest: const Attribute*?
+    var orientations: f32[]
+    var scales: f32[]
+    var opacities: f32[]
+    var coefficients: f32[]
+
+func write_splats(context: void*, first: usize, end: usize, worker: usize):
+    _ = worker
+    let work = (SplatWrite*)context
+    for at in first..<end:
+        let q = Quat(work.orient.at(at, 0), work.orient.at(at, 1), work.orient.at(at, 2), work.orient.at(at, 3)).normalized()
+        let values: f64[4] = [q.x, q.y, q.z, q.w]
+        for k in 0..<(usize)4: work.orientations[at * 4 + k] = (f32)values[k]
+        for k in 0..<(usize)3: work.scales[at * 3 + k] = (f32)work.scale.at(at, k)
+        work.opacities[at] = (f32)work.opacity.at(at, 0)
+        let base = at * work.per_particle * 3
+        for k in 0..<(usize)3: work.coefficients[base + k] = (f32)work.dc[k].at(at, 0)
+        let rest = work.rest else continue
+        let held = rest.item_count(at)
+        for item in 0..<work.items:
+            for channel in 0..<(usize)3:
+                work.coefficients[base + 3 + item * 3 + channel] = (f32)rest.item(at, item, channel) if item < held else 0.0

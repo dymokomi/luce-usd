@@ -23,6 +23,9 @@ pub enum GprimKind as u8:
     plane = 10
     ## A scene-graph instance of a flattened prototype.
     instance = 11
+    ## A UsdVol particle field: ParticleField3DGaussianSplat, or a generic
+    ## ParticleField (convert/particle_fields.lucb checks its kernel).
+    particle_field = 12
 
 ## Whether a gprim kind is one of the intrinsic shapes (cube to plane).
 pub func is_shape(kind: GprimKind) -> bool:
@@ -149,6 +152,7 @@ func gprim_kind(stage: const Stage*, type_name: u32) -> GprimKind?:
     if type_name == t.cone: return GprimKind.cone
     if type_name == t.capsule: return GprimKind.capsule
     if type_name == t.plane: return GprimKind.plane
+    if type_name == t.particle_field_splat or type_name == t.particle_field: return GprimKind.particle_field
     return none
 
 func note_type(out: Gathered*, type_name: u32) -> !:

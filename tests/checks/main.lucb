@@ -18,6 +18,7 @@ import pcp_checks
 import spline_checks
 import array_edit_checks
 import cad_checks
+import splat_checks
 
 ## Counts live blocks and fails the allocation after `remaining` more.
 struct Tracker: memory.Allocator:
@@ -164,6 +165,10 @@ pub func main(arguments: str[]) -> i32!:
     settle(&tracker, "round trips")
     inject(&tracker, every, geom_checks.mesh_round_trip)
     inject(&tracker, every, geom_checks.elements_round_trip)
+    try splat_checks.fixture()
+    try splat_checks.round_trips()
+    settle(&tracker, "splats")
+    inject(&tracker, every, splat_checks.fixture)
     try pcp_checks.museum()
     settle(&tracker, "museum")
     inject(&tracker, every, pcp_checks.museum)
@@ -174,4 +179,6 @@ pub func main(arguments: str[]) -> i32!:
     inject(&tracker, every, pcp_checks.builtins)
     try expression_checks.expressions()
     inject(&tracker, every, expression_checks.expressions)
+    memory.heap = previous
+    try splat_checks.timing()
     return 0

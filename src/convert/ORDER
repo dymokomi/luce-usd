@@ -8,6 +8,7 @@ mesh_extras.lucb
 subdivision.lucb
 elements.lucb
 points.lucb
+particle_fields.lucb
 curves.lucb
 instancer.lucb
 author.lucb
@@ -15,6 +16,7 @@ export_mesh.lucb
 export_values.lucb
 export_extras.lucb
 export_elements.lucb
+export_splats.lucb
 export_curves.lucb
 cad_patches.lucb
 export_cad.lucb

@@ -1,0 +1,241 @@
+## Gaussian splats as UsdVol's ParticleField3DGaussianSplat: a hand-written
+## stage (placement, degree 2, half arrays, short arrays, hints, a Points prim
+## left out) imports to the expected baked values; seeded clouds go through
+## usda and usdc and come back within f32; and a million splats are timed.
+from luce_std import math, clock
+import memory
+import strings
+from luce_geocore.geocore import Vector3, GeometrySet
+from luce_geocore.core.growing import Growing
+from luce_geocore.core.shared import Column
+from luce_geocore.kernel import dispose_set, empty_set, points_component, cloud_assembled, cloud_store, set_cloud, set_detail, set_put_detail, Float3, PointCloud, Attribute, AttributeStore, Domain, DataType, TableBuilder
+from luce_geocore.splats import Quat, ColorSpace, sh_c0, to_linear, float32_points, float64_points, float32_values, float64_values, uniform_sh, unbaked_store, sh_attribute
+from luce_usd.kernel import ImportOptions, ExportOptions, Warnings, import_layer, export_set, write_usda, read_usda, write_usdc, read_usdc, Names, LayerData, read_file
+
+func near(a: f64, b: f64, tolerance: f64 = 1.0e-5) -> bool:
+    return math.abs(a - b) <= tolerance * math.max(1.0, math.abs(b))
+
+func expect(condition: bool, what: str):
+    if not condition:
+        print(f"FAIL  {what}")
+        trap("splat checks")
+
+func cloud_of(set: const GeometrySet*) -> const PointCloud*:
+    return set_cloud(set) else trap("the set has no point cloud")
+
+## Component `component` of point attribute `name` of splat `at`.
+func number(set: const GeometrySet*, name: str, at: usize, component: usize = 0) -> f64:
+    let store = cloud_store(cloud_of(set))
+    let index = store.find(name, Domain.point)
+    if index < 0:
+        print(f"no attribute {name}")
+        trap("missing attribute")
+    return store.entry((usize)index).number(at, component)
+
+## Item `item`, channel `channel` of splat `at`'s `sh`.
+func sh_value(store: const AttributeStore*, name: str, at: usize, item: usize, channel: usize) -> f64:
+    let index = store.find(name, Domain.point)
+    if index < 0: return 0.0
+    let entry = store.entry((usize)index)
+    return entry.item(at, item, channel) if item < entry.item_count(at) else 0.0
+
+## Detail text `name` of a set.
+func detail_text(set: const GeometrySet*, name: str) -> str:
+    let detail = set_detail(set)
+    let index = detail.find(name, Domain.detail)
+    if index < 0: return ""
+    return detail.entry((usize)index).text_at(0)
+
+func import_text(text: const u8[], warnings: Warnings*) -> GeometrySet*!:
+    var names = try Names()
+    defer names.close()
+    var layer = try LayerData(&names)
+    defer layer.close()
+    try read_usda(text, &layer)
+    let options = ImportOptions(time = math.nan, realize = false, purposes = 0, convert_units = false, subdivide_unauthored = false)
+    return try import_layer(&layer, &options, warnings)
+
+## The fixture stage: two prims placed by a translate and a uniform scale.
+pub func fixture() -> !:
+    let text = try read_file("tests/fixtures/geom/splats.usda")
+    defer free(text) in memory.heap
+    var warnings = Warnings()
+    defer warnings.close()
+    let set = try import_text(text, &warnings)
+    defer dispose_set(set)
+    expect(contains((str)warnings.text.view(), "Points prims were left out"), "a Points prim beside splats is left out with a warning")
+    let cloud = cloud_of(set)
+    expect(cloud.count() == 3, "three splats from two prims")
+    let p1 = cloud.point(1)
+    expect(near(p1.x, 1.0) and near(p1.y, 4.0) and near(p1.z, 5.0), "positions placed by the prim's transform")
+    let p2 = cloud.point(2)
+    expect(near(p2.x, 9.0) and near(p2.y, 2.0) and near(p2.z, 3.0), "half positions placed")
+    expect(near(number(set, "scale", 0, 0), 2.0) and near(number(set, "scale", 1, 1), 1.0) and near(number(set, "scale", 1, 2), 1.4), "linear scales times the prim's scale")
+    expect(near(number(set, "scale", 2, 0), 1.0), "half scales")
+    expect(near(number(set, "opacity", 1), 0.8) and near(number(set, "opacity", 2), 1.0), "linear opacities; a short array means opaque")
+    # (0, 0, 1, 0) is real 0, j 1: a half turn about Y.
+    let q = Quat(number(set, "orient", 1, 0), number(set, "orient", 1, 1), number(set, "orient", 1, 2), number(set, "orient", 1, 3))
+    expect(near(math.abs(q.y), 1.0) and near(q.w, 0.0), "quaternions are real-first in text")
+    expect(near(math.abs(number(set, "orient", 2, 0)), 1.0), "half quaternions")
+    let dc: f64[3] = [1.0, -1.0, 0.5]
+    for k in 0..<(usize)3:
+        expect(near(number(set, "Cd", 1, k), to_linear(0.5 + sh_c0 * dc[k], ColorSpace.srgb)), "the DC coefficient is 3DGS's, decoded to linear Cd")
+        expect(near(number(set, "Cd", 0, k), to_linear(0.5, ColorSpace.srgb)), "a zero DC is gray")
+    let store = cloud_store(cloud)
+    expect(near(sh_value(store, "sh", 0, 0, 1), 0.2) and near(sh_value(store, "sh", 0, 7, 2), 0.6), "the bands after the DC are the sh items")
+    expect(near(sh_value(store, "sh", 2, 3, 0), 0.0), "a degree-0 prim's bands pad with zeros")
+    expect(detail_text(set, "gsplat_sorting_mode") == "cameraDistance" and detail_text(set, "gsplat_projection_mode") == "tangential", "hints as detail texts")
+    expect(detail_text(set, "gsplat_color_space") == "srgb", "trained colors are sRGB")
+    print("ok    ParticleField3DGaussianSplat import: placement, halves, short arrays, hints")
+
+func contains(text: str, part: str) -> bool:
+    if part.length > text.length: return false
+    for at in 0..<text.length - part.length + 1:
+        if (str)text.bytes[at..<at + part.length] == part: return true
+    return false
+
+## A uniform draw in [0, 1).
+func draw(state: u64*) -> f64:
+    var x = *state
+    x ^= x << 13
+    x ^= x >> 7
+    x ^= x << 17
+    *state = x
+    return (f64)(x >> 11) / 9007199254740992.0
+
+## A seeded baked splat cloud: degree 3, f64 scale, opacity and Cd, with a
+## `restorient` when asked, in `space`, hinted cameraDistance.
+func seeded(count: usize, rest: bool, space: ColorSpace) -> GeometrySet*!:
+    var state: u64 = 0x2545F4914F6CDD1D
+    var store = AttributeStore()
+    errdefer store.close()
+    try store.put(try float32_points("orient", 4, count))
+    try store.put(try float64_points("scale", 3, count))
+    try store.put(try float64_points("opacity", 1, count))
+    try store.put(try float64_points("Cd", 3, count))
+    try store.put(try uniform_sh(none, count, 15))
+    if rest: try store.put(try float32_points("restorient", 4, count))
+    let orient = float32_values(store.entry(0))
+    let scale = float64_values(store.entry(1))
+    let opacity = float64_values(store.entry(2))
+    let color = float64_values(store.entry(3))
+    let sh = f32[]((f32*)store.entry(4).data.span().data, count * 45)
+    for at in 0..<count:
+        let q = Quat(draw(&state) - 0.5, draw(&state) - 0.5, draw(&state) - 0.5, draw(&state) - 0.5).normalized()
+        let values: f64[4] = [q.x, q.y, q.z, q.w]
+        for k in 0..<(usize)4: orient[at * 4 + k] = (f32)values[k]
+        if rest:
+            let r = Quat(draw(&state) - 0.5, draw(&state) - 0.5, draw(&state) - 0.5, draw(&state) - 0.5).normalized()
+            let turned: f64[4] = [r.x, r.y, r.z, r.w]
+            for k in 0..<(usize)4: float32_values(store.entry(5))[at * 4 + k] = (f32)turned[k]
+        for k in 0..<(usize)3:
+            scale[at * 3 + k] = 0.001 + 0.1 * draw(&state)
+            color[at * 3 + k] = draw(&state)
+        opacity[at] = draw(&state)
+    for at in 0..<sh.length: sh[at] = (f32)(draw(&state) - 0.5)
+    var positions = try Column[Float3].allocate(count)
+    defer positions.release()
+    for at in 0..<count: positions.span()[at] = Float3((f32)(draw(&state) * 4.0 - 2.0), (f32)(draw(&state) * 4.0 - 2.0), (f32)(draw(&state) * 4.0 - 2.0))
+    let set = try empty_set()
+    errdefer dispose_set(set)
+    let attributes = store
+    store = AttributeStore()
+    try set.put(points_component(), (void*)(try cloud_assembled(positions.take(), Vector3(), attributes)))
+    try put_text(set, "gsplat_color_space", "linear" if space == ColorSpace.linear else "srgb")
+    try put_text(set, "gsplat_sorting_mode", "cameraDistance")
+    return set
+
+func put_text(set: GeometrySet*, name: str, value: str) -> !:
+    var table = TableBuilder()
+    defer table.close()
+    let at: i32[1] = [try table.intern(value)]
+    var column = try table.finish()
+    defer column.release()
+    try set_put_detail(set, try Attribute.text(name, Domain.detail, 1, column, at[..<1]))
+
+## `set` exported, written as usdc (or usda), read and imported.
+func through(set: const GeometrySet*, crate: bool) -> GeometrySet*!:
+    var names = try Names()
+    defer names.close()
+    var layer = try LayerData(&names)
+    defer layer.close()
+    var warnings = Warnings()
+    defer warnings.close()
+    let export_options = ExportOptions(split = true, precise = false)
+    try export_set(set, &layer, "geo", &export_options, &warnings)
+    var written = Growing[u8]()
+    defer written.close()
+    if crate: try write_usdc(&layer, &written)
+    else: try write_usda(&layer, &written)
+    var again_names = try Names()
+    defer again_names.close()
+    var again = try LayerData(&again_names)
+    defer again.close()
+    if crate: try read_usdc(written.view(), &again)
+    else: try read_usda(written.view(), &again)
+    let options = ImportOptions(time = math.nan, realize = false, purposes = 0, convert_units = false, subdivide_unauthored = false)
+    return try import_layer(&again, &options, &warnings)
+
+## Seeded clouds through usda and usdc: every value back within f32, a
+## restorient's frame baked into the SH, the color space and hints kept.
+pub func round_trips() -> !:
+    for case in 0..<(usize)4:
+        let rest = case % 2 == 1
+        let space = ColorSpace.linear if case >= 2 else ColorSpace.srgb
+        let source = try seeded(40, rest, space)
+        defer dispose_set(source)
+        let back = try through(source, case % 2 == 0)
+        defer dispose_set(back)
+        let a = cloud_of(source)
+        let b = cloud_of(back)
+        expect(b.count() == 40, "the splat count")
+        var raw = try unbaked_store(cloud_store(a), 40, space)
+        defer raw.close()
+        for at in 0..<(usize)40:
+            let pa = a.point(at)
+            let pb = b.point(at)
+            expect(near(pa.x, pb.x) and near(pa.y, pb.y) and near(pa.z, pb.z), "positions")
+            var dot: f64 = 0.0
+            for k in 0..<(usize)4: dot += number(source, "orient", at, k) * number(back, "orient", at, k)
+            expect(math.abs(dot) > 1.0 - 1.0e-6, "orientations")
+            for k in 0..<(usize)3:
+                expect(near(number(source, "scale", at, k), number(back, "scale", at, k)), "scales")
+                expect(near(number(source, "Cd", at, k), number(back, "Cd", at, k)), "colors")
+            expect(near(number(source, "opacity", at), number(back, "opacity", at)), "opacities")
+            # The SH as world-frame bands: unbaking bakes a restorient in.
+            for item in 0..<(usize)15:
+                for channel in 0..<(usize)3:
+                    expect(near(sh_value(&raw, "f_rest", at, item, channel), sh_value(cloud_store(b), "sh", at, item, channel), 1.0e-5), "SH bands in the world frame")
+        expect(detail_text(back, "gsplat_color_space") == ("linear" if space == ColorSpace.linear else "srgb"), "the color space")
+        expect(detail_text(back, "gsplat_sorting_mode") == "cameraDistance" and detail_text(back, "gsplat_projection_mode") == "perspective", "the hints and their defaults")
+    print("ok    splat clouds through usda and usdc: values, restorient, color space, hints")
+
+## A million degree-3 splats exported to usdc and imported, timed.
+pub func timing() -> !:
+    let source = try seeded(1000000, false, ColorSpace.srgb)
+    defer dispose_set(source)
+    var names = try Names()
+    defer names.close()
+    var layer = try LayerData(&names)
+    defer layer.close()
+    var warnings = Warnings()
+    defer warnings.close()
+    var started = clock.timestamp()
+    let export_options = ExportOptions(split = true, precise = false)
+    try export_set(source, &layer, "geo", &export_options, &warnings)
+    var written = Growing[u8]()
+    defer written.close()
+    try write_usdc(&layer, &written)
+    let writing = (clock.timestamp() - started) * 1000.0
+    started = clock.timestamp()
+    var again_names = try Names()
+    defer again_names.close()
+    var again = try LayerData(&again_names)
+    defer again.close()
+    try read_usdc(written.view(), &again)
+    let options = ImportOptions(time = math.nan, realize = false, purposes = 0, convert_units = false, subdivide_unauthored = false)
+    let back = try import_layer(&again, &options, &warnings)
+    defer dispose_set(back)
+    let reading = (clock.timestamp() - started) * 1000.0
+    expect(cloud_of(back).count() == 1000000, "a million splats back")
+    print(f"ok    1M degree-3 splats: export + usdc {writing} ms ({written.count} bytes), usdc + import {reading} ms")

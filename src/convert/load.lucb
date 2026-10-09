@@ -1,5 +1,6 @@
 ## A layer's stage as one GeometrySet (design §2): the gprims gathered at
-## the chosen time, meshes merged into the mesh component, and the stage's
+## the chosen time, meshes merged into the mesh component, Gaussian splat
+## particle fields into the point cloud (particle_fields.lucb), and the stage's
 ## up axis, units and time kept as the set's detail attributes
 ## `usd.upAxis`, `usd.metersPerUnit` and `usd.time`.
 
@@ -44,7 +45,16 @@ func import_gathered(stage: Stage*, gathered: Gathered*, options: const ImportOp
     errdefer dispose_set(set)
     # set_put takes the component, closing it when it fails.
     if let mesh = try import_meshes(stage, gathered, options, warnings): try set.put(mesh_component(), (void*)mesh)
-    if let cloud = try import_points(stage, gathered, warnings): try set.put(points_component(), (void*)cloud)
+    # A set holds one point cloud: Gaussian splats, when there are any, else Points.
+    var splats = try import_splats(stage, gathered, warnings)
+    defer splats.close()
+    if let cloud = splats.cloud:
+        splats.cloud = none
+        try set.put(points_component(), (void*)cloud)
+        try put_splat_details(set, stage, &splats)
+        for gprim in gathered.gprims.view():
+            if gprim.kind == GprimKind.points: try warnings.add("Points prims were left out: the set's point cloud holds the Gaussian splats")
+    elif let cloud = try import_points(stage, gathered, warnings): try set.put(points_component(), (void*)cloud)
     if let curves = try import_curves(stage, gathered, warnings): try set.put(curves_type(), (void*)curves)
     if not options.realize:
         if let instances = try import_instances(stage, gathered, options, warnings, depth): try set.put(instances_component(), (void*)instances)

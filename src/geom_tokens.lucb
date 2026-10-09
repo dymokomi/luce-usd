@@ -10,6 +10,8 @@ pub struct GeomTokens:
     pub var basis_curves: u32
     pub var nurbs_curves: u32
     pub var points_type: u32
+    pub var particle_field_splat: u32
+    pub var particle_field: u32
     pub var point_instancer: u32
     pub var geom_subset: u32
     pub var cube: u32
@@ -124,6 +126,8 @@ pub struct GeomTokens:
             basis_curves = try names.token("BasisCurves"),
             nurbs_curves = try names.token("NurbsCurves"),
             points_type = try names.token("Points"),
+            particle_field_splat = try names.token("ParticleField3DGaussianSplat"),
+            particle_field = try names.token("ParticleField"),
             point_instancer = try names.token("PointInstancer"),
             geom_subset = try names.token("GeomSubset"),
             cube = try names.token("Cube"),

@@ -47,8 +47,8 @@ func export_points(cloud: const PointCloud*, author: Author*, base: u32, fallbac
         try write_element_attributes(author, part.path, spec, store, Domain.point, part.elements.view(), "vertex", warnings)
 
 ## Positions of `points` (indices into `positions`) placed back at the
-## origin, with their extent.
-func write_positions(author: Author*, path: u32, spec: usize, positions: const Float3[], origin: Vector3, points: const i32[], precise: bool) -> !:
+## origin, as attribute `name`, with their extent.
+func write_positions(author: Author*, path: u32, spec: usize, positions: const Float3[], origin: Vector3, points: const i32[], precise: bool, name: str = "points") -> !:
     var low: f64[3] = [math.infinity, math.infinity, math.infinity]
     var high: f64[3] = [-math.infinity, -math.infinity, -math.infinity]
     var column = try Column[u8].allocate(points.length * (24 if precise else 12))
@@ -63,7 +63,7 @@ func write_positions(author: Author*, path: u32, spec: usize, positions: const F
             if precise: memory.write[f64]((void*)&out[(at * 3 + axis) * 8], xyz[axis])
             else: memory.write[f32]((void*)&out[(at * 3 + axis) * 4], (f32)xyz[axis])
     let taken = column.take()
-    _ = try author.attribute(path, spec, "points", "point3d[]" if precise else "point3f[]", false, Value.of_array(ValueKind.vec3d if precise else ValueKind.vec3f, points.length, taken))
+    _ = try author.attribute(path, spec, name, "point3d[]" if precise else "point3f[]", false, Value.of_array(ValueKind.vec3d if precise else ValueKind.vec3f, points.length, taken))
     let extent: f32[6] = [(f32)low[0], (f32)low[1], (f32)low[2], (f32)high[0], (f32)high[1], (f32)high[2]]
     _ = try author.attribute(path, spec, "extent", "float3[]", false, try array_of(ValueKind.vec3f, 2, u8[]((u8*)&extent[0], 24)))
 

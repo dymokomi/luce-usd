@@ -2,6 +2,7 @@
 ## under the paths its elements name, else under the root prim; CAD faces
 ## as NurbsPatch prims (export_cad.lucb); instances
 ## as a PointInstancer whose prototypes are its children under Prototypes;
+## a splat cloud as a ParticleField3DGaussianSplat (export_splats.lucb);
 ## the stage's up axis and units from the set's usd.* detail (Y and meters
 ## when absent), and the first root prim as the default prim.
 
@@ -30,6 +31,8 @@ func export_into(set: const GeometrySet*, author: Author*, base: u32, home: u32,
         let kind = component.kind
         if kind == mesh_component():
             try export_mesh((const Mesh*)component.data, author, base, try names.child(home, try names.token("mesh")), options, warnings)
+        elif kind == points_component() and is_splat_store(cloud_store((const PointCloud*)component.data)):
+            try export_splats((const PointCloud*)component.data, set_detail(set), author, try names.child(home, try names.token("splats")), warnings)
         elif kind == points_component():
             try export_points((const PointCloud*)component.data, author, base, try names.child(home, try names.token("points")), options, warnings)
         elif kind == curves_type():

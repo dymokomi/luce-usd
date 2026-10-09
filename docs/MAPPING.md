@@ -9,7 +9,9 @@ A GeometrySet holds one component per family, so loading merges prims, as
 Houdini's USD Import does:
 
 - every mesh becomes part of one mesh;
-- every Points prim becomes part of one point cloud;
+- every Points prim becomes part of one point cloud, unless the stage has
+  Gaussian splats (below), which take the cloud instead (Points are then
+  left out with a warning);
 - every curves prim becomes part of one curves component;
 - every PointInstancer, and every scene-graph instance (a prim marked
   `instanceable` in a composed stage), becomes rows of one instances
@@ -88,6 +90,27 @@ segments, extrapolation and loops).
   weights, as `w`.
 - **Periodic curves** become cyclic.
 - **Points.** `widths` becomes `width`, and `ids` becomes `id`.
+- **Gaussian splats** (UsdVol's `ParticleField3DGaussianSplat`, OpenUSD
+  26.03, or a `ParticleField` applying `ParticleFieldKernelGaussianEllipsoidAPI`)
+  become luce-geocore's splat cloud (`orient`, `scale`, `opacity`, linear
+  `Cd`, `sh`), placed in world space exactly (covariances and SH), all prims
+  joined.
+  - Scales are linear σ and opacities linear, as in the schema; the half
+    variants are read when the float ones are missing; short arrays are
+    ignored (unit scale, opacity 1, no rotation) and long ones cut.
+  - `radiance:sphericalHarmonicsCoefficients` are read as 3DGS's raw SH:
+    the first per splat is a PLY's `f_dc` (color 0.5 + C0 · f_dc), the rest
+    its `f_rest`. The schema names the original 3DGS technique but does not
+    spell this out, so it is an assumption. Colors are sRGB-encoded (`Cd` is
+    decoded to linear) unless the prim's custom `luce:gsplatColorSpace` says
+    `linear`. Bands past degree 3 are dropped with a warning.
+  - `sortingModeHint` and `projectionModeHint` become the detail texts
+    `gsplat_sorting_mode` and `gsplat_projection_mode`.
+  - Export writes a splat cloud as one `ParticleField3DGaussianSplat`
+    (`splats` under the root) with float arrays, the SH in the world frame
+    (a `restorient` baked in), the hints (zDepth and perspective by default)
+    and, for a linear cloud, `luce:gsplatColorSpace`. Other point attributes
+    are left out with a warning.
 - **PointInstancer.**
   - Each prototype is loaded once as its own set. Its paths are relative
     to the prototype's parent.

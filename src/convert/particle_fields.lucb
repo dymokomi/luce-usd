@@ -1,0 +1,275 @@
+## Gaussian splat prims (UsdVol's ParticleField3DGaussianSplat, OpenUSD 26.03;
+## pxr/usd/usdVol/schema.usda) as luce-geocore's splat cloud: `orient`,
+## `scale`, `opacity`, linear `Cd` and the `sh` bands (geocore
+## splats/conventions.lucb). A generic ParticleField counts when it applies
+## the Gaussian ellipsoid kernel.
+##
+## The schema's values are already what geocore keeps: scales are linear σ
+## (the unit Gaussian kernel's), opacities linear 0..1, orientations unit
+## quaternions. Each attribute has a half variant (`positionsh`, ...); the
+## float one is preferred. An array shorter than the positions is ignored
+## (unit scale, opacity 1, no rotation, a DC giving color 0.5) and a longer
+## one is cut to them.
+##
+## Radiance: `radiance:sphericalHarmonicsCoefficients` holds (d + 1)² RGB
+## coefficients per particle, DC first, in 3DGS's order. The schema follows
+## the original 3DGS technique, so they are read as 3DGS's raw SH: the DC is a
+## PLY's f_dc (color 0.5 + C0 · f_dc) and the rest its f_rest. This is an
+## assumption the schema does not spell out. The colors are sRGB-encoded, as
+## a trained capture's are, unless the prim says `luce:gsplatColorSpace =
+## "linear"` (what this package writes for linear clouds); `Cd` is decoded to
+## linear and the bands keep their encoding, as Bake GSplats does. Degrees
+## above 3 keep bands 1 to 3, with a warning.
+##
+## Each prim's splats are placed in world space exactly (covariances and SH
+## through geocore's placed_point_store) and all prims join into the set's
+## one point cloud. The first prim's `sortingModeHint` and
+## `projectionModeHint` become the detail texts `gsplat_sorting_mode` and
+## `gsplat_projection_mode`.
+
+## The splat attributes' names on a stage.
+struct FieldNames:
+    var positions: u32
+    var positionsh: u32
+    var orientations: u32
+    var orientationsh: u32
+    var scales: u32
+    var scalesh: u32
+    var opacities: u32
+    var opacitiesh: u32
+    var degree: u32
+    var coefficients: u32
+    var coefficientsh: u32
+    var sorting: u32
+    var projection: u32
+    var color_space: u32
+    var kernel: u32
+
+    static func of(names: Names*) -> FieldNames!:
+        return FieldNames(
+            positions = try names.token("positions"), positionsh = try names.token("positionsh"),
+            orientations = try names.token("orientations"), orientationsh = try names.token("orientationsh"),
+            scales = try names.token("scales"), scalesh = try names.token("scalesh"),
+            opacities = try names.token("opacities"), opacitiesh = try names.token("opacitiesh"),
+            degree = try names.token("radiance:sphericalHarmonicsDegree"),
+            coefficients = try names.token("radiance:sphericalHarmonicsCoefficients"),
+            coefficientsh = try names.token("radiance:sphericalHarmonicsCoefficientsh"),
+            sorting = try names.token("sortingModeHint"), projection = try names.token("projectionModeHint"),
+            color_space = try names.token("luce:gsplatColorSpace"),
+            kernel = try names.token("ParticleFieldKernelGaussianEllipsoidAPI"))
+
+## The splats of a stage's particle fields, and the hints they carry.
+struct SplatImport:
+    var cloud: PointCloud*?
+    var sorting: u32
+    var projection: u32
+    var space: ColorSpace
+
+    func close():
+        if let made = self.cloud: close_point_cloud(made)
+        self.cloud = none
+
+func close_point_cloud(cloud: PointCloud*):
+    let close = points_component().close
+    close((void*)cloud)
+
+## Every particle field prim of `gathered` as one splat cloud (none without
+## any).
+func import_splats(stage: Stage*, gathered: const Gathered*, warnings: Warnings*) -> SplatImport!:
+    var result = SplatImport(cloud = none, sorting = 0, projection = 0, space = ColorSpace.srgb)
+    errdefer result.close()
+    let fields = try FieldNames.of(stage.names)
+    for index in 0..<gathered.gprims.count:
+        let gprim = gathered.gprims.items[index]
+        if gprim.kind != GprimKind.particle_field: continue
+        if not gaussian_field(stage, gprim.path, &fields):
+            try warnings.add_path("Skipped a ParticleField without the Gaussian ellipsoid kernel: ", stage.names, gprim.path)
+            continue
+        let made = (try field_cloud(stage, &gprim, &fields, &result, warnings)) else continue
+        if result.cloud == none:
+            result.cloud = made
+            continue
+        let held = result.cloud else continue
+        let join = points_component().joined
+        let joined = join((void*)held, (void*)made) catch failure:
+            close_point_cloud(made)
+            error(failure.code, failure.message)
+        close_point_cloud(made)
+        close_point_cloud(held)
+        result.cloud = (PointCloud*)joined
+    return result
+
+## Whether the prim at `path` is a 3DGS splat field: the concrete schema, or
+## a ParticleField applying the Gaussian ellipsoid kernel.
+func gaussian_field(stage: const Stage*, path: u32, fields: const FieldNames*) -> bool:
+    let spec = stage.spec(path) else return false
+    if stage.type_of(spec) == stage.tokens.particle_field_splat: return true
+    let applied = spec.get(stage.keys.api_schemas) else return false
+    let list = applied.list_op() else return false
+    for part in [ListPart.explicit, ListPart.prepended, ListPart.added, ListPart.appended]:
+        for item in list.items(part):
+            if (u32)item.a == fields.kernel: return true
+    return false
+
+## The array value of attribute `name` (or, unauthored, `half_name`).
+func preferred(stage: Stage*, path: u32, name: u32, half_name: u32) -> Value!:
+    var found = try stage.value(path, name)
+    if found.array and found.count > 0: return found
+    found.release()
+    return try stage.value(path, half_name)
+
+## Whether `value` holds at least `count` elements of `width` components.
+func covers(value: const Value*, count: usize, width: usize) -> bool:
+    return value.array and value.count >= count and components(value.kind) == width
+
+## One prim's splats, placed in world space; none when it has no positions.
+func field_cloud(stage: Stage*, gprim: const Gprim*, fields: const FieldNames*, result: SplatImport*, warnings: Warnings*) -> PointCloud*?!:
+    let path = gprim.path
+    var positions = try preferred(stage, path, fields.positions, fields.positionsh)
+    defer positions.release()
+    if not positions.array or components(positions.kind) != 3 or positions.count == 0: return none
+    let count = positions.count
+    var work: SplatRead
+    work.count = count
+    work.orientations = try preferred(stage, path, fields.orientations, fields.orientationsh)
+    defer work.orientations.release()
+    work.scales = try preferred(stage, path, fields.scales, fields.scalesh)
+    defer work.scales.release()
+    work.opacities = try preferred(stage, path, fields.opacities, fields.opacitiesh)
+    defer work.opacities.release()
+    work.coefficients = try preferred(stage, path, fields.coefficients, fields.coefficientsh)
+    defer work.coefficients.release()
+    work.has_orientations = covers(&work.orientations, count, 4)
+    work.has_scales = covers(&work.scales, count, 3)
+    work.has_opacities = covers(&work.opacities, count, 1)
+    let degree_value = try stage.number_value(path, fields.degree, 3.0)
+    let degree = (usize)math.clamp(math.round(degree_value), 0.0, 16.0)
+    work.per_particle = (degree + 1) * (degree + 1)
+    work.has_coefficients = covers(&work.coefficients, count * work.per_particle, 3)
+    if work.has_coefficients and degree > 3: try warnings.add("Spherical harmonics past degree 3 were dropped (bands 1 to 3 kept)")
+    let kept = degree if degree < 3 else 3
+    work.items = sh_count(kept) if work.has_coefficients else 0
+    # The first prim's hints and color space stand for the cloud.
+    if result.cloud == none:
+        result.sorting = try stage.token_value(path, fields.sorting, 0)
+        result.projection = try stage.token_value(path, fields.projection, 0)
+        let space = try stage.token_value(path, fields.color_space, 0)
+        if space != 0 and stage.names.text_of(space) == "linear": result.space = ColorSpace.linear
+    work.space = result.space
+    var store = AttributeStore()
+    defer store.close()
+    try store.put(try float32_points(orient_name, 4, count))
+    try store.put(try float64_points(scale_name, 3, count))
+    try store.put(try float64_points(opacity_name, 1, count))
+    try store.put(try float64_points(color_name, 3, count))
+    work.orient = float32_values(store.entry(0))
+    work.scale = float64_values(store.entry(1))
+    work.opacity = float64_values(store.entry(2))
+    work.color = float64_values(store.entry(3))
+    if work.items > 0:
+        try store.put(try uniform_sh(none, count, work.items))
+        work.sh = f32[]((f32*)store.entry(4).data.span().data, count * work.items * 3)
+    try parallel.for_each_range(count, grain, (void*)&work, read_splats)
+    # Placed in world space: positions over an origin, the rest exactly.
+    var world = Matrix4(Vector3(gprim.world.m[0], gprim.world.m[1], gprim.world.m[2]), Vector3(gprim.world.m[4], gprim.world.m[5], gprim.world.m[6]), Vector3(gprim.world.m[8], gprim.world.m[9], gprim.world.m[10]), Vector3(gprim.world.m[12], gprim.world.m[13], gprim.world.m[14]))
+    var placed = try placed_point_store(&store, count, world)
+    var located = place_splat_positions(&positions, &gprim.world) catch failure:
+        placed.close()
+        error(failure.code, failure.message)
+    # cloud_assembled takes the positions and the store, even on failure.
+    return try cloud_assembled(located.0, located.1, placed)
+
+## The positions of `value` placed by `world` over an origin (geocore's rule).
+func place_splat_positions(value: const Value*, world: const Matrix4d*) -> (Column[Float3], Vector3)!:
+    let count = value.count
+    let bytes = value.bytes()
+    let scalar = scalar_of(value.kind)
+    var low = Vector3(math.infinity, math.infinity, math.infinity)
+    var high = Vector3(-math.infinity, -math.infinity, -math.infinity)
+    for at in 0..<count:
+        let p = world.point(component_at(bytes, scalar, at * 3), component_at(bytes, scalar, at * 3 + 1), component_at(bytes, scalar, at * 3 + 2))
+        low = Vector3(math.min(low.x, p.0), math.min(low.y, p.1), math.min(low.z, p.2))
+        high = Vector3(math.max(high.x, p.0), math.max(high.y, p.1), math.max(high.z, p.2))
+    let origin = origin_for(low, high)
+    var column = try Column[Float3].allocate(count)
+    var work = PositionWork(bytes = bytes, scalar = scalar, world = world, origin = origin, out = column.span())
+    parallel.for_each_range(count, grain, (void*)&work, place_range) catch failure:
+        column.release()
+        error(failure.code, failure.message)
+    return (column, origin)
+
+struct PositionWork:
+    var bytes: const u8[]
+    var scalar: ValueKind
+    var world: const Matrix4d*
+    var origin: Vector3
+    var out: Float3[]
+
+func place_range(context: void*, first: usize, end: usize, worker: usize):
+    _ = worker
+    let work = (PositionWork*)context
+    for at in first..<end:
+        let p = work.world.point(component_at(work.bytes, work.scalar, at * 3), component_at(work.bytes, work.scalar, at * 3 + 1), component_at(work.bytes, work.scalar, at * 3 + 2))
+        work.out[at] = Float3((f32)(p.0 - work.origin.x), (f32)(p.1 - work.origin.y), (f32)(p.2 - work.origin.z))
+
+## A prim's splat arrays and the columns they fill.
+struct SplatRead:
+    var count: usize
+    var orientations: Value
+    var scales: Value
+    var opacities: Value
+    var coefficients: Value
+    var has_orientations: bool
+    var has_scales: bool
+    var has_opacities: bool
+    var has_coefficients: bool
+    ## Coefficients per particle in the file, and SH items kept.
+    var per_particle: usize
+    var items: usize
+    var space: ColorSpace
+    var orient: f32[]
+    var scale: f64[]
+    var opacity: f64[]
+    var color: f64[]
+    var sh: f32[]
+
+func read_splats(context: void*, first: usize, end: usize, worker: usize):
+    _ = worker
+    let work = (SplatRead*)context
+    let orientations = work.orientations.bytes()
+    let quaternion = scalar_of(work.orientations.kind)
+    let scales = work.scales.bytes()
+    let sigma = scalar_of(work.scales.kind)
+    let opacities = work.opacities.bytes()
+    let alpha = scalar_of(work.opacities.kind)
+    let coefficients = work.coefficients.bytes()
+    let radiance = scalar_of(work.coefficients.kind)
+    for at in first..<end:
+        # Gf packs quaternions imaginary first: x, y, z, w, as geocore keeps them.
+        for k in 0..<(usize)4:
+            work.orient[at * 4 + k] = (f32)component_at(orientations, quaternion, at * 4 + k) if work.has_orientations else (1.0 if k == 3 else 0.0)
+        for k in 0..<(usize)3: work.scale[at * 3 + k] = component_at(scales, sigma, at * 3 + k) if work.has_scales else 1.0
+        work.opacity[at] = component_at(opacities, alpha, at) if work.has_opacities else 1.0
+        let base = at * work.per_particle * 3
+        var dc = Vector3()
+        if work.has_coefficients: dc = Vector3(component_at(coefficients, radiance, base), component_at(coefficients, radiance, base + 1), component_at(coefficients, radiance, base + 2))
+        let linear = color_of_dc(dc, work.space)
+        work.color[at * 3] = linear.x
+        work.color[at * 3 + 1] = linear.y
+        work.color[at * 3 + 2] = linear.z
+        for value in 0..<work.items * 3: work.sh[at * work.items * 3 + value] = (f32)component_at(coefficients, radiance, base + 3 + value)
+
+## The splat cloud's detail: its color space and the schema's hints.
+func put_splat_details(set: GeometrySet*, stage: const Stage*, splats: const SplatImport*) -> !:
+    try put_detail_token(set, color_space_name, color_space_text(splats.space))
+    try put_detail_token(set, "gsplat_sorting_mode", stage.names.text_of(splats.sorting) if splats.sorting != 0 else "zDepth")
+    try put_detail_token(set, "gsplat_projection_mode", stage.names.text_of(splats.projection) if splats.projection != 0 else "perspective")
+
+## Detail text attribute `name` = `value`.
+func put_detail_token(set: GeometrySet*, name: str, value: str) -> !:
+    var table = TableBuilder()
+    defer table.close()
+    let at: i32[1] = [try table.intern(value)]
+    var column = try table.finish()
+    defer column.release()
+    try set_put_detail(set, try Attribute.text(name, Domain.detail, 1, column, at[..<1]))
