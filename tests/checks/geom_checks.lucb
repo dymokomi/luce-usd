@@ -5,7 +5,7 @@ from luce_std import math
 import memory
 from luce_geocore.geocore import Mesh, GeometrySet
 from luce_geocore.core.growing import Growing
-from luce_geocore.kernel import dispose_set, set_mesh, group_bits, curves_type, points_component, Curves, PointCloud, AttributeStore, cloud_store, curves_knot_offsets
+from luce_geocore.kernel import dispose_set, set_mesh, group_bits, curves_type, points_component, Curves, PointCloud, AttributeStore, Domain, cloud_store, curves_knot_offsets
 from luce_usd.kernel import Composer, anonymous_session, flatten_stage, absolute_path, ImportOptions, ExportOptions, Warnings, import_layer, export_set, write_usda, Names, LayerData, read_usda, read_file, Stage, earliest, gather, Gathered, GprimKind, Matrix4d, local_transform, absolute_root, purpose_render
 import strings
 
@@ -239,7 +239,7 @@ pub func curves_and_points() -> !:
     assert(near(store_number(points_store, "width", 0, 1, 0), 0.2) and near(store_number(points_store, "id", 0, 1, 0), 11.0))
 
 func store_number(store: const AttributeStore*, name: str, domain: i64, element: usize, component: usize) -> f64:
-    let index = store.find(name, domain)
+    let index = store.find(name, Domain((u8)domain))
     if index < 0:
         print(f"no attribute {name}")
         trap("missing attribute")

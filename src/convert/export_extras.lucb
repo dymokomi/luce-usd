@@ -66,7 +66,7 @@ func write_subsets(work: MeshExport*, part: const MeshPart*, spec: usize, number
         # Bindings are written from the material attribute (below); a group
         # keeps its own materialBind family only when there is none.
         var family = try subset_family(mesh, entry.name())
-        if family == "materialBind" and mesh.find_attribute("material", (i64)(u8)Domain.face) >= 0: family = ""
+        if family == "materialBind" and mesh.attribute_on("material", Domain.face) >= 0: family = ""
         _ = try write_subset(work, part, (str)name.view(), element, members.view(), family)
 
 ## A GeomSubset child of the part; its path.
@@ -86,7 +86,7 @@ func subset_family(mesh: const Mesh*, name: str) -> str!:
     try label.assign("usd.subset_family.".bytes)
     for byte in name.bytes: try label.push(byte)
     if label.count > 64: return ""
-    let found = mesh.find_attribute((str)label.view(), (i64)(u8)Domain.detail)
+    let found = mesh.attribute_on((str)label.view(), Domain.detail)
     if found < 0: return ""
     let entry = try mesh.attribute_entry(found)
     if entry.kind != DataType.text: return ""
@@ -107,7 +107,7 @@ func write_subdivision(work: MeshExport*, part: const MeshPart*, spec: usize, nu
     defer indices.close()
     var values = Growing[f32]()
     defer values.close()
-    let crease = mesh.find_attribute("crease", (i64)(u8)Domain.edge)
+    let crease = mesh.attribute_on("crease", Domain.edge)
     if crease >= 0:
         let pairs = try mesh.edge_span()
         let entry = try mesh.attribute_entry(crease)
@@ -128,7 +128,7 @@ func write_subdivision(work: MeshExport*, part: const MeshPart*, spec: usize, nu
         _ = try author.attribute(part.path, spec, "creaseSharpnesses", "float[]", false, try array_of(ValueKind.float, values.count, u8[]((u8*)values.items.data, values.count * 4)))
     indices.clear()
     values.clear()
-    let corner = mesh.find_attribute("corner_sharpness", (i64)(u8)Domain.point)
+    let corner = mesh.attribute_on("corner_sharpness", Domain.point)
     if corner >= 0:
         let entry = try mesh.attribute_entry(corner)
         for at in 0..<part.point_count():
@@ -140,7 +140,7 @@ func write_subdivision(work: MeshExport*, part: const MeshPart*, spec: usize, nu
         _ = try author.attribute(part.path, spec, "cornerIndices", "int[]", false, try array_of(ValueKind.int, indices.count, u8[]((u8*)indices.items.data, indices.count * 4)))
         _ = try author.attribute(part.path, spec, "cornerSharpnesses", "float[]", false, try array_of(ValueKind.float, values.count, u8[]((u8*)values.items.data, values.count * 4)))
     indices.clear()
-    let hole = mesh.find_attribute("hole", (i64)(u8)Domain.face)
+    let hole = mesh.attribute_on("hole", Domain.face)
     if hole >= 0:
         let entry = try mesh.attribute_entry(hole)
         let bits = Bits.of_bytes(entry.data.view(), entry.elements)
@@ -150,14 +150,14 @@ func write_subdivision(work: MeshExport*, part: const MeshPart*, spec: usize, nu
         _ = try author.attribute(part.path, spec, "holeIndices", "int[]", false, try array_of(ValueKind.int, indices.count, u8[]((u8*)indices.items.data, indices.count * 4)))
 
 func detail_number(mesh: const Mesh*, name: str, fallback: f64) -> f64:
-    let found = mesh.find_attribute(name, (i64)(u8)Domain.detail)
+    let found = mesh.attribute_on(name, Domain.detail)
     if found < 0: return fallback
     return mesh.attribute_value(found, 0, 0) catch failure: recover fallback
 
 ## The part's `material` text as bindings.
 func write_binding(work: MeshExport*, part: const MeshPart*, spec: usize) -> !:
     let mesh = work.mesh
-    let found = mesh.find_attribute("material", (i64)(u8)Domain.face)
+    let found = mesh.attribute_on("material", Domain.face)
     if found < 0: return
     let entry = try mesh.attribute_entry(found)
     var materials = Growing[u32]()

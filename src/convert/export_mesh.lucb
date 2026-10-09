@@ -94,7 +94,7 @@ func close_parts(parts: Growing[MeshPart]*):
 ## all in one part.
 func split_faces(mesh: const Mesh*, author: Author*, base: u32, fallback_path: u32, split: bool, parts: Growing[MeshPart]*) -> !:
     let faces = (usize)mesh.face_count()
-    let found = mesh.find_attribute("path", (i64)(u8)Domain.face) if split else -1
+    let found = mesh.attribute_on("path", Domain.face) if split else -1
     if found < 0:
         try parts.push(MeshPart(path = fallback_path, faces = Growing[i32](), points = Growing[i32](), corners = Growing[i32](), whole = false, all_points = 0, all_corners = 0))
         for face in 0..<faces: try parts.items[0].faces.push((i32)face)

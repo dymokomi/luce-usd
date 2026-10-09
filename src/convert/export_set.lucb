@@ -97,7 +97,7 @@ func export_instances(instances: const Instances*, author: Author*, path: u32, o
     _ = try author.attribute(path, spec, "scales", "float3[]", false, try array_of(ValueKind.vec3f, count, u8[]((u8*)scales.items.data, count * 12)))
     if invisible_rows.count > 0:
         _ = try author.attribute(path, spec, "invisibleIds", "int64[]", false, try array_of(ValueKind.int64, invisible_rows.count, u8[]((u8*)invisible_rows.items.data, invisible_rows.count * 8)))
-    let found = instances.store().find("path", (i64)(u8)Domain.point)
+    let found = instances.store().find("path", Domain.point)
     if found >= 0 and instances.store().entry((usize)found).kind == DataType.text:
         let value = try whole_value(names, instances.store().entry((usize)found), ValueKind.string)
         let attribute = try author.attribute(path, spec, "primvars:path", "string[]", false, value)
@@ -128,10 +128,10 @@ func write_stage_metadata(set: const GeometrySet*, author: Author*) -> !:
     let names = author.names
     let detail = set_detail(set)
     var up = "Y"
-    let axis = detail.find("usd.upAxis", (i64)(u8)Domain.detail)
+    let axis = detail.find("usd.upAxis", Domain.detail)
     if axis >= 0 and detail.entry((usize)axis).kind == DataType.text and detail.entry((usize)axis).text_at(0) == "Z": up = "Z"
     var meters: f64 = 1.0
-    let units_at = detail.find("usd.metersPerUnit", (i64)(u8)Domain.detail)
+    let units_at = detail.find("usd.metersPerUnit", Domain.detail)
     if units_at >= 0 and detail.entry((usize)units_at).number(0, 0) > 0.0: meters = detail.entry((usize)units_at).number(0, 0)
     let layer = author.layer
     try layer.set(0, try names.token("upAxis"), Value.scalar(ValueKind.token, (u64)(try names.token(up))))

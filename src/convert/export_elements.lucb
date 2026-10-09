@@ -22,7 +22,7 @@ func close_element_parts(parts: Growing[ElementPart]*):
 ## `count` elements grouped by the text attribute `path` on `domain` of
 ## `store` (in order of first appearance), or all at `fallback`.
 func split_elements(store: const AttributeStore*, domain: Domain, count: usize, names: Names*, base: u32, fallback: u32, split: bool, parts: Growing[ElementPart]*) -> !:
-    let found = store.find("path", (i64)(u8)domain) if split else -1
+    let found = store.find("path", domain) if split else -1
     for element in 0..<count:
         var path = fallback
         if found >= 0:
