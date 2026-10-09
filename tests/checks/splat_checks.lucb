@@ -143,6 +143,8 @@ func seeded(count: usize, rest: bool, space: ColorSpace) -> GeometrySet*!:
     try set.put(points_component(), (void*)(try cloud_assembled(positions.take(), Vector3(), attributes)))
     try put_text(set, "gsplat_color_space", "linear" if space == ColorSpace.linear else "srgb")
     try put_text(set, "gsplat_sorting_mode", "cameraDistance")
+    # Clouds with a restorient also stand for ones turned up from a Y-down file.
+    if rest: try put_text(set, "gsplat_up_axis", "y_down")
     return set
 
 func put_text(set: GeometrySet*, name: str, value: str) -> !:
@@ -208,7 +210,8 @@ pub func round_trips() -> !:
                     expect(near(sh_value(&raw, "f_rest", at, item, channel), sh_value(cloud_store(b), "sh", at, item, channel), 1.0e-5), "SH bands in the world frame")
         expect(detail_text(back, "gsplat_color_space") == ("linear" if space == ColorSpace.linear else "srgb"), "the color space")
         expect(detail_text(back, "gsplat_sorting_mode") == "cameraDistance" and detail_text(back, "gsplat_projection_mode") == "perspective", "the hints and their defaults")
-    print("ok    splat clouds through usda and usdc: values, restorient, color space, hints")
+        expect(detail_text(back, "gsplat_up_axis") == ("y_down" if rest else ""), "the up axis a file had")
+    print("ok    splat clouds through usda and usdc: values, restorient, color space, hints, up axis")
 
 ## A million degree-3 splats exported to usdc and imported, timed.
 pub func timing() -> !:

@@ -12,10 +12,15 @@
 ## one is cut to them.
 ##
 ## Radiance: `radiance:sphericalHarmonicsCoefficients` holds (d + 1)² RGB
-## coefficients per particle, DC first, in 3DGS's order. The schema follows
-## the original 3DGS technique, so they are read as 3DGS's raw SH: the DC is a
-## PLY's f_dc (color 0.5 + C0 · f_dc) and the rest its f_rest. This is an
-## assumption the schema does not spell out. The colors are sRGB-encoded, as
+## coefficients per particle, DC first, in 3DGS's order and signs: 3DGS's raw
+## SH, the DC a PLY's f_dc (color 0.5 + C0 · f_dc) and the rest its f_rest,
+## one RGB item per coefficient. The schema's text leaves this open; OpenUSD's
+## own reference code settles it (extras/imaging/examples/hdParticleField:
+## py3dgsPlyToUsd.py writes f_dc as coefficient 0 and f_rest transposed to
+## coefficient-major, gsRenderer.cpp shows C0 · c₀ + 0.5 and fills (0, 0, 0)
+## for "DC (0.5, 0.5, 0.5)"; third_party/renderman's
+## SphericalHarmonicsToColor.osl agrees), as do Autodesk's arnold-usd and
+## LichtFeld Studio. Missing coefficients read as color 0.5. The colors are sRGB-encoded, as
 ## a trained capture's are, unless the prim says `luce:gsplatColorSpace =
 ## "linear"` (what this package writes for linear clouds); `Cd` is decoded to
 ## linear and the bands keep their encoding, as Bake GSplats does. Degrees
@@ -25,7 +30,9 @@
 ## through geocore's placed_point_store) and all prims join into the set's
 ## one point cloud. The first prim's `sortingModeHint` and
 ## `projectionModeHint` become the detail texts `gsplat_sorting_mode` and
-## `gsplat_projection_mode`.
+## `gsplat_projection_mode`, and its custom `luce:gsplatUpAxis` (written for
+## a cloud stood up from a Y-down file) the detail `gsplat_up_axis`, so a
+## later PLY export turns it back down.
 
 ## The splat attributes' names on a stage.
 struct FieldNames:
@@ -43,6 +50,7 @@ struct FieldNames:
     var sorting: u32
     var projection: u32
     var color_space: u32
+    var up_axis: u32
     var kernel: u32
 
     static func of(names: Names*) -> FieldNames!:
@@ -56,6 +64,7 @@ struct FieldNames:
             coefficientsh = try names.token("radiance:sphericalHarmonicsCoefficientsh"),
             sorting = try names.token("sortingModeHint"), projection = try names.token("projectionModeHint"),
             color_space = try names.token("luce:gsplatColorSpace"),
+            up_axis = try names.token("luce:gsplatUpAxis"),
             kernel = try names.token("ParticleFieldKernelGaussianEllipsoidAPI"))
 
 ## The splats of a stage's particle fields, and the hints they carry.
@@ -64,6 +73,8 @@ struct SplatImport:
     var sorting: u32
     var projection: u32
     var space: ColorSpace
+    ## The `luce:gsplatUpAxis` token (0 when unauthored).
+    var up_axis: u32
 
     func close():
         if let made = self.cloud: close_point_cloud(made)
@@ -76,7 +87,7 @@ func close_point_cloud(cloud: PointCloud*):
 ## Every particle field prim of `gathered` as one splat cloud (none without
 ## any).
 func import_splats(stage: Stage*, gathered: const Gathered*, warnings: Warnings*) -> SplatImport!:
-    var result = SplatImport(cloud = none, sorting = 0, projection = 0, space = ColorSpace.srgb)
+    var result = SplatImport(cloud = none, sorting = 0, projection = 0, space = ColorSpace.srgb, up_axis = 0)
     errdefer result.close()
     let fields = try FieldNames.of(stage.names)
     for index in 0..<gathered.gprims.count:
@@ -153,6 +164,7 @@ func field_cloud(stage: Stage*, gprim: const Gprim*, fields: const FieldNames*, 
     if result.cloud == none:
         result.sorting = try stage.token_value(path, fields.sorting, 0)
         result.projection = try stage.token_value(path, fields.projection, 0)
+        result.up_axis = try stage.token_value(path, fields.up_axis, 0)
         let space = try stage.token_value(path, fields.color_space, 0)
         if space != 0 and stage.names.text_of(space) == "linear": result.space = ColorSpace.linear
     work.space = result.space
@@ -259,8 +271,10 @@ func read_splats(context: void*, first: usize, end: usize, worker: usize):
         work.color[at * 3 + 2] = linear.z
         for value in 0..<work.items * 3: work.sh[at * work.items * 3 + value] = (f32)component_at(coefficients, radiance, base + 3 + value)
 
-## The splat cloud's detail: its color space and the schema's hints.
+## The splat cloud's detail: its color space, the schema's hints and the
+## up axis its source file had.
 func put_splat_details(set: GeometrySet*, stage: const Stage*, splats: const SplatImport*) -> !:
+    if splats.up_axis != 0: try put_detail_token(set, up_axis_name, stage.names.text_of(splats.up_axis))
     try put_detail_token(set, color_space_name, color_space_text(splats.space))
     try put_detail_token(set, "gsplat_sorting_mode", stage.names.text_of(splats.sorting) if splats.sorting != 0 else "zDepth")
     try put_detail_token(set, "gsplat_projection_mode", stage.names.text_of(splats.projection) if splats.projection != 0 else "perspective")

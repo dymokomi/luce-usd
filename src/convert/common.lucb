@@ -25,7 +25,7 @@ from luce_cad.cad_geometry import cad_component, set_models
 from luce_cad.exact import FaceSupport
 from luce_geocore.core.shared import Column
 from luce_geocore.geocore import Matrix4
-from luce_geocore.splats import ColorSpace, Floats, Quat, orient_name, scale_name, opacity_name, color_name, sh_name, restorient_name, color_space_name, color_space_text, detail_color_space, is_splat_store, sh_items, sh_count, sh_degree, float32_points, float64_points, float32_values, float64_values, uniform_sh, color_of_dc, placed_point_store, unbaked_store, point_floats
+from luce_geocore.splats import ColorSpace, Floats, Quat, orient_name, scale_name, opacity_name, color_name, sh_name, restorient_name, color_space_name, color_space_text, detail_color_space, is_splat_store, sh_items, sh_count, sh_degree, float32_points, float64_points, float32_values, float64_values, uniform_sh, color_of_dc, placed_point_store, unbaked_store, point_floats, up_axis_name
 
 ## What an import does.
 pub struct ImportOptions:

@@ -7,7 +7,10 @@
 ## the world frame (a `restorient` is baked in). The hints come from the
 ## detail texts `gsplat_sorting_mode` and `gsplat_projection_mode` (zDepth
 ## and perspective by default); a linear cloud says so in the custom
-## `luce:gsplatColorSpace`. Other point attributes are left out.
+## `luce:gsplatColorSpace`, and a cloud stood up from a Y-down file (detail
+## `gsplat_up_axis`) in the custom `luce:gsplatUpAxis`. The coefficients
+## carry `interpolation = "vertex"` and `elementSize = (d + 1)²`, as OpenUSD's
+## converters write them. Other point attributes are left out.
 
 ## `cloud`'s splats as a ParticleField3DGaussianSplat at `path`; `detail` is
 ## the set's detail.
@@ -52,12 +55,18 @@ func export_splats(cloud: const PointCloud*, detail: const AttributeStore*, auth
     _ = try author.attribute(path, spec, "scales", "float3[]", false, Value.of_array(ValueKind.vec3f, count, scales.take()))
     _ = try author.attribute(path, spec, "opacities", "float[]", false, Value.of_array(ValueKind.float, count, opacities.take()))
     _ = try author.attribute(path, spec, "radiance:sphericalHarmonicsDegree", "int", true, Value.scalar(ValueKind.int, (u64)degree))
-    _ = try author.attribute(path, spec, "radiance:sphericalHarmonicsCoefficients", "float3[]", false, Value.of_array(ValueKind.vec3f, count * per_particle, coefficients.take()))
+    let radiance = try author.attribute(path, spec, "radiance:sphericalHarmonicsCoefficients", "float3[]", false, Value.of_array(ValueKind.vec3f, count * per_particle, coefficients.take()))
+    try author.token_field(radiance, tokens.interpolation, "vertex")
+    try author.layer.set(radiance, tokens.element_size, Value.scalar(ValueKind.int, (u64)per_particle))
     _ = try author.attribute(path, spec, "sortingModeHint", "token", true, Value.scalar(ValueKind.token, (u64)(try names.token(detail_text(detail, "gsplat_sorting_mode", "zDepth")))))
     _ = try author.attribute(path, spec, "projectionModeHint", "token", true, Value.scalar(ValueKind.token, (u64)(try names.token(detail_text(detail, "gsplat_projection_mode", "perspective")))))
     if space == ColorSpace.linear:
         let marked = try author.attribute(path, spec, "luce:gsplatColorSpace", "token", true, Value.scalar(ValueKind.token, (u64)(try names.token("linear"))))
         try author.layer.set(marked, author.layer.keys.custom, Value.scalar(ValueKind.boolean, 1))
+    let up = detail_text(detail, up_axis_name, "")
+    if up.length > 0:
+        let axis = try author.attribute(path, spec, "luce:gsplatUpAxis", "token", true, Value.scalar(ValueKind.token, (u64)(try names.token(up))))
+        try author.layer.set(axis, author.layer.keys.custom, Value.scalar(ValueKind.boolean, 1))
     for index in 0..<store.count():
         let entry = store.entry(index)
         if entry.domain != Domain.point: continue
