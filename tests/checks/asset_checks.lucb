@@ -1,0 +1,61 @@
+## Asset identifiers as the resolver makes them: normalized, anchored at their layer and
+## made absolute, with luce-std paths' roots: `/` everywhere, and on Windows drive letters,
+## UNC shares and backslashes, which identifiers spell as `/`.
+import platform
+from luce_std import paths
+from luce_usd.kernel import absolute_path, anchored_path, normalized_path, path_directory
+from luce_geocore.core.growing import Growing
+
+func expect(made: const Growing[u8]*, wanted: str, what: str):
+    if (str)made.view() != wanted: print(f"asset path {what}: got {(str)made.view()}, wanted {wanted}")
+    assert((str)made.view() == wanted)
+
+pub func exercise() -> !:
+    var out = Growing[u8]()
+    defer out.close()
+    try normalized_path("a/./b/../c.usda", &out)
+    expect(&out, "a/c.usda", "relative")
+    try normalized_path("../../a//b", &out)
+    expect(&out, "../../a/b", "leading parents")
+    try normalized_path("/a/../../b.usda", &out)
+    expect(&out, "/b.usda", "the root is not crossed")
+    try anchored_path("x.usda", "/p/q/r.usda", &out)
+    expect(&out, "/p/q/x.usda", "anchored")
+    try anchored_path("../t/x.usda", "/p/q/r.usda", &out)
+    expect(&out, "/p/t/x.usda", "anchored above")
+    try anchored_path("/abs/x.usda", "/p/q/r.usda", &out)
+    expect(&out, "/abs/x.usda", "an absolute asset")
+    try anchored_path("c/e.usda", "/a/b.usdz[c/d.usda]", &out)
+    expect(&out, "/a/b.usdz[c/c/e.usda]", "inside a package")
+    assert(path_directory("/b.usda") == "/" and path_directory("b.usda") == "")
+    # A relative path joins the working directory: absolute, and ends as written.
+    try absolute_path("sub/../rel.usda", &out)
+    assert(paths.is_absolute((str)out.view()))
+    assert(strings_end((str)out.view(), "/rel.usda"))
+    if platform.windows:
+        try windows(&out)
+    print("ok    asset paths: normalized, anchored, absolute")
+
+## Drive letters, UNC shares and backslashes.
+func windows(out: Growing[u8]*) -> !:
+    try normalized_path("C:\\a\\b\\..\\c.usda", out)
+    expect(out, "C:/a/c.usda", "a drive path")
+    try normalized_path("C:\\..\\a.usda", out)
+    expect(out, "C:/a.usda", "a drive's root is not crossed")
+    try normalized_path("\\\\server\\share\\a\\..\\..\\b.usda", out)
+    expect(out, "//server/share/b.usda", "a UNC share is not crossed")
+    try absolute_path("D:\\scenes\\.\\shot.usda", out)
+    expect(out, "D:/scenes/shot.usda", "an absolute drive path stays")
+    try anchored_path("tex\\wood.png", "C:/a/b.usda", out)
+    expect(out, "C:/a/tex/wood.png", "anchored on a drive")
+    try anchored_path("E:\\lib\\x.usda", "C:/a/b.usda", out)
+    expect(out, "E:/lib/x.usda", "another drive")
+    try anchored_path("x.usda", "//server/share/b.usda", out)
+    expect(out, "//server/share/x.usda", "anchored on a share")
+    assert(path_directory("C:/b.usda") == "C:/")
+    # Rooted on the working directory's drive.
+    try absolute_path("\\top.usda", out)
+    assert(paths.is_absolute((str)out.view()) and strings_end((str)out.view(), ":/top.usda"))
+
+func strings_end(text: str, tail: str) -> bool:
+    return text.length >= tail.length and (str)text.bytes[text.length - tail.length..] == tail

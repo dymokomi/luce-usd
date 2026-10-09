@@ -192,7 +192,7 @@ extend Flattener:
         var anchored = Growing[u8]()
         defer anchored.close()
         try ar.anchored(text, self.composer.layers.identifier(layer), &anchored)
-        let search = text.bytes[0] != '.' and text.bytes[0] != '/'
+        let search = text.bytes[0] != '.' and not ar.rooted(text)
         if search and not ar.exists((str)anchored.view()): return asset
         var plain = Growing[u8]()
         defer plain.close()

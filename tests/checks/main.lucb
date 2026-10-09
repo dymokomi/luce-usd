@@ -7,6 +7,7 @@ import sync
 from luce_std import parallel
 import sniff_checks
 import path_checks
+import asset_checks
 import value_checks
 import number_checks
 import usda_checks
@@ -87,6 +88,8 @@ pub func main(arguments: str[]) -> i32!:
     try path_checks.exercise()
     settle(&tracker, "path_checks")
     inject(&tracker, every, path_checks.allocations)
+    try asset_checks.exercise()
+    settle(&tracker, "asset_checks")
     try value_checks.exercise()
     settle(&tracker, "value_checks")
     inject(&tracker, every, value_checks.allocations)

@@ -137,3 +137,9 @@ pub let flatten_stage = flatten.flatten_stage
 import ar as asset_resolution
 
 pub let absolute_path = asset_resolution.absolute
+## An asset path anchored at the layer that authored it, normalized.
+pub let anchored_path = asset_resolution.anchored
+## A path normalized lexically, `/` between components, its root kept.
+pub let normalized_path = asset_resolution.normalize_into
+## Everything before an identifier's last `/`, its root kept whole.
+pub let path_directory = asset_resolution.directory_of

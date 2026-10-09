@@ -5,33 +5,37 @@
 ## ("/a/b.usdz[c/d.usda]") a relative path names another file of the
 ## package ("/a/b.usdz[c/e.usda]"). Paths are normalized lexically, and a
 ## layer's identity is its normalized absolute path.
+##
+## Roots are luce-std paths' (`/`; on Windows `C:/`, `//server/share/` and
+## `\\?\` device paths too), and identifiers separate with `/`: on Windows a
+## backslash is read as one, as OpenUSD's resolver does (TfNormPath).
 import c
-from luce_std import files
+from luce_std import files, paths, process
 from luce_geocore.core.growing import Growing
-
-extern func getcwd(buffer: u8*, size: usize) -> c.str?
-extern func strlen(text: c.str) -> usize
 
 ## `path` made absolute from the working directory and normalized.
 pub func absolute(path: str, out: Growing[u8]*) -> !:
     out.clear()
-    if path.length > 0 and path.bytes[0] == '/':
+    if paths.is_absolute(path):
         try normalize_into(path, out)
         return
-    var buffer: u8[4096]
-    let found = getcwd(&buffer[0], 4096) else error(files.invalid_options, "the working directory cannot be read")
-    var joined = Growing[u8]()
-    defer joined.close()
-    try joined.assign(buffer[..<strlen(found)])
-    try joined.push('/')
-    for byte in path.bytes: try joined.push(byte)
-    try normalize_into((str)joined.view(), out)
+    # A relative path, or on Windows one rooted on the working directory's drive (`\a`).
+    let here = try process.current_directory()
+    defer here.release()
+    let joined = try paths.join(here.value, path)
+    defer joined.release()
+    try normalize_into(joined.value, out)
+
+## Whether `path` starts at a root (`/a`; on Windows `C:/a`, `\\server\share`, `\a`):
+## an asset path anchored nowhere.
+pub func rooted(path: str) -> bool:
+    return paths.is_rooted(path)
 
 ## The identifier `asset` names when authored in the layer `anchor` (an
 ## identifier: an absolute path, or a package path "outer[inner]").
 pub func anchored(asset: str, anchor: str, out: Growing[u8]*) -> !:
     out.clear()
-    if asset.length > 0 and asset.bytes[0] == '/':
+    if rooted(asset):
         try normalize_into(asset, out)
         return
     if let split = package_split(anchor):
@@ -81,27 +85,36 @@ pub func exists(identifier: str) -> bool:
     native.push(0) catch failure: return false
     return files.exists((c.str)native.items.data)
 
-## Everything before the last '/' ("" for none).
+## Everything before the last '/' ("" for none); a root stays whole ("/", "C:/").
 pub func directory_of(path: str) -> str:
+    let prefix = paths.root(path)
     var at = path.length
-    while at > 0:
+    while at > prefix.length:
         at -= 1
-        if path.bytes[at] == '/': return (str)path.bytes[..<at] if at > 0 else "/"
-    return ""
+        if path.bytes[at] == '/': return (str)path.bytes[..<at]
+    return prefix
 
-## `path` with "." and ".." components and repeated separators removed; a
-## leading "/" kept. Leading ".." components of a relative path stay.
+## `path` with "." and ".." components and repeated separators removed, `/`
+## between components (a Windows backslash too); its root kept and never
+## crossed. Leading ".." components of a relative path stay.
 pub func normalize_into(path: str, out: Growing[u8]*) -> !:
     out.clear()
-    let rooted = path.length > 0 and path.bytes[0] == '/'
-    if rooted: try out.push('/')
+    var slashed = Growing[u8]()
+    defer slashed.close()
+    for byte in path.bytes: try slashed.push('/' if paths.separator(byte) else byte)
+    let text = (str)slashed.view()
+    let prefix = paths.root(text)
+    try out.assign(prefix.bytes)
+    let rooted_path = prefix.length > 0
+    # A drive-relative root (`C:`) takes its first component without a separator.
+    let drive_only = prefix.length == 2 and prefix.bytes[1] == ':'
     let floor = out.count
-    var at: usize = 0
-    while at < path.length:
-        while at < path.length and path.bytes[at] == '/': at += 1
+    var at = prefix.length
+    while at < text.length:
+        while at < text.length and text.bytes[at] == '/': at += 1
         let start = at
-        while at < path.length and path.bytes[at] != '/': at += 1
-        let part = (str)path.bytes[start..<at]
+        while at < text.length and text.bytes[at] != '/': at += 1
+        let part = (str)text.bytes[start..<at]
         if part.length == 0 or part == ".": continue
         if part == "..":
             # Drop the previous component unless there is none (or it is "..").
@@ -111,6 +124,6 @@ pub func normalize_into(path: str, out: Growing[u8]*) -> !:
             if out.count > floor and previous != "..":
                 out.count = last - 1 if last > floor else floor
                 continue
-            if rooted: continue
-        if out.count > floor: try out.push('/')
+            if rooted_path: continue
+        if out.count > 0 and out.items[out.count - 1] != '/' and not (drive_only and out.count == floor): try out.push('/')
         for byte in part.bytes: try out.push(byte)
