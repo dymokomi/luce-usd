@@ -219,6 +219,9 @@ func skipped_attribute(entry: const Attribute*) -> bool:
 ## One attribute as a primvar of the part.
 func write_primvar(work: MeshExport*, part: const MeshPart*, spec: usize, entry: const Attribute*) -> !:
     if skipped_attribute(entry): return
+    if entry.is_ragged():
+        try work.warnings.add("Array attributes have no USD primvar form yet; they were left out")
+        return
     if entry.domain == Domain.edge:
         try work.warnings.add("Edge attributes other than crease have no USD primvar form; they were left out")
         return

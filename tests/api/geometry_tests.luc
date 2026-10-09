@@ -1,6 +1,6 @@
 ## Usd.load, save, convert, info and warnings as luced-3d calls them.
 from luce_usd.usd import Usd
-from luce_geocore.geocore import invalid, Mesh
+from luce_geocore.geocore import invalid, Mesh, GeometrySet
 from luce_cad.solids import CadSolids
 from luce_cad.cad_geometry import CadGeometry
 from luce_std import paths
@@ -27,6 +27,14 @@ pub func geometry_tests(scratch: str) -> unit!:
     assert((flat.mesh() else error(invalid, "no mesh")).face_count() == 7)
     let placed = Usd.load("tests/fixtures/geom/instancer.usda")
     assert(placed.instance_count() == 3)
+    # Array attributes have no primvar form yet: left out with a warning.
+    let counts: list[int] = []
+    for at in 0..<mesh.point_count():
+        counts.append(1 if at == 0 else (2 if at == 1 else 0))
+    let listed = mesh.with_array_attribute("nbrs", 0, true, 1, counts, [7.0, 8.0, 9.0])
+    Usd.save(GeometrySet.of_mesh(listed), paths.join(scratch, "arrays.usda"))
+    assert(Usd.warnings().contains("Array attributes have no USD primvar form"))
+    assert((Usd.load(paths.join(scratch, "arrays.usda")).mesh() else error(invalid, "no mesh")).face_count() == 3)
     # CAD saves as NurbsPatch prims, one per face.
     let solid = CadGeometry.of_model(CadSolids.cylinder(1.0, 2.0))
     Usd.save(solid, paths.join(scratch, "cylinder.usda"))
