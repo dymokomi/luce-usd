@@ -94,7 +94,12 @@ segments, extrapolation and loops).
   26.03, or a `ParticleField` applying `ParticleFieldKernelGaussianEllipsoidAPI`)
   become luce-geocore's splat cloud (`orient`, `scale`, `opacity`, linear
   `Cd`, `sh`), placed in world space exactly (covariances and SH), all prims
-  joined.
+  joined. Each splat keeps its prim's path in the point text `path`, as
+  meshes and Points do.
+  - A prim without SH coefficients (degree 0, as Houdini writes them) takes
+    its color from `primvars:displayColor` (vertex or constant, linear).
+  - When every prim stored half positions, the detail `usd.halfSplats` says
+    so.
   - Scales are linear σ and opacities linear, as in the schema; the half
     variants are read when the float ones are missing; short arrays are
     ignored (unit scale, opacity 1, no rotation) and long ones cut.
@@ -106,8 +111,10 @@ segments, extrapolation and loops).
     `linear`. Bands past degree 3 are dropped with a warning.
   - `sortingModeHint` and `projectionModeHint` become the detail texts
     `gsplat_sorting_mode` and `gsplat_projection_mode`.
-  - Export writes a splat cloud as one `ParticleField3DGaussianSplat`
-    (`splats` under the root) with float arrays, the SH in the world frame
+  - Export writes a splat cloud as `ParticleField3DGaussianSplat` prims,
+    one per `path` (`splats` under the root without one), with float
+    arrays, or half ones (`positionsh`, ...) when the cloud came from halves
+    or `splat_precision` asks for them, the SH in the world frame
     (a `restorient` baked in), the hints (zDepth and perspective by default)
     and, for a linear cloud, `luce:gsplatColorSpace`. Other point attributes
     are left out with a warning.

@@ -32,6 +32,22 @@ def Xform "World"
         uniform int radiance:sphericalHarmonicsDegree = 0
     }
 
+    def ParticleField3DGaussianSplat "Houdini"
+    {
+        point3f[] positions = [(0, 0, 2), (0, 0, 3)]
+        float[] opacities = [0.5, 0.25]
+        uniform int radiance:sphericalHarmonicsDegree = 0
+        color3f[] primvars:displayColor = [(0.25, 0.5, 1), (1, 0, 0)] (
+            interpolation = "vertex"
+        )
+    }
+
+    def ParticleField3DGaussianSplat "Constant"
+    {
+        point3f[] positions = [(5, 5, 5)]
+        color3f[] primvars:displayColor = [(0.125, 0.25, 0.75)]
+    }
+
     def Points "Dots"
     {
         point3f[] points = [(9, 9, 9)]

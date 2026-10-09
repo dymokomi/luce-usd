@@ -1,7 +1,9 @@
 ## Gaussian splats as UsdVol's ParticleField3DGaussianSplat: a hand-written
-## stage (placement, degree 2, half arrays, short arrays, hints, a Points prim
-## left out) imports to the expected baked values; seeded clouds go through
-## usda and usdc and come back within f32; and a million splats are timed.
+## stage (placement, degree 2, half arrays, short arrays, hints, displayColor
+## without coefficients, a Points prim left out) imports to the expected
+## baked values, each splat with its prim's path; seeded clouds go through
+## usda and usdc and come back within f32, several prims as several prims
+## and halves as halves; and a million splats are timed.
 from luce_std import math, clock
 import memory
 import strings
@@ -39,6 +41,13 @@ func sh_value(store: const AttributeStore*, name: str, at: usize, item: usize, c
     let entry = store.entry((usize)index)
     return entry.item(at, item, channel) if item < entry.item_count(at) else 0.0
 
+## Point text `name` of splat `at`.
+func text_of(set: const GeometrySet*, name: str, at: usize) -> str:
+    let store = cloud_store(cloud_of(set))
+    let index = store.find(name, Domain.point)
+    if index < 0: return ""
+    return store.entry((usize)index).text_at(at)
+
 ## Detail text `name` of a set.
 func detail_text(set: const GeometrySet*, name: str) -> str:
     let detail = set_detail(set)
@@ -65,7 +74,14 @@ pub func fixture() -> !:
     defer dispose_set(set)
     expect(contains((str)warnings.text.view(), "Points prims were left out"), "a Points prim beside splats is left out with a warning")
     let cloud = cloud_of(set)
-    expect(cloud.count() == 3, "three splats from two prims")
+    expect(cloud.count() == 6, "six splats from four prims")
+    let paths: str[6] = ["/World/GSplat", "/World/GSplat", "/World/Halves", "/World/Houdini", "/World/Houdini", "/World/Constant"]
+    for at in 0..<(usize)6: expect(text_of(set, "path", at) == paths[at], "each splat keeps its prim's path")
+    # Degree 0 without coefficients (Houdini): displayColor is the linear Cd.
+    expect(near(number(set, "Cd", 3, 0), 0.25) and near(number(set, "Cd", 3, 2), 1.0) and near(number(set, "Cd", 4, 0), 1.0) and near(number(set, "Cd", 4, 1), 0.0), "vertex displayColor")
+    expect(near(number(set, "Cd", 5, 2), 0.75), "a constant displayColor")
+    expect(near(number(set, "opacity", 4), 0.25), "their opacities")
+    expect(set_detail(set).find("usd.halfSplats", Domain.detail) < 0, "float prims are not halves")
     let p1 = cloud.point(1)
     expect(near(p1.x, 1.0) and near(p1.y, 4.0) and near(p1.z, 5.0), "positions placed by the prim's transform")
     let p2 = cloud.point(2)
@@ -155,20 +171,22 @@ func put_text(set: GeometrySet*, name: str, value: str) -> !:
     defer column.release()
     try set_put_detail(set, try Attribute.text(name, Domain.detail, 1, column, at[..<1]))
 
-## `set` exported, written as usdc (or usda), read and imported.
-func through(set: const GeometrySet*, crate: bool) -> GeometrySet*!:
+## `set` exported, written as usdc (or usda), read and imported; the text
+## written goes to `seen` when given.
+func through(set: const GeometrySet*, crate: bool, precision: i64 = 0, seen: Growing[u8]*? = none) -> GeometrySet*!:
     var names = try Names()
     defer names.close()
     var layer = try LayerData(&names)
     defer layer.close()
     var warnings = Warnings()
     defer warnings.close()
-    let export_options = ExportOptions(split = true, precise = false)
+    let export_options = ExportOptions(split = true, precise = false, splat_precision = precision)
     try export_set(set, &layer, "geo", &export_options, &warnings)
     var written = Growing[u8]()
     defer written.close()
     if crate: try write_usdc(&layer, &written)
     else: try write_usda(&layer, &written)
+    if let out = seen: try out.assign(written.view())
     var again_names = try Names()
     defer again_names.close()
     var again = try LayerData(&again_names)
@@ -212,6 +230,52 @@ pub func round_trips() -> !:
         expect(detail_text(back, "gsplat_sorting_mode") == "cameraDistance" and detail_text(back, "gsplat_projection_mode") == "perspective", "the hints and their defaults")
         expect(detail_text(back, "gsplat_up_axis") == ("y_down" if rest else ""), "the up axis a file had")
     print("ok    splat clouds through usda and usdc: values, restorient, color space, hints, up axis")
+
+## The fixture's four prims written back as four prims at their paths, and
+## read again with the same splats; halves (as an option, or as read) come
+## back as halves within their precision.
+pub func prims_and_halves() -> !:
+    let text = try read_file("tests/fixtures/geom/splats.usda")
+    defer free(text) in memory.heap
+    var warnings = Warnings()
+    defer warnings.close()
+    let set = try import_text(text, &warnings)
+    defer dispose_set(set)
+    var seen = Growing[u8]()
+    defer seen.close()
+    let back = try through(set, false, 0, &seen)
+    defer dispose_set(back)
+    let written = (str)seen.view()
+    for name in ["def ParticleField3DGaussianSplat \"GSplat\"", "def ParticleField3DGaussianSplat \"Halves\"", "def ParticleField3DGaussianSplat \"Houdini\"", "def ParticleField3DGaussianSplat \"Constant\""]:
+        expect(contains(written, name), "one prim per path")
+    expect(not contains(written, "positionsh"), "floats as read")
+    expect(cloud_of(back).count() == 6, "every splat back")
+    for at in 0..<(usize)6:
+        expect(text_of(back, "path", at) == text_of(set, "path", at), "paths kept")
+        for k in 0..<(usize)3: expect(near(number(back, "Cd", at, k), number(set, "Cd", at, k)), "colors kept")
+    # Halves on request; the reread cloud remembers them and writes halves again.
+    var halves = Growing[u8]()
+    defer halves.close()
+    let half = try through(set, false, 2, &halves)
+    defer dispose_set(half)
+    expect(contains((str)halves.view(), "point3h[] positionsh") and contains((str)halves.view(), "half3[] radiance:sphericalHarmonicsCoefficientsh")
+           and not contains((str)halves.view(), "float[] opacities"), "half arrays on request")
+    expect(set_detail(half).find("usd.halfSplats", Domain.detail) >= 0, "a cloud read from halves says so")
+    for at in 0..<(usize)6:
+        let pa = cloud_of(set).point(at)
+        let pb = cloud_of(half).point(at)
+        expect(near(pa.x, pb.x, 1.0e-3) and near(pa.y, pb.y, 1.0e-3) and near(pa.z, pb.z, 1.0e-3), "half positions")
+        expect(near(number(half, "opacity", at), number(set, "opacity", at), 1.0e-3), "half opacities")
+        for k in 0..<(usize)3: expect(near(number(half, "Cd", at, k), number(set, "Cd", at, k), 2.0e-3), "half colors")
+    var again = Growing[u8]()
+    defer again.close()
+    let kept = try through(half, true, 0, &again)
+    defer dispose_set(kept)
+    expect(set_detail(kept).find("usd.halfSplats", Domain.detail) >= 0, "halves as read, through usdc too")
+    let floats = try through(half, false, 1)
+    defer dispose_set(floats)
+    expect(set_detail(floats).find("usd.halfSplats", Domain.detail) < 0, "floats on request")
+    print("ok    ParticleField3DGaussianSplat: one prim per path, halves on request and as read")
 
 ## A million degree-3 splats exported to usdc and imported, timed.
 pub func timing() -> !:

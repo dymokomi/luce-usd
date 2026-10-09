@@ -167,6 +167,7 @@ pub func main(arguments: str[]) -> i32!:
     inject(&tracker, every, geom_checks.elements_round_trip)
     try splat_checks.fixture()
     try splat_checks.round_trips()
+    try splat_checks.prims_and_halves()
     settle(&tracker, "splats")
     inject(&tracker, every, splat_checks.fixture)
     try pcp_checks.museum()

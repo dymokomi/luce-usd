@@ -1,6 +1,7 @@
-## A splat cloud written as one ParticleField3DGaussianSplat prim (see
-## particle_fields.lucb for the schema and the SH convention): float
-## positions with their extent, `orientations` (orient normalized), linear
+## A splat cloud written as ParticleField3DGaussianSplat prims (see
+## particle_fields.lucb for the schema and the SH convention), one per value
+## of the splats' `path` text, as meshes and Points split (all at the
+## fallback path without one, or unsplit): positions with their extent, `orientations` (orient normalized), linear
 ## `scales` and `opacities`, and `radiance:sphericalHarmonicsCoefficients`
 ## per splat: the file DC (the cloud's `Cd` encoded back into its color
 ## space, as luce-geocore's unbaked_store gives f_dc) then its SH bands, in
@@ -11,51 +12,84 @@
 ## `gsplat_up_axis`) in the custom `luce:gsplatUpAxis`. The coefficients
 ## carry `interpolation = "vertex"` and `elementSize = (d + 1)²`, as OpenUSD's
 ## converters write them. Other point attributes are left out.
+##
+## Arrays are floats, or halves (`positionsh`, `orientationsh`, `scalesh`,
+## `opacitiesh`, `radiance:sphericalHarmonicsCoefficientsh`) when the export
+## options ask for them or, by default, when the cloud came from halves
+## (detail `usd.halfSplats`).
 
-## `cloud`'s splats as a ParticleField3DGaussianSplat at `path`; `detail` is
-## the set's detail.
-func export_splats(cloud: const PointCloud*, detail: const AttributeStore*, author: Author*, path: u32, warnings: Warnings*) -> !:
+## `cloud`'s splats as ParticleField3DGaussianSplat prims under `base`, split
+## by `path` (else at `fallback`); `detail` is the set's detail.
+func export_splats(cloud: const PointCloud*, detail: const AttributeStore*, author: Author*, base: u32, fallback: u32, options: const ExportOptions*, warnings: Warnings*) -> !:
+    let store = cloud_store(cloud)
+    var parts = Growing[ElementPart]()
+    defer close_element_parts(&parts)
+    try split_elements(store, Domain.point, cloud.count(), author.names, base, fallback, options.split, &parts)
+    var half = options.splat_precision == 2
+    if options.splat_precision == 0:
+        let found = detail.find(half_splats_name, Domain.detail)
+        half = found >= 0 and detail.entry((usize)found).kind != DataType.text and detail.entry((usize)found).number(0, 0) != 0.0
+    let space = detail_color_space(detail)
+    var raw = try unbaked_store(store, cloud.count(), space)
+    defer raw.close()
+    for part in parts.view():
+        try export_splat_prim(cloud, detail, &raw, author, part.path, part.elements.view(), half)
+    for index in 0..<store.count():
+        let entry = store.entry(index)
+        if entry.domain != Domain.point: continue
+        let name = entry.name()
+        if name == orient_name or name == restorient_name or name == scale_name or name == opacity_name or name == color_name or name == sh_name or name == "path": continue
+        try warnings.add("Point attributes other than the splats' were left out of the ParticleField3DGaussianSplat")
+        break
+
+## The splats `elements` names as one ParticleField3DGaussianSplat at `path`;
+## `raw` is the cloud unbaked (f_dc, f_rest in the world frame).
+func export_splat_prim(cloud: const PointCloud*, detail: const AttributeStore*, raw: const AttributeStore*, author: Author*, path: u32, elements: const i32[], half: bool) -> !:
     let names = author.names
     let store = cloud_store(cloud)
-    let count = cloud.count()
+    let count = elements.length
     let space = detail_color_space(detail)
-    var raw = try unbaked_store(store, count, space)
-    defer raw.close()
     let items = sh_items(store)
     let degree = sh_degree(items)
     let per_particle = (degree + 1) * (degree + 1)
-    var work = SplatWrite(count = count, per_particle = per_particle, items = sh_count(degree))
+    var work = SplatWrite(count = count, elements = elements, per_particle = per_particle, items = sh_count(degree), half = half)
     for k in 0..<(usize)3:
-        work.dc[k] = point_floats(&raw, f_dc_name(k), 1) else error(errors.invalid, "a splat cloud lost its DC color in unbaking")
+        work.dc[k] = point_floats(raw, f_dc_name(k), 1) else error(errors.invalid, "a splat cloud lost its DC color in unbaking")
     work.orient = point_floats(store, orient_name, 4) else error(errors.invalid, "a splat cloud has no orient")
     work.scale = point_floats(store, scale_name, 3) else error(errors.invalid, "a splat cloud has no scale")
     work.opacity = point_floats(store, opacity_name, 1) else error(errors.invalid, "a splat cloud has no opacity")
     let rest = raw.find("f_rest", Domain.point)
     if rest >= 0: work.rest = raw.entry((usize)rest)
-    var orientations = try Column[u8].allocate(count * 16)
+    # Halves take 2 bytes a component, floats 4.
+    let size: usize = 2 if half else 4
+    var orientations = try Column[u8].allocate(count * 4 * size)
     defer orientations.release()
-    var scales = try Column[u8].allocate(count * 12)
+    var scales = try Column[u8].allocate(count * 3 * size)
     defer scales.release()
-    var opacities = try Column[u8].allocate(count * 4)
+    var opacities = try Column[u8].allocate(count * size)
     defer opacities.release()
-    var coefficients = try Column[u8].allocate(count * per_particle * 12)
+    var coefficients = try Column[u8].allocate(count * per_particle * 3 * size)
     defer coefficients.release()
-    work.orientations = f32[]((f32*)orientations.span().data, count * 4)
-    work.scales = f32[]((f32*)scales.span().data, count * 3)
-    work.opacities = f32[]((f32*)opacities.span().data, count)
-    work.coefficients = f32[]((f32*)coefficients.span().data, count * per_particle * 3)
+    work.orientations = orientations.span()
+    work.scales = scales.span()
+    work.opacities = opacities.span()
+    work.coefficients = coefficients.span()
     try parallel.for_each_range(count, grain, (void*)&work, write_splats)
     let tokens = try GeomTokens.of(names)
     let spec = try author.define(path, tokens.particle_field_splat, tokens.xform)
-    var all = Growing[i32]()
-    defer all.close()
-    for at in 0..<count: try all.push((i32)at)
-    try write_positions(author, path, spec, cloud_positions(cloud), cloud_origin(cloud), all.view(), false, "positions")
-    _ = try author.attribute(path, spec, "orientations", "quatf[]", false, Value.of_array(ValueKind.quatf, count, orientations.take()))
-    _ = try author.attribute(path, spec, "scales", "float3[]", false, Value.of_array(ValueKind.vec3f, count, scales.take()))
-    _ = try author.attribute(path, spec, "opacities", "float[]", false, Value.of_array(ValueKind.float, count, opacities.take()))
+    if half:
+        try write_half_positions(author, path, spec, cloud_positions(cloud), cloud_origin(cloud), elements)
+        _ = try author.attribute(path, spec, "orientationsh", "quath[]", false, Value.of_array(ValueKind.quath, count, orientations.take()))
+        _ = try author.attribute(path, spec, "scalesh", "half3[]", false, Value.of_array(ValueKind.vec3h, count, scales.take()))
+        _ = try author.attribute(path, spec, "opacitiesh", "half[]", false, Value.of_array(ValueKind.half, count, opacities.take()))
+    else:
+        try write_positions(author, path, spec, cloud_positions(cloud), cloud_origin(cloud), elements, false, "positions")
+        _ = try author.attribute(path, spec, "orientations", "quatf[]", false, Value.of_array(ValueKind.quatf, count, orientations.take()))
+        _ = try author.attribute(path, spec, "scales", "float3[]", false, Value.of_array(ValueKind.vec3f, count, scales.take()))
+        _ = try author.attribute(path, spec, "opacities", "float[]", false, Value.of_array(ValueKind.float, count, opacities.take()))
     _ = try author.attribute(path, spec, "radiance:sphericalHarmonicsDegree", "int", true, Value.scalar(ValueKind.int, (u64)degree))
-    let radiance = try author.attribute(path, spec, "radiance:sphericalHarmonicsCoefficients", "float3[]", false, Value.of_array(ValueKind.vec3f, count * per_particle, coefficients.take()))
+    let coefficient_name = "radiance:sphericalHarmonicsCoefficientsh" if half else "radiance:sphericalHarmonicsCoefficients"
+    let radiance = try author.attribute(path, spec, coefficient_name, "half3[]" if half else "float3[]", false, Value.of_array(ValueKind.vec3h if half else ValueKind.vec3f, count * per_particle, coefficients.take()))
     try author.token_field(radiance, tokens.interpolation, "vertex")
     try author.layer.set(radiance, tokens.element_size, Value.scalar(ValueKind.int, (u64)per_particle))
     _ = try author.attribute(path, spec, "sortingModeHint", "token", true, Value.scalar(ValueKind.token, (u64)(try names.token(detail_text(detail, "gsplat_sorting_mode", "zDepth")))))
@@ -67,13 +101,36 @@ func export_splats(cloud: const PointCloud*, detail: const AttributeStore*, auth
     if up.length > 0:
         let axis = try author.attribute(path, spec, "luce:gsplatUpAxis", "token", true, Value.scalar(ValueKind.token, (u64)(try names.token(up))))
         try author.layer.set(axis, author.layer.keys.custom, Value.scalar(ValueKind.boolean, 1))
-    for index in 0..<store.count():
-        let entry = store.entry(index)
-        if entry.domain != Domain.point: continue
-        let name = entry.name()
-        if name == orient_name or name == restorient_name or name == scale_name or name == opacity_name or name == color_name or name == sh_name: continue
-        try warnings.add("Point attributes other than the splats' were left out of the ParticleField3DGaussianSplat")
-        break
+
+## Positions of `points` placed back at the origin as `positionsh`
+## (point3h[]), with their extent in floats.
+func write_half_positions(author: Author*, path: u32, spec: usize, positions: const Float3[], origin: Vector3, points: const i32[]) -> !:
+    var low: f64[3] = [math.infinity, math.infinity, math.infinity]
+    var high: f64[3] = [-math.infinity, -math.infinity, -math.infinity]
+    var column = try Column[u8].allocate(points.length * 6)
+    errdefer column.release()
+    let out = column.span()
+    for at in 0..<points.length:
+        let p = positions[(usize)points[at]]
+        let xyz: f64[3] = [(f64)p.x + origin.x, (f64)p.y + origin.y, (f64)p.z + origin.z]
+        for axis in 0..<(usize)3:
+            # The extent bounds what the halves hold.
+            let stored = (f64)(f16)xyz[axis]
+            low[axis] = math.min(low[axis], stored)
+            high[axis] = math.max(high[axis], stored)
+            put_half(out, at * 3 + axis, xyz[axis])
+    _ = try author.attribute(path, spec, "positionsh", "point3h[]", false, Value.of_array(ValueKind.vec3h, points.length, column.take()))
+    let extent: f32[6] = [(f32)low[0], (f32)low[1], (f32)low[2], (f32)high[0], (f32)high[1], (f32)high[2]]
+    _ = try author.attribute(path, spec, "extent", "float3[]", false, try array_of(ValueKind.vec3f, 2, u8[]((u8*)&extent[0], 24)))
+
+## Component `at` of a half or float array's bytes set to `value`.
+func put_half(out: u8[], at: usize, value: f64):
+    # + 0.0 turns -0 into 0.
+    memory.write[u16]((void*)&out[at * 2], ((f16)(value + 0.0)).bits())
+
+func put_number(out: u8[], at: usize, value: f64, half: bool):
+    if half: put_half(out, at, value)
+    else: memory.write[f32]((void*)&out[at * 4], (f32)value)
 
 ## "f_dc_0", "f_dc_1" or "f_dc_2".
 func f_dc_name(k: usize) -> str:
@@ -89,6 +146,8 @@ func detail_text(detail: const AttributeStore*, name: str, fallback: str) -> str
 ## A cloud's splats and the arrays they fill.
 struct SplatWrite:
     var count: usize
+    ## The cloud's splats the prim holds, in order.
+    var elements: const i32[]
     var per_particle: usize
     ## SH items written per splat (bands 1..degree).
     var items: usize
@@ -97,24 +156,29 @@ struct SplatWrite:
     var scale: Floats
     var opacity: Floats
     var rest: const Attribute*?
-    var orientations: f32[]
-    var scales: f32[]
-    var opacities: f32[]
-    var coefficients: f32[]
+    ## Halves rather than floats.
+    var half: bool
+    ## The arrays' bytes.
+    var orientations: u8[]
+    var scales: u8[]
+    var opacities: u8[]
+    var coefficients: u8[]
 
 func write_splats(context: void*, first: usize, end: usize, worker: usize):
     _ = worker
     let work = (SplatWrite*)context
+    let half = work.half
     for at in first..<end:
-        let q = Quat(work.orient.at(at, 0), work.orient.at(at, 1), work.orient.at(at, 2), work.orient.at(at, 3)).normalized()
+        let splat = (usize)work.elements[at]
+        let q = Quat(work.orient.at(splat, 0), work.orient.at(splat, 1), work.orient.at(splat, 2), work.orient.at(splat, 3)).normalized()
         let values: f64[4] = [q.x, q.y, q.z, q.w]
-        for k in 0..<(usize)4: work.orientations[at * 4 + k] = (f32)values[k]
-        for k in 0..<(usize)3: work.scales[at * 3 + k] = (f32)work.scale.at(at, k)
-        work.opacities[at] = (f32)work.opacity.at(at, 0)
+        for k in 0..<(usize)4: put_number(work.orientations, at * 4 + k, values[k], half)
+        for k in 0..<(usize)3: put_number(work.scales, at * 3 + k, work.scale.at(splat, k), half)
+        put_number(work.opacities, at, work.opacity.at(splat, 0), half)
         let base = at * work.per_particle * 3
-        for k in 0..<(usize)3: work.coefficients[base + k] = (f32)work.dc[k].at(at, 0)
+        for k in 0..<(usize)3: put_number(work.coefficients, base + k, work.dc[k].at(splat, 0), half)
         let rest = work.rest else continue
-        let held = rest.item_count(at)
+        let held = rest.item_count(splat)
         for item in 0..<work.items:
             for channel in 0..<(usize)3:
-                work.coefficients[base + 3 + item * 3 + channel] = (f32)rest.item(at, item, channel) if item < held else 0.0
+                put_number(work.coefficients, base + 3 + item * 3 + channel, rest.item(splat, item, channel) if item < held else 0.0, half)

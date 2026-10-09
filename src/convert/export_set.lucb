@@ -32,7 +32,7 @@ func export_into(set: const GeometrySet*, author: Author*, base: u32, home: u32,
         if kind == mesh_component():
             try export_mesh((const Mesh*)component.data, author, base, try names.child(home, try names.token("mesh")), options, warnings)
         elif kind == points_component() and is_splat_store(cloud_store((const PointCloud*)component.data)):
-            try export_splats((const PointCloud*)component.data, set_detail(set), author, try names.child(home, try names.token("splats")), warnings)
+            try export_splats((const PointCloud*)component.data, set_detail(set), author, base, try names.child(home, try names.token("splats")), options, warnings)
         elif kind == points_component():
             try export_points((const PointCloud*)component.data, author, base, try names.child(home, try names.token("points")), options, warnings)
         elif kind == curves_type():

@@ -85,15 +85,18 @@ pub struct Usd:
     ## Write `set` to `path` as the extension says: .usda text, .usdc or .usd
     ## crate, .usdz package. Elements go to prims named by their `path`
     ## attribute (`split`), the rest under the root prim `root`; `precise`
-    ## writes double-precision points. What was left out is in `warnings()`.
-    pub static func save(set: interop.Reference[GeometrySet], path: str, root: str = "geo", split: bool = true, precise: bool = false) -> !:
+    ## writes double-precision points. Gaussian splats are written as floats
+    ## or halves as they were read (`splat_precision` 0), as floats (1) or as
+    ## halves (2). What was left out is in `warnings()`.
+    pub static func save(set: interop.Reference[GeometrySet], path: str, root: str = "geo", split: bool = true, precise: bool = false, splat_precision: i64 = 0) -> !:
         var names = try Names()
         defer names.close()
         var layer = try LayerData(&names)
         defer layer.close()
         var warnings = convert.Warnings()
         defer warnings.close()
-        let options = convert.ExportOptions(split = split, precise = precise)
+        if splat_precision < 0 or splat_precision > 2: error(errors.invalid, "splat_precision is 0 (as read), 1 (floats) or 2 (halves)")
+        let options = convert.ExportOptions(split = split, precise = precise, splat_precision = splat_precision)
         try convert.export_set(try set.get(), &layer, root, &options, &warnings)
         try write_layer(&layer, path)
         remember(&warnings)

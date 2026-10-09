@@ -11,6 +11,9 @@ pub struct ExportOptions:
     pub var split: bool
     ## Points as point3d, keeping the f64 origin exactly.
     pub var precise: bool
+    ## Gaussian splat arrays: 0 as the cloud was read (halves when its
+    ## detail `usd.halfSplats` says so), 1 floats, 2 halves.
+    pub var splat_precision: i64 = 0
 
 ## One Mesh prim's share of the mesh.
 struct MeshPart:
