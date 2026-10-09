@@ -5,7 +5,7 @@
 ## array is large. Anything unusual (comments, strings, inf and nan, a
 ## malformed element) sends the array back to the general parser, which
 ## reads it the same way and reports any error.
-from luce_geocore.core import parallel as pool
+from luce_std import parallel
 import strings
 
 ## Text per parallel chunk.
@@ -75,9 +75,9 @@ extend Reader:
             at += chunk_bytes
         var count = ArrayCount(data = data, tuples = tuples, splits = splits.items[..<splits.count], end = end, failed = false)
         if end - start < parallel_bytes:
-            for index in 0..<splits.count: count_chunk((void*)&count, index)
+            for index in 0..<splits.count: count_chunk((void*)&count, index, 0)
         else:
-            pool.run(splits.count, count_chunk, (void*)&count)
+            try parallel.for_each(splits.count, (void*)&count, count_chunk)
         if count.failed.load(): return none
         # Prefix sums turn each split's count into its first element.
         var elements: usize = 0
@@ -89,9 +89,9 @@ extend Reader:
         var column = try Column[u8].allocate(elements * size)
         var job = ArrayParse(data = data, kind = kind, size = size, splits = splits.view(), end = end, out = column.span(), failed = false)
         if end - start < parallel_bytes:
-            for index in 0..<splits.count: parse_chunk((void*)&job, index)
+            for index in 0..<splits.count: parse_chunk((void*)&job, index, 0)
         else:
-            pool.run(splits.count, parse_chunk, (void*)&job)
+            try parallel.for_each(splits.count, (void*)&job, parse_chunk)
         if job.failed.load():
             column.release()
             return none
@@ -102,8 +102,8 @@ extern func memchr(text: const void*, byte: i32, count: usize) -> void*?
 
 ## Count split `index`'s elements into its `element`; flag text the fast
 ## path does not take.
-func count_chunk(context: void*?, index: usize):
-    let raw = context else return
+func count_chunk(context: void*, index: usize, worker: usize):
+    let raw = context
     let job = (ArrayCount*)raw
     let first = job.splits[index].at
     let stop = job.splits[index + 1].at if index + 1 < job.splits.length else job.end
@@ -129,8 +129,8 @@ func count_chunk(context: void*?, index: usize):
     job.splits[index].element = elements
 
 ## Parse split `index`'s elements into the column; flag a failure.
-func parse_chunk(context: void*?, index: usize):
-    let raw = context else return
+func parse_chunk(context: void*, index: usize, worker: usize):
+    let raw = context
     let job = (ArrayParse*)raw
     let split = job.splits[index]
     let stop = job.splits[index + 1].at if index + 1 < job.splits.length else job.end

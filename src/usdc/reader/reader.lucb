@@ -32,7 +32,7 @@ from sdf.splines import settle
 from sdf.value_types import ValueKind, element_bytes, components, scalar_of
 from luce_geocore.core.shared import Column
 from luce_geocore.core.growing import Growing
-from luce_geocore.core import parallel as pool
+from luce_std import parallel
 
 ## The newest crate version this reader reads (major 0, minor 15).
 pub let newest_minor: u8 = 15
@@ -160,7 +160,7 @@ struct Crate:
                     try layer.set(spec, name, try self.value(rep))
                 at += 1
         if self.arrays.count > 0:
-            pool.run(self.arrays.count, decode_pending, (void*)&self)
+            try parallel.for_each(self.arrays.count, (void*)&self, decode_pending)
             for index in 0..<self.arrays.count:
                 let pending = &self.arrays.items[index]
                 if pending.failed:
@@ -170,8 +170,8 @@ struct Crate:
                 pending.value = Value.marker(ValueKind.empty)
 
 ## Decode one pending array on the pool.
-func decode_pending(context: void*?, index: usize):
-    let raw = context else return
+func decode_pending(context: void*, index: usize, worker: usize):
+    let raw = context
     let crate = (Crate*)raw
     let pending = &crate.arrays.items[index]
     pending.value = crate.array(pending.rep) catch failure:

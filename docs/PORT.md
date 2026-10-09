@@ -33,7 +33,7 @@ record; statuses change as milestones land.
 | Python, usdview, Tf notices, change processing, edit targets | Whole layers are loaded and written; a live editable stage is a separate product. |
 | `matches_regex` in variable expressions | No regular expression engine in luce-usd; the function fails, so an expression using it gives nothing. |
 | Value clips, spline derivatives and baking, UsdSkel, UsdLux, UsdShade networks, MaterialX, UsdPhysics, UsdVol, cameras | Geometry first. Unknown values round-trip as opaque data. |
-| Tf, Vt, Gf, Work as libraries | Base, luce-geocore's columns and parallel pool cover them. |
+| Tf, Vt, Gf, Work as libraries | Base, luce-geocore's columns and luce-std's parallel pool cover them. |
 
 ## Parity scores
 

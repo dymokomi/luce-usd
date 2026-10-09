@@ -2,7 +2,7 @@
 ## into the output, and arrays of more than `parallel_elements` elements
 ## formatted in chunks on luce-geocore's pool, each into its own buffer,
 ## then joined in order.
-from luce_geocore.core import parallel as pool
+from luce_std import parallel
 
 ## Arrays longer than this format in parallel.
 let parallel_elements: usize = 32768
@@ -123,8 +123,8 @@ struct ArrayJob:
     var outputs: Growing[u8][]
     var failed: @bool
 
-func format_chunk(context: void*?, index: usize):
-    let raw = context else return
+func format_chunk(context: void*, index: usize, worker: usize):
+    let raw = context
     let job = (ArrayJob*)raw
     let first = index * chunk_elements
     let last = first + chunk_elements if first + chunk_elements < job.count else job.count
@@ -145,7 +145,7 @@ func format_array(kind: ValueKind, bytes: const u8[], count: usize, out: Growing
     defer:
         for index in 0..<chunks: outputs[index].close()
     var job = ArrayJob(kind = kind, bytes = bytes, count = count, outputs = outputs, failed = false)
-    pool.run(chunks, format_chunk, (void*)&job)
+    try parallel.for_each(chunks, (void*)&job, format_chunk)
     if job.failed.load(): error(memory.exhausted, "out of memory formatting an array")
     var total = out.count + 1
     for index in 0..<chunks: total += outputs[index].count

@@ -45,7 +45,7 @@ extend CrateWriter:
         for index in 0..<self.layer.spec_count():
             for field in self.layer.spec(index).fields.view():
                 try self.collect(&field.value)
-        if self.prepared.count > 0: pool.run(self.prepared.count, prepare_one, (void*)&self)
+        if self.prepared.count > 0: try parallel.for_each(self.prepared.count, (void*)&self, prepare_one)
         for index in 0..<self.prepared.count:
             if self.prepared.items[index].failed: error(memory.exhausted, "out of memory compressing a crate array")
 
@@ -116,8 +116,8 @@ extend CrateWriter:
         return array_bit | compressed_bit | ((u64)(u8)value.kind << 48) | at
 
 ## Compress one prepared array (on the pool).
-func prepare_one(context: void*?, index: usize):
-    let raw = context else return
+func prepare_one(context: void*, index: usize, worker: usize):
+    let raw = context
     let writer = (CrateWriter*)raw
     let prepared = &writer.prepared.items[index]
     compress_array(prepared) catch failure:

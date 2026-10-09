@@ -4,7 +4,7 @@
 ## memory.exhausted and leave nothing allocated.
 import memory
 import sync
-from luce_geocore.core import parallel as geocore_parallel
+from luce_std import parallel
 import sniff_checks
 import path_checks
 import value_checks
@@ -75,7 +75,7 @@ func inject(tracker: Tracker*, stages: usize, check: func() -> unit!):
 
 pub func main(arguments: str[]) -> i32!:
     # Start the pool first: its starting threads free blocks in the current heap.
-    geocore_parallel.warm()
+    parallel.warm()
     try cad_checks.warm()
     let previous = memory.heap
     var tracker = Tracker(previous, 0, none, sync.Mutex())

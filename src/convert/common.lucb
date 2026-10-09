@@ -5,10 +5,9 @@
 ## others share; meshes.lucb builds the polygon topology, primvars.lucb the
 ## attributes, mesh_extras.lucb subsets, subdivision and bindings, and
 ## load.lucb the whole import.
-from luce_std import math
+from luce_std import math, parallel
 import memory
 import sync
-from luce_geocore.core import parallel as pool
 import errors
 from sdf.names import Names, absolute_root, empty_path
 from sdf.layer_data import LayerData, Spec, SpecType

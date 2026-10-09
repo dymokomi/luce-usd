@@ -58,7 +58,7 @@ func build_faces(build: MeshBuild*, stage: const Stage*, warnings: Warnings*) ->
     var unset: i32[]
     var no_normals: Float3[]
     var work = FaceWork(sources = build.sources.items[..<build.sources.count], chunks = chunks.items[..<chunks.count], positions = build.positions.view(), keep = keep.span(), source_normals = source_normals.span(), normals = no_normals, offsets = unset, corners = unset, triangles = unset, face_source = unset, corner_source = unset)
-    pool.run(chunks.count, sum_chunk, (void*)&work)
+    try parallel.for_each(chunks.count, (void*)&work, sum_chunk)
     # Chunk corner starts within each prim.
     var at: usize = 0
     while at < chunks.count:
@@ -69,7 +69,7 @@ func build_faces(build: MeshBuild*, stage: const Stage*, warnings: Warnings*) ->
             chunks.items[at].corner_first = corner
             corner += size
             at += 1
-    pool.run(chunks.count, keep_chunk, (void*)&work)
+    try parallel.for_each(chunks.count, (void*)&work, keep_chunk)
     # Output starts: prims in order, chunks in order within each.
     var faces: usize = 0
     var corners: usize = 0
@@ -104,12 +104,12 @@ func build_faces(build: MeshBuild*, stage: const Stage*, warnings: Warnings*) ->
     work.triangles = build.triangles.span()
     work.face_source = build.face_source.span()
     work.corner_source = build.corner_source.span()
-    pool.run(chunks.count, write_chunk, (void*)&work)
+    try parallel.for_each(chunks.count, (void*)&work, write_chunk)
     work.offsets[faces] = (i32)corners
 
 ## A chunk's corner total (kept_corners holds it until the keep pass).
-func sum_chunk(context: void*?, index: usize):
-    let work = (FaceWork*)(context else return)
+func sum_chunk(context: void*, index: usize, worker: usize):
+    let work = (FaceWork*)context
     let chunk = &work.chunks[index]
     let counts = ints_of(&work.sources[chunk.source].counts)
     var total: usize = 0
@@ -117,8 +117,8 @@ func sum_chunk(context: void*?, index: usize):
     chunk.kept_corners = total
 
 ## Which of a chunk's faces stay, and how many faces and corners they have.
-func keep_chunk(context: void*?, index: usize):
-    let work = (FaceWork*)(context else return)
+func keep_chunk(context: void*, index: usize, worker: usize):
+    let work = (FaceWork*)context
     let chunk = &work.chunks[index]
     let source = &work.sources[chunk.source]
     let counts = ints_of(&source.counts)
@@ -183,8 +183,8 @@ func area_of(points: const Float3[], face: const i32[]) -> (f64, f64, f64, bool)
 
 ## Write a chunk's kept faces: offsets, corners (reversed after the first
 ## for flipped prims), display triangles and the maps back.
-func write_chunk(context: void*?, index: usize):
-    let work = (FaceWork*)(context else return)
+func write_chunk(context: void*, index: usize, worker: usize):
+    let work = (FaceWork*)context
     let chunk = &work.chunks[index]
     let source = &work.sources[chunk.source]
     let counts = ints_of(&source.counts)

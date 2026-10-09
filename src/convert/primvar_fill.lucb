@@ -13,8 +13,8 @@ func fill_primvar(stage: const Stage*, build: const MeshBuild*, candidate: const
     var work = FillWork(reader = &reader, writer = ElementWriter(kind = attribute.kind, width = attribute.width, out = attribute.data.span()), build = build, source = source, from_domain = candidate.domain, domain = domain)
     match domain:
         .detail: reader.copy(&work.writer, 0, 0)
-        .point: pool.parallel_for(source.point_count, grain, fill_points, (void*)&work)
-        _: pool.parallel_for(face_end(build, index) - source.face_base, grain // 4, fill_faces, (void*)&work)
+        .point: try parallel.for_each_range(source.point_count, grain, (void*)&work, fill_points)
+        _: try parallel.for_each_range(face_end(build, index) - source.face_base, grain // 4, (void*)&work, fill_faces)
 
 struct FillWork:
     var reader: const ElementReader*
@@ -24,15 +24,15 @@ struct FillWork:
     var from_domain: Domain
     var domain: Domain
 
-func fill_points(context: void*?, first: usize, end: usize):
-    let work = (FillWork*)(context else return)
+func fill_points(context: void*, first: usize, end: usize, worker: usize):
+    let work = (FillWork*)context
     let base = work.source.point_base
     for point in first..<end: work.reader.copy(&work.writer, base + point, point)
 
 ## Faces `first..<end` of the prim (output order): the face values, or the
 ## corner values of their corners.
-func fill_faces(context: void*?, first: usize, end: usize):
-    let work = (FillWork*)(context else return)
+func fill_faces(context: void*, first: usize, end: usize, worker: usize):
+    let work = (FillWork*)context
     let face_source = work.build.face_source.view()
     let base = work.source.face_base
     if work.domain == Domain.face:

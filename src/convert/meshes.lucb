@@ -102,7 +102,7 @@ func collect_meshes(stage: Stage*, gathered: const Gathered*, warnings: Warnings
     if build.sources.count == 0: return
     # Check each prim's counts and indices, in parallel over prims.
     var check = CheckWork(sources = build.sources.items[..<build.sources.count])
-    pool.run(build.sources.count, check_source, (void*)&check)
+    try parallel.for_each(build.sources.count, (void*)&check, check_source)
     var kept: usize = 0
     for index in 0..<build.sources.count:
         var source = build.sources.items[index]
@@ -130,8 +130,8 @@ struct CheckWork:
 
 ## Counts of at least 0 summing to the indices, and indices naming points
 ## (bad 1 otherwise). Faces may have any number of corners.
-func check_source(context: void*?, index: usize):
-    let work = (CheckWork*)(context else return)
+func check_source(context: void*, index: usize, worker: usize):
+    let work = (CheckWork*)context
     let source = &work.sources[index]
     var total: usize = 0
     for count in ints_of(&source.counts):
@@ -165,7 +165,7 @@ func place_points(build: MeshBuild*) -> !:
     var boxes = try Column[Bounds3].allocate(chunks.count)
     defer boxes.release()
     var bounds = BoundsWork(sources = build.sources.items[..<build.sources.count], chunks = chunks.view(), boxes = boxes.span())
-    pool.run(chunks.count, bound_chunk, (void*)&bounds)
+    try parallel.for_each(chunks.count, (void*)&bounds, bound_chunk)
     var low = Vector3(math.infinity, math.infinity, math.infinity)
     var high = Vector3(-math.infinity, -math.infinity, -math.infinity)
     for box in boxes.view():
@@ -174,7 +174,7 @@ func place_points(build: MeshBuild*) -> !:
     build.origin = origin_for(low, high)
     build.positions = try Column[Float3].allocate(total)
     var work = PlaceWork(sources = build.sources.items[..<build.sources.count], chunks = chunks.view(), out = build.positions.span(), origin = build.origin)
-    pool.run(chunks.count, place_chunk, (void*)&work)
+    try parallel.for_each(chunks.count, (void*)&work, place_chunk)
 
 struct Bounds3:
     var low: Vector3
@@ -186,8 +186,8 @@ struct BoundsWork:
     var boxes: Bounds3[]
 
 ## A chunk's placed bounds.
-func bound_chunk(context: void*?, index: usize):
-    let work = (BoundsWork*)(context else return)
+func bound_chunk(context: void*, index: usize, worker: usize):
+    let work = (BoundsWork*)context
     let chunk = work.chunks[index]
     let source = &work.sources[chunk.source]
     let bytes = source.points.bytes()
@@ -220,8 +220,8 @@ struct PlaceWork:
     var out: Float3[]
     var origin: Vector3
 
-func place_chunk(context: void*?, index: usize):
-    let work = (PlaceWork*)(context else return)
+func place_chunk(context: void*, index: usize, worker: usize):
+    let work = (PlaceWork*)context
     let chunk = work.chunks[index]
     let source = &work.sources[chunk.source]
     let bytes = source.points.bytes()

@@ -57,7 +57,7 @@ func place_elements(sources: ElementSource[], origin: Vector3*) -> Column[Float3
     var positions = try Column[Float3].allocate(total)
     let out = positions.span()
     var work = ElementPlaceWork(sources = sources, out = out, origin = *origin)
-    pool.run(sources.length, place_source, (void*)&work)
+    try parallel.for_each(sources.length, (void*)&work, place_source)
     return positions
 
 struct ElementPlaceWork:
@@ -65,8 +65,8 @@ struct ElementPlaceWork:
     var out: Float3[]
     var origin: Vector3
 
-func place_source(context: void*?, index: usize):
-    let work = (ElementPlaceWork*)(context else return)
+func place_source(context: void*, index: usize, worker: usize):
+    let work = (ElementPlaceWork*)context
     let source = &work.sources[index]
     for point in 0..<source.point_count:
         work.out[source.point_base + point] = placed_vertex(source, source.vertex(point), work.origin)
