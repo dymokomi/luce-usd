@@ -26,7 +26,13 @@ pub func import_layer(layer: const LayerData*, options: const ImportOptions*, wa
     var gathered = Gathered()
     defer gathered.close()
     try gather(&stage, absolute_root, options.purposes, &base, &gathered)
+    # NurbsPatch prims beside BrepArrays are their faces again (this
+    # export writes both): the arrays are read, the patches need no word.
+    var solids = false
+    for gprim in gathered.gprims.view(): solids = solids or gprim.kind == GprimKind.brep_array
+    let patches = try stage.names.token("NurbsPatch")
     for type_name in gathered.skipped_types.view():
+        if solids and type_name == patches: continue
         var line = Growing[u8]()
         defer line.close()
         for byte in "Skipped prims of a type this import does not convert: ".bytes: try line.push(byte)
@@ -56,6 +62,13 @@ func import_gathered(stage: Stage*, gathered: Gathered*, options: const ImportOp
             if gprim.kind == GprimKind.points: try warnings.add("Points prims were left out: the set's point cloud holds the Gaussian splats")
     elif let cloud = try import_points(stage, gathered, warnings): try set.put(points_component(), (void*)cloud)
     if let curves = try import_curves(stage, gathered, warnings): try set.put(curves_type(), (void*)curves)
+    # UsdSolid's B-rep arrays as CAD models.
+    var models = Growing[interop.Reference[CadModel]]()
+    defer:
+        for model in models.view(): model.release()
+        models.close()
+    try import_solids(stage, gathered, warnings, &models)
+    try put_models(set, models.view())
     if not options.realize:
         if let instances = try import_instances(stage, gathered, options, warnings, depth): try set.put(instances_component(), (void*)instances)
     return set

@@ -45,15 +45,16 @@ struct Author:
         return spec
 
     ## A new attribute `name` of prim `prim` (spec `prim_spec`): its type
-    ## name, variability and default value (taken).
-    func attribute(prim: u32, prim_spec: usize, name: str, type_name: str, uniform: bool, value: Value) -> usize!:
+    ## name, variability and default value (taken); `custom` when no schema
+    ## declares it.
+    func attribute(prim: u32, prim_spec: usize, name: str, type_name: str, uniform: bool, value: Value, custom: bool = false) -> usize!:
         var owned = value
         errdefer owned.release()
         let token = try self.names.token(name)
         let path = try self.names.property(prim, token)
         let spec = try self.layer.create_spec(path, SpecType.attribute)
         let keys = self.layer.keys
-        try self.layer.set(spec, keys.custom, Value.scalar(ValueKind.boolean, 0))
+        try self.layer.set(spec, keys.custom, Value.scalar(ValueKind.boolean, 1 if custom else 0))
         try self.layer.set(spec, keys.type_name, Value.scalar(ValueKind.token, (u64)(try self.names.token(type_name))))
         try self.layer.set(spec, keys.variability, Value.scalar(ValueKind.variability, variability_uniform if uniform else variability_varying))
         try self.grow(prim_spec)

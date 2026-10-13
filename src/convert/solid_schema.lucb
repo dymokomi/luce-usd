@@ -1,0 +1,86 @@
+## UsdSolid's B-rep arrays: the names of the AOUSD proposal's draft schema
+## (proposals/UsdSolid: README.md and schema.usda, library prefix
+## PrelimUsdSolid), kept in this one table since the draft may rename them
+## before it lands in OpenUSD.
+##
+## One `BrepArray` prim (a Gprim) holds one or more B-reps in flat arrays,
+## each B-rep's entities consecutive, Weiler's Radial Edge model: regions
+## (the infinite outside a void region; a solid's inside a solid region; a
+## cavity another void region), each region's shells (outer first), each
+## shell's faceuses (two per face: the `same` one on the side its surface's
+## normal du x dv points to, the `opposite` one behind), each face's loops
+## (outer first) of edgeuses (one per face side of an edge: its edge, its
+## run with or against the edge's curve, the next edgeuse round the edge),
+## each edge's curve, parameter range and end vertices, each vertex's point.
+## Shapes live on multiple-apply API schemas: BrepPointAPI:vertexPoint,
+## BrepCurve3dNurbAPI:edge3dNurb and BrepSurfaceNurbAPI, NURBS only so far
+## (control vertices in double precision; a surface's row-major with U the
+## rows, V the columns).
+
+## The prim type.
+let brep_array_type = "BrepArray"
+## The API schemas a BrepArray of NURBS shapes applies.
+let solid_api_schemas: str[3] = ["BrepPointAPI:vertexPoint", "BrepCurve3dNurbAPI:edge3dNurb", "BrepSurfaceNurbAPI"]
+
+## Per B-rep.
+let brep_tolerance = "brep:intersectTol3d"
+let brep_extent = "brep:extent"
+let brep_region_count = "brep:regionCount"
+## Per region, shell, faceuse, face, loop, edgeuse, edge, vertex.
+let region_shell_count = "region:shellCount"
+let region_type = "region:type"
+let shell_faceuse_count = "shell:faceuseCount"
+let shell_wire_edge_count = "shell:wireEdgeCount"
+let shell_point_type = "shell:pointType"
+let faceuse_face = "faceuse:faceIndex"
+let faceuse_orientation = "faceuse:orientationType"
+let face_loop_count = "face:loopCount"
+let face_surface_type = "face:surfaceType"
+let face_trim_type = "face:trimType"
+let face_range = "face:range"
+let loop_edgeuse_count = "loop:edgeuseCount"
+let loop_vertex = "loop:vertexIndex"
+let edgeuse_edge = "edgeuse:edgeIndex"
+let edgeuse_orientation = "edgeuse:orientationType"
+let edgeuse_next = "edgeuse:nextRadialEUIndex"
+let edgeuse_entry = "edgeuse:thisRadialEntryType"
+let edge_curve_type = "edge:curveType"
+let edge_range = "edge:range"
+let edge_vertices = "edge:vertexIndices"
+let wire_curve_type = "wireEdge:curveType"
+let wire_range = "wireEdge:range"
+let wire_vertices = "wireEdge:vertexIndices"
+let vertex_point_type = "vertex:pointType"
+## The shapes.
+let vertex_positions = "brep:vertexPoint:point:position"
+let curve_points = "brep:edge3dNurb:curve3d:nurb:controlVertices"
+let curve_counts = "brep:edge3dNurb:curve3d:nurb:vertexCount"
+let curve_orders = "brep:edge3dNurb:curve3d:nurb:order"
+let curve_knots = "brep:edge3dNurb:curve3d:nurb:knots"
+let curve_weights = "brep:edge3dNurb:curve3d:nurb:weights"
+let surface_points = "brep:surface:nurb:controlVertices"
+let surface_u_counts = "brep:surface:nurb:uVertexCount"
+let surface_v_counts = "brep:surface:nurb:vVertexCount"
+let surface_u_orders = "brep:surface:nurb:uOrder"
+let surface_v_orders = "brep:surface:nurb:vOrder"
+let surface_u_knots = "brep:surface:nurb:uKnots"
+let surface_v_knots = "brep:surface:nurb:vKnots"
+let surface_weights = "brep:surface:nurb:weights"
+## Face names and paths, which the schema does not carry (custom).
+let face_names = "luce:faceName"
+let face_paths = "luce:facePath"
+
+## Tokens.
+let solid_region = "solidRegion"
+let void_region = "voidRegion"
+let same_side = "same"
+let opposite_side = "opposite"
+let top_entry = "topEntry"
+let bottom_entry = "bottomEntry"
+let point_api = "BrepPointAPI"
+let curve_nurb_api = "BrepCurve3dNurbAPI"
+let surface_nurb_api = "BrepSurfaceNurbAPI"
+let general_trim = "general"
+let no_point = "none"
+## A loop:vertexIndex for a loop of edgeuses (unused).
+let no_vertex: u32 = 4294967295

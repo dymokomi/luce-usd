@@ -1,0 +1,92 @@
+## CAD models through UsdSolid BrepArray prims (convert/export_solids.lucb,
+## convert/solids.lucb), as text and binary: a box, a box rounded G2 on
+## every edge (B-spline strips and corner patches), a dome (a sphere cut by
+## a plane), a drilled ball, two lumps, an open sheet, and a rounded box
+## shelled closed (a cavity, a void region inside a solid one). Each comes
+## back with its faces (their names), closed or open as it was, and its
+## volume; spheres, cylinders and planes come back analytic. An array whose
+## edge has three face sides (non-manifold) is refused by name.
+from luce_usd.usd import Usd
+from luce_cad.solids import CadSolids
+from luce_cad.modeling import CadModeling
+from luce_cad.model import CadModel
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.surfacing import CadSurfacing
+from luce_geocore.geocore import Mesh, Vector3
+from luce_std import paths, files, math
+
+func volume(mesh: Mesh) -> float!:
+    var total = 0.0
+    for t in 0..<mesh.index_count() // 3:
+        let a = mesh.vertex(mesh.index(t * 3)).position
+        let b = mesh.vertex(mesh.index(t * 3 + 1)).position
+        let c = mesh.vertex(mesh.index(t * 3 + 2)).position
+        total += a.dot(b.cross(c)) / 6.0
+    return total
+
+## `model` saved as `name` (.usda and .usdc) and loaded back: its faces,
+## their names and kinds, its closedness and its volume; the model read
+## from the text file.
+func trip(scratch: str, name: str, model: CadModel, within: float) -> CadModel!:
+    var kept: CadModel? = none
+    for extension in ["usda", "usdc"]:
+        let file = paths.join(scratch, f"{name}.{extension}")
+        Usd.save(CadGeometry.of_model(model), file)
+        let loaded = Usd.load(file)
+        assert(Usd.warnings() == "", f"{name}.{extension}: {Usd.warnings()}")
+        assert(CadGeometry.model_count(loaded) == 1)
+        let back = CadGeometry.model(loaded, 0)
+        assert(back.face_count() == model.face_count(), f"{name}: {back.face_count()} faces")
+        for face in 0..<model.face_count():
+            assert(back.face_name(face) == model.face_name(face) and back.face_surface_kind(face) == model.face_surface_kind(face), f"{name}: face {face}")
+        assert(CadSurfacing.is_closed(back) == CadSurfacing.is_closed(model))
+        if CadSurfacing.is_closed(model):
+            let before = volume(model.tessellate(32))
+            let after = volume(back.tessellate(32))
+            if math.abs(after - before) > within: print(f"{name}.{extension}: volume {after} against {before}")
+            assert(math.abs(after - before) <= within)
+        if kept == none: kept = back
+    return kept else trap("no model")
+
+pub func solid_tests(scratch: str) -> unit!:
+    _ = trip(scratch, "box", CadModeling.tagged(CadSolids.box(2.0, 3.0, 4.0), "b"), 1e-9)
+    let cube = CadModeling.tagged(CadSolids.box(20.0, 20.0, 20.0), "c")
+    _ = trip(scratch, "rounded", CadModeling.filleted(cube, "", 3.0, "f", 2), 1e-6)
+    let ball = CadModeling.tagged(CadSolids.sphere(10.0), "ball")
+    let lower = CadModeling.tagged(CadSolids.box(30.0, 15.0, 30.0), "k").transformed(Vector3(0.0, -7.5, 0.0), Vector3(), Vector3(1.0, 1.0, 1.0))
+    _ = trip(scratch, "dome", CadModeling.combined(ball, lower, 1), 1e-3)
+    # (The drilled ball's sphere comes back about the same axis, its seam
+    # where the patch starts: its mesh differs, both near the exact
+    # 3636.22 at 32 divisions.)
+    _ = trip(scratch, "drilled", CadModeling.combined(ball, CadModeling.tagged(CadSolids.cylinder(3.0, 30.0), "d"), 1), 1.5)
+    let far = CadModeling.tagged(CadSolids.box(5.0, 5.0, 5.0), "o").transformed(Vector3(30.0, 0.0, 0.0), Vector3(), Vector3(1.0, 1.0, 1.0))
+    _ = trip(scratch, "lumps", CadModeling.combined(CadModeling.tagged(CadSolids.box(5.0, 5.0, 5.0), "a"), far, 0), 1e-9)
+    _ = trip(scratch, "sheet", CadGeometry.model(CadSurfacing.unstitched(CadGeometry.of_model(cube), 0), 0), 0.0)
+    # (Its corner spheres likewise: exact 1915.32, 1915.15 before and
+    # 1915.24 after at 32 divisions.)
+    let hollow = trip(scratch, "hollow", CadModeling.shelled(CadModeling.filleted(cube, "", 3.0, "f", 1), "", 1.0, "w"), 0.2)
+    let info = files.read_text(paths.join(scratch, "hollow.usda"))
+    assert(info.contains("region:type = [\"voidRegion\", \"solidRegion\", \"voidRegion\"]") and info.contains("region:shellCount = [1, 2, 1]"))
+    assert(CadSurfacing.is_closed(hollow))
+    # An edge given a third face side: refused, nothing read, the prim named.
+    let text = files.read_text(paths.join(scratch, "box.usda"))
+    let marker = "uniform uint[] edgeuse:edgeIndex = ["
+    var broken = ""
+    var changed = false
+    for line in text.lines():
+        var kept = line
+        let at = line.index_of(marker) else -1
+        if at >= 0:
+            # The first edgeuse takes the second's edge.
+            let values = line[at + marker.length..<line.length - 1].split(", ")
+            var made = line[0..<at + marker.length] + values[1]
+            for k in 1..<values.length: made = made + ", " + values[k]
+            kept = made + "]"
+            changed = true
+        broken = broken + kept + "\n"
+    assert(changed)
+    files.write_text(paths.join(scratch, "nonmanifold.usda"), broken)
+    let refused = Usd.load(paths.join(scratch, "nonmanifold.usda"))
+    assert(CadGeometry.model_count(refused) == 0)
+    assert(Usd.warnings().contains("non-manifold") and Usd.warnings().contains("solid_0"), Usd.warnings())
+    print("PASS UsdSolid: a box, a box rounded G2 on every edge, a dome, a drilled ball, two lumps, an open sheet and a shelled box (a cavity) through BrepArray prims as text and binary, their faces, names, analytic kinds and volumes kept; a non-manifold array refused")

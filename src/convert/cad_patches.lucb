@@ -108,7 +108,8 @@ func arc_profile(ca: f64, cb: f64, radius: f64, low: f64, high: f64) -> Profile!
     for arc in 0..<arcs:
         let first = low + (f64)arc * span
         let middle = first + span * 0.5
-        let last = first + span
+        # The last arc ends at `high` exactly (sums of spans round off).
+        let last = high if arc + 1 == arcs else first + span
         try made.push(ca + radius * math.cos(middle) / middle_weight, cb + radius * math.sin(middle) / middle_weight, middle_weight)
         try made.push(ca + radius * math.cos(last), cb + radius * math.sin(last), 1.0)
         try made.knots.push(last)

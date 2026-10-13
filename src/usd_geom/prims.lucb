@@ -26,6 +26,8 @@ pub enum GprimKind as u8:
     ## A UsdVol particle field: ParticleField3DGaussianSplat, or a generic
     ## ParticleField (convert/particle_fields.lucb checks its kernel).
     particle_field = 12
+    ## UsdSolid's B-rep arrays (convert/solids.lucb).
+    brep_array = 13
 
 ## Whether a gprim kind is one of the intrinsic shapes (cube to plane).
 pub func is_shape(kind: GprimKind) -> bool:
@@ -153,6 +155,7 @@ func gprim_kind(stage: const Stage*, type_name: u32) -> GprimKind?:
     if type_name == t.capsule: return GprimKind.capsule
     if type_name == t.plane: return GprimKind.plane
     if type_name == t.particle_field_splat or type_name == t.particle_field: return GprimKind.particle_field
+    if type_name == t.brep_array: return GprimKind.brep_array
     return none
 
 func note_type(out: Gathered*, type_name: u32) -> !:

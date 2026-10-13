@@ -1,0 +1,187 @@
+## Analytic surfaces recognised in a BrepArray face's NURBS (solid_build.lucb),
+## so luce-cad's own paths (charts with seams and poles, closed-form
+## booleans) apply: a plane (a flat 2 by 2 net of orders 2); a surface of
+## revolution as the rational quadratic arcs cad_patches.lucb writes, U
+## round the axis, V along the profile: every row of on-curve control
+## points (U's even ones) a circle about one axis, each middle point and
+## weight its arc's (shoulder cos(span / 2)); then, along V, a line
+## (order 2) whose rows keep their radius (a cylinder) or change it evenly
+## (a cone), or arcs (order 3) whose profile circle is centred on the axis
+## (a sphere) or off it (a torus). Anything else stays a NURBS.
+
+## A recognised surface: its kind (luce-cad's: 0 plane, 1 cylinder, 2
+## cone, 4 sphere, 5 torus; -1 none), frame and sizes, and whether its
+## normal (luce-cad's: away from the axis or center) opposes the NURBS's
+## du x dv.
+struct Recognised:
+    var kind: i64
+    var origin: Vector3
+    var axis: Vector3
+    var reference: Vector3
+    var radius: f64
+    var angle: f64
+    var flipped: bool
+
+## The analytic surface of net `points` (rows U, `nu` by `nv`), `weights`,
+## orders `order_u` and `order_v`, within `tolerance`; kind -1 when none.
+func recognised(points: const Vector3[], weights: const f64[], nu: usize, nv: usize, order_u: usize, order_v: usize, tolerance: f64) -> Recognised!:
+    var nothing = Recognised(-1, Vector3(), Vector3(), Vector3(), 0.0, 0.0, false)
+    if order_u == 2 and order_v == 2 and nu == 2 and nv == 2:
+        let du = points[2].subtract(points[0])
+        let dv = points[1].subtract(points[0])
+        let n = du.cross(dv)
+        if n.length() <= 0.0: return nothing
+        let normal_unit = n.multiply_scalar(1.0 / n.length())
+        if math.abs(points[3].subtract(points[0]).dot(normal_unit)) > tolerance: return nothing
+        return Recognised(0, points[0], normal_unit, du, 0.0, 0.0, false)
+    if order_u != 3 or nu < 3 or nu % 2 == 0 or (order_v != 2 and order_v != 3) or nv < order_v: return nothing
+    # Each column of on-curve points (V index j) a circle: its center,
+    # radius and plane's normal.
+    var centers = Growing[Vector3]()
+    defer centers.close()
+    var radii = Growing[f64]()
+    defer radii.close()
+    var axis = Vector3()
+    for j in 0..<nv:
+        let (center, radius, normal) = row_circle(points, weights, nu, nv, j, tolerance) else return nothing
+        try centers.push(center)
+        try radii.push(radius)
+        if normal.length() > 0.0:
+            if axis.length() == 0.0: axis = normal
+            elif math.abs(math.abs(axis.dot(normal)) - 1.0) > 1e-9: return nothing
+    if axis.length() == 0.0: return nothing
+    # The centers on one line along the axis.
+    let base = centers.items[0]
+    for c in centers.view():
+        let off = c.subtract(base)
+        if off.subtract(axis.multiply_scalar(off.dot(axis))).length() > tolerance: return nothing
+    # The seam: u's first point's way from the axis.
+    let seam = points[0].subtract(base).subtract(axis.multiply_scalar(points[0].subtract(base).dot(axis)))
+    var reference = seam
+    if reference.length() <= tolerance:
+        # A pole at the first point: another row's.
+        reference = points[nv - 1].subtract(base).subtract(axis.multiply_scalar(points[nv - 1].subtract(base).dot(axis)))
+    if reference.length() <= tolerance: return nothing
+    var made = Recognised(-1, base, axis, reference, 0.0, 0.0, false)
+    if order_v == 2:
+        # A line along V: every column's rows, first and last.
+        let h0 = 0.0
+        let h1 = centers.items[nv - 1].subtract(base).dot(axis)
+        let r0 = radii.items[0]
+        let r1 = radii.items[nv - 1]
+        if math.abs(h1 - h0) <= tolerance: return nothing
+        for j in 0..<nv:
+            let h = centers.items[j].subtract(base).dot(axis)
+            let expected = r0 + (r1 - r0) * (h - h0) / (h1 - h0)
+            if math.abs(radii.items[j] - expected) > tolerance: return nothing
+        if math.abs(r1 - r0) <= tolerance:
+            made.kind = 1
+            made.radius = r0
+        else:
+            made.kind = 2
+            made.radius = r0
+            made.angle = math.atan2(r1 - r0, h1 - h0)
+            if r0 <= tolerance or math.abs(made.angle) >= 1.5707963267948966: return nothing
+    else:
+        # Arcs along V: the profile's on-curve points (h, r) on one circle.
+        let (ok, ph, pr, rho) = profile_circle(centers.view(), radii.view(), base, axis, weights[1] / weights[0], tolerance)
+        if not ok: return nothing
+        made.origin = base.add(axis.multiply_scalar(ph))
+        if math.abs(pr) <= tolerance:
+            made.kind = 4
+            made.radius = rho
+        else:
+            if pr < rho: return nothing
+            made.kind = 5
+            made.radius = pr
+            made.angle = rho
+    made.flipped = analytic_opposes(&made, points, nu, nv)
+    return made
+
+## Column `j`'s on-curve points (U's even ones) as a circle: its center,
+## radius and plane normal (zero for a pole: every point one); none when
+## they are not one, or a middle point or weight is not its arc's.
+func row_circle(points: const Vector3[], weights: const f64[], nu: usize, nv: usize, j: usize, tolerance: f64) -> (Vector3, f64, Vector3)?:
+    let first = points[j]
+    var pole = true
+    for i in 0..<nu: pole = pole and points[i * nv + j].subtract(first).length() <= tolerance
+    if pole: return (first, 0.0, Vector3())
+    let arcs = (nu - 1) // 2
+    # Three on-curve points: the first three arcs' ends (a full circle's
+    # last is its first), or a single arc's ends and its middle, from its
+    # shoulder: (a + 2 w s + c) / (2 + 2 w).
+    let a = points[j]
+    var b = points[2 * nv + j]
+    var c = points[(4 if arcs >= 2 else 2) * nv + j]
+    if arcs == 1:
+        let w = weights[nv + j] / weights[j]
+        b = a.add(c).add(points[nv + j].multiply_scalar(2.0 * w)).multiply_scalar(1.0 / (2.0 + 2.0 * w))
+    let (center, radius, normal) = circle_through(a, b, c) else return none
+    for i in 0..<nu:
+        if i % 2 == 1: continue
+        let p = points[i * nv + j]
+        if math.abs(p.subtract(center).length() - radius) > tolerance or math.abs(p.subtract(center).dot(normal)) > tolerance: return none
+    # Each arc's shoulder: on its bisector, r / cos(half), weight cos(half)
+    # of its ends' (the ends' weights alike).
+    for k in 0..<arcs:
+        let p0 = points[(2 * k) * nv + j]
+        let p1 = points[(2 * k + 2) * nv + j]
+        let shoulder = points[(2 * k + 1) * nv + j]
+        let w0 = weights[(2 * k) * nv + j]
+        let w1 = weights[(2 * k + 1) * nv + j]
+        let half = math.acos(math.clamp(p0.subtract(center).dot(p1.subtract(center)) / (radius * radius), -1.0, 1.0)) * 0.5
+        if math.abs(w1 / w0 - math.cos(half)) > 1e-9: return none
+        let bisector = p0.add(p1).multiply_scalar(0.5).subtract(center)
+        if bisector.length() <= 0.0: return none
+        let expected = center.add(bisector.multiply_scalar(radius / (math.cos(half) * bisector.length())))
+        if shoulder.subtract(expected).length() > tolerance * 10.0: return none
+    return (center, radius, normal)
+
+## The circle through three points: center, radius and normal_unit normal.
+func circle_through(a: Vector3, b: Vector3, c: Vector3) -> (Vector3, f64, Vector3)?:
+    let ab = b.subtract(a)
+    let ac = c.subtract(a)
+    let n = ab.cross(ac)
+    let n2 = n.dot(n)
+    if n2 <= 1e-300: return none
+    let center = a.add(n.cross(ab).multiply_scalar(ac.dot(ac)).add(ac.cross(n).multiply_scalar(ab.dot(ab))).multiply_scalar(0.5 / n2))
+    return (center, center.subtract(a).length(), n.multiply_scalar(1.0 / math.sqrt(n2)))
+
+## The profile circle (center (h, r) and radius) through the columns'
+## (height, radius) along `axis` from `base`: its on-curve columns (even
+## ones) on it within `tolerance`. A single arc's middle comes from its
+## shoulder column, of weight `shoulder` (its ends' 1).
+func profile_circle(centers: const Vector3[], radii: const f64[], base: Vector3, axis: Vector3, shoulder: f64, tolerance: f64) -> (bool, f64, f64, f64):
+    let n = centers.length
+    let last = n - 1
+    let a = Vector3(centers[0].subtract(base).dot(axis), radii[0], 0.0)
+    var b = Vector3(centers[2].subtract(base).dot(axis), radii[2], 0.0)
+    let far = 4 if last >= 4 else 2
+    let c = Vector3(centers[far].subtract(base).dot(axis), radii[far], 0.0)
+    if last == 2:
+        let s = Vector3(centers[1].subtract(base).dot(axis), radii[1], 0.0)
+        b = a.add(c).add(s.multiply_scalar(2.0 * shoulder)).multiply_scalar(1.0 / (2.0 + 2.0 * shoulder))
+    let (center, rho, _) = circle_through(a, b, c) else return (false, 0.0, 0.0, 0.0)
+    for j in 0..<n:
+        if j % 2 == 1: continue
+        let p = Vector3(centers[j].subtract(base).dot(axis), radii[j], 0.0)
+        if math.abs(p.subtract(center).length() - rho) > tolerance: return (false, 0.0, 0.0, 0.0)
+    return (true, center.x, center.y, rho)
+
+## Whether recognised surface `s`'s normal (away from its axis or center,
+## a plane's its axis) opposes the net's du x dv, judged in the net's
+## middle.
+func analytic_opposes(s: const Recognised*, points: const Vector3[], nu: usize, nv: usize) -> bool:
+    let i = nu - 2 if nu // 2 > nu - 2 else nu // 2
+    let j = nv - 2 if nv // 2 > nv - 2 else nv // 2
+    let p = points[i * nv + j]
+    let du = points[(i + 1) * nv + j].subtract(p)
+    let dv = points[i * nv + j + 1].subtract(p)
+    let n = du.cross(dv)
+    let off = p.subtract(s.origin)
+    var away = off.subtract(s.axis.multiply_scalar(off.dot(s.axis)))
+    if s.kind == 4: away = off
+    if s.kind == 5:
+        let ring = away.multiply_scalar(s.radius / math.max(away.length(), 1e-300))
+        away = off.subtract(ring)
+    return n.dot(away) < 0.0

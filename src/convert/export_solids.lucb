@@ -1,0 +1,498 @@
+## A set's CAD models as UsdSolid BrepArray prims (solid_schema.lucb): one
+## per model's B-rep, its standalone patches left to the NurbsPatch prims
+## (export_cad.lucb), beside which these are written.
+##
+## - Vertices are the B-rep's, placed; edges' curves NURBS running from
+##   their start vertex to their end one (lines of order 2, arcs and
+##   ellipse arcs rational quadratics of at most 90 degrees a span,
+##   B-splines as they are, turned round when the edge runs against them),
+##   `edge:range` their knot interval.
+## - Each face's surface is its support as a NURBS, as the NurbsPatch is
+##   (cad_patches.lucb), its net written with U the rows; `face:range` its
+##   knot box. Its loops run counterclockwise about the surface's normal
+##   (du x dv), its holes clockwise: ours run so about the face's outward
+##   normal, so a face whose surface's normal points in has its loops
+##   turned. No trim curves (BrepCurveUvNurbAPI is optional).
+## - Shells are the faces joined by shared edges. A closed one inside an
+##   odd number of others' boxes is a cavity, else a lump's outside; an
+##   open one a sheet. The outside is the void region 0, holding each
+##   lump's outward faceuses and each sheet's both; each lump is a solid
+##   region (its inward faceuses, then each cavity's it holds); each cavity
+##   is a void region.
+## - An edge's two edgeuses are each other's next round it; an edgeuse
+##   enters its face from the top (the surface's normal side) when it runs
+##   against its edge, for loops counterclockwise about that normal.
+## - `brep:intersectTol3d` is the model's tolerance, or its tolerant edges'
+##   and vertices' widest precision (a warning when that is over ten times
+##   the model's). Face names and paths go in custom `luce:faceName` and
+##   `luce:facePath` string arrays.
+
+## One B-rep's arrays as written (tokens and strings as their name ids).
+struct SolidArrays:
+    var regions: Growing[u32]
+    var region_types: Growing[u32]
+    var shell_faceuses: Growing[u32]
+    var shell_wires: Growing[u32]
+    var shell_points: Growing[u32]
+    var faceuse_faces: Growing[u32]
+    var faceuse_sides: Growing[u32]
+    var face_loops: Growing[u32]
+    var face_surfaces: Growing[u32]
+    var face_trims: Growing[u32]
+    var face_ranges: Growing[f64]
+    var loop_edgeuses: Growing[u32]
+    var loop_vertices: Growing[u32]
+    var edgeuse_edges: Growing[u32]
+    var edgeuse_sides: Growing[u32]
+    var edgeuse_next: Growing[u32]
+    var edgeuse_entries: Growing[u32]
+    var edge_types: Growing[u32]
+    var edge_ranges: Growing[f64]
+    var edge_ends: Growing[i32]
+    var vertex_types: Growing[u32]
+    var positions: Growing[Vector3]
+    var curve_points: Growing[Vector3]
+    var curve_counts: Growing[u32]
+    var curve_orders: Growing[u32]
+    var curve_knots: Growing[f64]
+    var curve_weights: Growing[f64]
+    var surface_points: Growing[Vector3]
+    var surface_u: Growing[u32]
+    var surface_v: Growing[u32]
+    var surface_u_orders: Growing[u32]
+    var surface_v_orders: Growing[u32]
+    var surface_u_knots: Growing[f64]
+    var surface_v_knots: Growing[f64]
+    var surface_weights: Growing[f64]
+    var names: Growing[u32]
+    var paths: Growing[u32]
+
+    static func empty() -> SolidArrays:
+        return SolidArrays(Growing[u32](), Growing[u32](), Growing[u32](), Growing[u32](), Growing[u32](), Growing[u32](), Growing[u32](), Growing[u32](), Growing[u32](), Growing[u32](),
+                           Growing[f64](), Growing[u32](), Growing[u32](), Growing[u32](), Growing[u32](), Growing[u32](), Growing[u32](), Growing[u32](), Growing[f64](), Growing[i32](),
+                           Growing[u32](), Growing[Vector3](), Growing[Vector3](), Growing[u32](), Growing[u32](), Growing[f64](), Growing[f64](), Growing[Vector3](), Growing[u32](), Growing[u32](),
+                           Growing[u32](), Growing[u32](), Growing[f64](), Growing[f64](), Growing[f64](), Growing[u32](), Growing[u32]())
+
+    func close():
+        self.regions.close()
+        self.region_types.close()
+        self.shell_faceuses.close()
+        self.shell_wires.close()
+        self.shell_points.close()
+        self.faceuse_faces.close()
+        self.faceuse_sides.close()
+        self.face_loops.close()
+        self.face_surfaces.close()
+        self.face_trims.close()
+        self.face_ranges.close()
+        self.loop_edgeuses.close()
+        self.loop_vertices.close()
+        self.edgeuse_edges.close()
+        self.edgeuse_sides.close()
+        self.edgeuse_next.close()
+        self.edgeuse_entries.close()
+        self.edge_types.close()
+        self.edge_ranges.close()
+        self.edge_ends.close()
+        self.vertex_types.close()
+        self.positions.close()
+        self.curve_points.close()
+        self.curve_counts.close()
+        self.curve_orders.close()
+        self.curve_knots.close()
+        self.curve_weights.close()
+        self.surface_points.close()
+        self.surface_u.close()
+        self.surface_v.close()
+        self.surface_u_orders.close()
+        self.surface_v_orders.close()
+        self.surface_u_knots.close()
+        self.surface_v_knots.close()
+        self.surface_weights.close()
+        self.names.close()
+        self.paths.close()
+
+## Every CAD model's B-rep of the set as a BrepArray prim under `home`.
+func export_solids(set: const GeometrySet*, author: Author*, home: u32, warnings: Warnings*) -> !:
+    var name = Growing[u8]()
+    defer name.close()
+    var written: usize = 0
+    for reference in set_models(set):
+        let model = reference.value()
+        let b = model.brep() else continue
+        if b.face_count() == 0: continue
+        name.clear()
+        try name.assign("solid_".bytes)
+        try append_count(&name, written)
+        let path = try author.names.child(home, try author.names.token((str)name.view()))
+        var arrays = SolidArrays.empty()
+        defer arrays.close()
+        packed(author.names, model, b, &arrays, warnings) catch failure:
+            if failure.code == memory.exhausted: error(failure.code, failure.message)
+            var line = Growing[u8]()
+            defer line.close()
+            try line.assign("A CAD B-rep was left out of its BrepArray: ".bytes)
+            for byte in failure.message.bytes: try line.push(byte)
+            try warnings.add((str)line.view())
+            continue
+        try write_solid(author, path, &arrays, model, b)
+        written += 1
+
+## Model `model`'s B-rep `b` packed into `out` (see the header).
+func packed(names: Names*, model: const CadModel*, b: const BrepModel*, out: SolidArrays*, warnings: Warnings*) -> !:
+    let faces = (usize)b.face_count()
+    let edges = (usize)b.edge_count()
+    let vertices = (usize)b.vertex_count()
+    # Standalone patches come first in the model's faces.
+    let standalone = model.face_count() - b.face_count()
+    # Each face's placement and whether its surface's normal is its outward one.
+    var placements = Growing[Matrix4]()
+    defer placements.close()
+    var agrees = Growing[bool]()
+    defer agrees.close()
+    var uv = Growing[Vector3]()
+    defer uv.close()
+    var sizes = Growing[i64]()
+    defer sizes.close()
+    let same = try names.token(same_side)
+    let opposite = try names.token(opposite_side)
+    for f in 0..<faces:
+        var support = try model.face_support(standalone + (i64)f)
+        defer support.close()
+        try placements.push(support.placement)
+        try model.face_trim_uv(standalone + (i64)f, cad_divisions, &uv, &sizes)
+        var patch = try patch_of(&support, uv.view(), sizes.view())
+        defer patch.close()
+        try agrees.push(patch.right_handed)
+        try put_surface(&patch, out)
+        try out.face_surfaces.push(try names.token(surface_nurb_api))
+        try out.face_trims.push(try names.token(general_trim))
+        let name = try b.face_name((i64)f)
+        let path = try b.face_path((i64)f)
+        try out.names.push(try names.token(name))
+        try out.paths.push(try names.token(path))
+    # Each vertex and edge placed as the first face using it is.
+    var edge_face = Growing[i64]()
+    defer edge_face.close()
+    try edge_face.fill(edges, -1)
+    var edge_uses = Growing[i64]()
+    defer edge_uses.close()
+    try edge_uses.fill(edges, 0)
+    for f in 0..<faces:
+        var record = try b.face_record((i64)f)
+        defer record.close()
+        for use in record.uses:
+            let e = (usize)(use if use > 0 else -use) - 1
+            if edge_face.items[e] < 0: edge_face.items[e] = (i64)f
+            edge_uses.items[e] += 1
+    var vertex_face = Growing[i64]()
+    defer vertex_face.close()
+    try vertex_face.fill(vertices, -1)
+    for e in 0..<edges:
+        if edge_face.items[e] < 0: error(errors.invalid, "an edge no face uses (a wire edge)")
+        if edge_uses.items[e] > 2: error(errors.invalid, "an edge more than two faces use: non-manifold B-reps are not supported yet")
+        var curve = try b.edge_record((i64)e)
+        defer curve.close()
+        for v in [curve.start, curve.end]:
+            if vertex_face.items[(usize)v] < 0: vertex_face.items[(usize)v] = edge_face.items[e]
+        try put_curve(b, (i64)e, placements.items[(usize)edge_face.items[e]], out)
+        try out.edge_types.push(try names.token(curve_nurb_api))
+        try out.edge_ends.push((i32)curve.start)
+        try out.edge_ends.push((i32)curve.end)
+    for v in 0..<vertices:
+        let face = vertex_face.items[v] if vertex_face.items[v] >= 0 else 0
+        try out.positions.push(placements.items[(usize)face].transform_point(try b.vertex_at((i64)v)))
+        try out.vertex_types.push(try names.token(point_api))
+    # Loops and edgeuses, counterclockwise about each surface's normal.
+    var edge_edgeuses = Growing[i64]()
+    defer edge_edgeuses.close()
+    for f in 0..<faces:
+        var record = try b.face_record((i64)f)
+        defer record.close()
+        try out.face_loops.push((u32)record.sizes.length)
+        var at: usize = 0
+        for size in record.sizes:
+            let count = (usize)size
+            try out.loop_edgeuses.push((u32)count)
+            try out.loop_vertices.push(no_vertex)
+            for k in 0..<count:
+                var use = record.uses[at + k]
+                if not agrees.items[f]: use = -record.uses[at + count - 1 - k]
+                let e = (use if use > 0 else -use) - 1
+                try out.edgeuse_edges.push((u32)e)
+                try out.edgeuse_sides.push(same if use > 0 else opposite)
+                try out.edgeuse_entries.push(try names.token(bottom_entry if use > 0 else top_entry))
+                try edge_edgeuses.push(e)
+            at += count
+    # Round each edge: its edgeuses in a ring.
+    try out.edgeuse_next.fill(out.edgeuse_edges.count, 0)
+    var last = Growing[i64]()
+    defer last.close()
+    try last.fill(edges, -1)
+    var first = Growing[i64]()
+    defer first.close()
+    try first.fill(edges, -1)
+    for u in 0..<edge_edgeuses.count:
+        let e = (usize)edge_edgeuses.items[u]
+        if last.items[e] >= 0: out.edgeuse_next.items[(usize)last.items[e]] = (u32)u
+        else: first.items[e] = (i64)u
+        last.items[e] = (i64)u
+    for e in 0..<edges:
+        if last.items[e] >= 0: out.edgeuse_next.items[(usize)last.items[e]] = (u32)first.items[e]
+    try put_regions(names, b, out, agrees.view())
+    _ = warnings
+
+## A patch's surface onto the surface arrays: its net with U the rows (the
+## patch holds U fastest), its knot box onto the face ranges.
+func put_surface(patch: const Patch*, out: SolidArrays*) -> !:
+    for u in 0..<patch.nu:
+        for v in 0..<patch.nv:
+            try out.surface_points.push(patch.points.items[v * patch.nu + u])
+            try out.surface_weights.push(patch.weights.items[v * patch.nu + u])
+    try out.surface_u.push((u32)patch.nu)
+    try out.surface_v.push((u32)patch.nv)
+    try out.surface_u_orders.push((u32)patch.order_u)
+    try out.surface_v_orders.push((u32)patch.order_v)
+    for k in patch.knots_u.view(): try out.surface_u_knots.push(k)
+    for k in patch.knots_v.view(): try out.surface_v_knots.push(k)
+    try out.face_ranges.push(patch.knots_u.items[patch.order_u - 1])
+    try out.face_ranges.push(patch.knots_v.items[patch.order_v - 1])
+    try out.face_ranges.push(patch.knots_u.items[patch.nu])
+    try out.face_ranges.push(patch.knots_v.items[patch.nv])
+
+## The regions, shells and faceuses of `out`'s faces (see the header):
+## `agrees[f]` whether face f's surface's normal is its outward one.
+func put_regions(names: Names*, b: const BrepModel*, out: SolidArrays*, agrees: const bool[]) -> !:
+    let faces = (usize)b.face_count()
+    let edges = (usize)b.edge_count()
+    # Faces joined by shared edges, as a union-find.
+    var root = Growing[usize]()
+    defer root.close()
+    for f in 0..<faces: try root.push(f)
+    var edge_face = Growing[i64]()
+    defer edge_face.close()
+    try edge_face.fill(edges, -1)
+    var edge_uses = Growing[i64]()
+    defer edge_uses.close()
+    try edge_uses.fill(edges, 0)
+    for f in 0..<faces:
+        var record = try b.face_record((i64)f)
+        defer record.close()
+        for use in record.uses:
+            let e = (usize)(use if use > 0 else -use) - 1
+            edge_uses.items[e] += 1
+            if edge_face.items[e] < 0: edge_face.items[e] = (i64)f
+            else: join_shells(&root, (usize)edge_face.items[e], f)
+    # Each shell: its faces' box, whether it closes.
+    var shell_of = Growing[i64]()
+    defer shell_of.close()
+    try shell_of.fill(faces, -1)
+    var shells: usize = 0
+    var lows = Growing[Vector3]()
+    defer lows.close()
+    var highs = Growing[Vector3]()
+    defer highs.close()
+    var closed = Growing[bool]()
+    defer closed.close()
+    for f in 0..<faces:
+        let r = shell_root(&root, f)
+        if shell_of.items[r] < 0:
+            shell_of.items[r] = (i64)shells
+            shells += 1
+            try lows.push(Vector3(1.0e300, 1.0e300, 1.0e300))
+            try highs.push(Vector3(-1.0e300, -1.0e300, -1.0e300))
+            try closed.push(true)
+        shell_of.items[f] = shell_of.items[r]
+    for f in 0..<faces:
+        let s = (usize)shell_of.items[f]
+        var record = try b.face_record((i64)f)
+        defer record.close()
+        for use in record.uses:
+            let e = (usize)(use if use > 0 else -use) - 1
+            if edge_uses.items[e] != 2: closed.items[s] = false
+            for end in 0..<(usize)2:
+                let p = out.positions.items[(usize)out.edge_ends.items[e * 2 + end]]
+                lows.items[s] = Vector3(math.min(lows.items[s].x, p.x), math.min(lows.items[s].y, p.y), math.min(lows.items[s].z, p.z))
+                highs.items[s] = Vector3(math.max(highs.items[s].x, p.x), math.max(highs.items[s].y, p.y), math.max(highs.items[s].z, p.z))
+    # A closed shell inside an odd number of others' boxes is a cavity; it
+    # belongs to the smallest lump's box holding it.
+    var cavity = Growing[bool]()
+    defer cavity.close()
+    for s in 0..<shells:
+        var depth = 0
+        for t in 0..<shells:
+            if t != s and closed.items[t] and closed.items[s] and box_inside(lows.items[s], highs.items[s], lows.items[t], highs.items[t]): depth += 1
+        try cavity.push(closed.items[s] and depth % 2 == 1)
+    var owner = Growing[i64]()
+    defer owner.close()
+    for s in 0..<shells:
+        var best: i64 = -1
+        if cavity.items[s]:
+            for t in 0..<shells:
+                if t == s or cavity.items[t] or not closed.items[t] or not box_inside(lows.items[s], highs.items[s], lows.items[t], highs.items[t]): continue
+                if best < 0 or box_volume(lows.items[t], highs.items[t]) < box_volume(lows.items[(usize)best], highs.items[(usize)best]): best = (i64)t
+        try owner.push(best)
+    let solid = try names.token(solid_region)
+    let empty = try names.token(void_region)
+    let none_point = try names.token(no_point)
+    # The outside: each lump's outward faceuses, each sheet's both.
+    try out.region_types.push(empty)
+    var outside: u32 = 0
+    for s in 0..<shells:
+        if cavity.items[s]: continue
+        outside += 1
+        try put_shell(names, out, shell_of.view(), s, agrees, true, not closed.items[s])
+    try out.regions.push(outside)
+    # Each lump: its inward faceuses, then its cavities'.
+    for s in 0..<shells:
+        if cavity.items[s] or not closed.items[s]: continue
+        try out.region_types.push(solid)
+        var count: u32 = 1
+        try put_shell(names, out, shell_of.view(), s, agrees, false, false)
+        for c in 0..<shells:
+            if not cavity.items[c] or owner.items[c] != (i64)s: continue
+            try put_shell(names, out, shell_of.view(), c, agrees, false, false)
+            count += 1
+        try out.regions.push(count)
+    # Each cavity: its faceuses facing into it.
+    for c in 0..<shells:
+        if not cavity.items[c]: continue
+        if owner.items[c] < 0: error(errors.invalid, "a cavity no lump holds")
+        try out.region_types.push(empty)
+        try out.regions.push(1)
+        try put_shell(names, out, shell_of.view(), c, agrees, true, false)
+    for _ in 0..<out.shell_faceuses.count:
+        try out.shell_wires.push(0)
+        try out.shell_points.push(none_point)
+
+## Shell `s`'s faceuses onto `out`: its faces' outward ones (`outward`) or
+## inward ones, or both (`both`, a sheet).
+func put_shell(names: Names*, out: SolidArrays*, shell_of: const i64[], s: usize, agrees: const bool[], outward: bool, both: bool) -> !:
+    let same = try names.token(same_side)
+    let opposite = try names.token(opposite_side)
+    var count: u32 = 0
+    for f in 0..<shell_of.length:
+        if shell_of[f] != (i64)s: continue
+        # The outward side is the surface's normal side when they agree.
+        let out_side = same if agrees[f] else opposite
+        let in_side = opposite if agrees[f] else same
+        try out.faceuse_faces.push((u32)f)
+        try out.faceuse_sides.push(out_side if outward else in_side)
+        count += 1
+        if both:
+            try out.faceuse_faces.push((u32)f)
+            try out.faceuse_sides.push(in_side)
+            count += 1
+    try out.shell_faceuses.push(count)
+
+func shell_root(root: Growing[usize]*, f: usize) -> usize:
+    var at = f
+    while root.items[at] != at:
+        root.items[at] = root.items[root.items[at]]
+        at = root.items[at]
+    return at
+
+func join_shells(root: Growing[usize]*, a: usize, b: usize):
+    let ra = shell_root(root, a)
+    let rb = shell_root(root, b)
+    if ra != rb: root.items[ra] = rb
+
+## Whether box (low, high) lies inside box (outer_low, outer_high).
+func box_inside(low: Vector3, high: Vector3, outer_low: Vector3, outer_high: Vector3) -> bool:
+    return low.x >= outer_low.x and low.y >= outer_low.y and low.z >= outer_low.z and high.x <= outer_high.x and high.y <= outer_high.y and high.z <= outer_high.z and (low.x > outer_low.x or high.x < outer_high.x or low.y > outer_low.y or high.y < outer_high.y or low.z > outer_low.z or high.z < outer_high.z)
+
+func box_volume(low: Vector3, high: Vector3) -> f64:
+    return (high.x - low.x) * (high.y - low.y) * (high.z - low.z)
+
+## The BrepArray prim at `path` from `arrays` (model `model`'s B-rep `b`).
+func write_solid(author: Author*, path: u32, arrays: const SolidArrays*, model: const CadModel*, b: const BrepModel*) -> !:
+    let names = author.names
+    let tokens = try GeomTokens.of(names)
+    let spec = try author.define(path, try names.token(brep_array_type), tokens.xform)
+    let list = try ListOp.create()
+    try author.layer.set(spec, author.layer.keys.api_schemas, Value.of_object(ValueKind.token_list_op, (void*)list))
+    for schema in solid_api_schemas: try list.push(ListPart.prepended, ListItem(a = (u64)(try names.token(schema)), b = 0, offset = 0.0, scale = 1.0, custom = none))
+    # Its box (vertices and nets) and tolerance (the widest precision).
+    var low = Vector3(1.0e300, 1.0e300, 1.0e300)
+    var high = Vector3(-1.0e300, -1.0e300, -1.0e300)
+    for group in [arrays.positions.view(), arrays.surface_points.view()]:
+        for p in group:
+            low = Vector3(math.min(low.x, p.x), math.min(low.y, p.y), math.min(low.z, p.z))
+            high = Vector3(math.max(high.x, p.x), math.max(high.y, p.y), math.max(high.z, p.z))
+    var tolerance = b.model_tolerance()
+    for e in 0..<b.edge_count(): tolerance = math.max(tolerance, try b.edge_precision_of(e))
+    for v in 0..<b.vertex_count(): tolerance = math.max(tolerance, try b.vertex_precision_of(v))
+    _ = model
+    let box: f64[6] = [low.x, low.y, low.z, high.x, high.y, high.z]
+    let extent: f32[6] = [(f32)low.x, (f32)low.y, (f32)low.z, (f32)high.x, (f32)high.y, (f32)high.z]
+    _ = try author.attribute(path, spec, "extent", "float3[]", false, try array_of(ValueKind.vec3f, 2, u8[]((u8*)&extent[0], 24)))
+    let tolerances: f64[1] = [tolerance]
+    _ = try author.attribute(path, spec, brep_tolerance, "double[]", true, try array_of(ValueKind.double, 1, u8[]((u8*)&tolerances[0], 8)))
+    _ = try author.attribute(path, spec, brep_extent, "double3[]", true, try array_of(ValueKind.vec3d, 2, u8[]((u8*)&box[0], 48)))
+    let region_count: u32[1] = [(u32)arrays.region_types.count]
+    _ = try author.attribute(path, spec, brep_region_count, "uint[]", true, try array_of(ValueKind.uint, 1, u8[]((u8*)&region_count[0], 4)))
+    try write_uints(author, path, spec, region_shell_count, arrays.regions.view())
+    try write_ids(author, path, spec, region_type, "token[]", ValueKind.token, arrays.region_types.view())
+    try write_uints(author, path, spec, shell_faceuse_count, arrays.shell_faceuses.view())
+    try write_uints(author, path, spec, shell_wire_edge_count, arrays.shell_wires.view())
+    try write_ids(author, path, spec, shell_point_type, "token[]", ValueKind.token, arrays.shell_points.view())
+    try write_uints(author, path, spec, faceuse_face, arrays.faceuse_faces.view())
+    try write_ids(author, path, spec, faceuse_orientation, "token[]", ValueKind.token, arrays.faceuse_sides.view())
+    try write_uints(author, path, spec, face_loop_count, arrays.face_loops.view())
+    try write_ids(author, path, spec, face_surface_type, "token[]", ValueKind.token, arrays.face_surfaces.view())
+    try write_ids(author, path, spec, face_trim_type, "token[]", ValueKind.token, arrays.face_trims.view())
+    try write_doubles(author, path, spec, face_range, "double2[]", ValueKind.vec2d, 2, arrays.face_ranges.view())
+    try write_uints(author, path, spec, loop_edgeuse_count, arrays.loop_edgeuses.view())
+    try write_uints(author, path, spec, loop_vertex, arrays.loop_vertices.view())
+    try write_uints(author, path, spec, edgeuse_edge, arrays.edgeuse_edges.view())
+    try write_ids(author, path, spec, edgeuse_orientation, "token[]", ValueKind.token, arrays.edgeuse_sides.view())
+    try write_uints(author, path, spec, edgeuse_next, arrays.edgeuse_next.view())
+    try write_ids(author, path, spec, edgeuse_entry, "token[]", ValueKind.token, arrays.edgeuse_entries.view())
+    try write_ids(author, path, spec, edge_curve_type, "token[]", ValueKind.token, arrays.edge_types.view())
+    try write_doubles(author, path, spec, edge_range, "double[]", ValueKind.double, 1, arrays.edge_ranges.view())
+    let ends = arrays.edge_ends.view()
+    _ = try author.attribute(path, spec, edge_vertices, "int2[]", true, try array_of(ValueKind.vec2i, ends.length // 2, u8[]((u8*)ends.data, ends.length * 4)))
+    var no_ids: u32[1] = [0]
+    var no_numbers: f64[1] = [0.0]
+    try write_ids(author, path, spec, wire_curve_type, "token[]", ValueKind.token, no_ids[..<0])
+    try write_doubles(author, path, spec, wire_range, "double[]", ValueKind.double, 1, no_numbers[..<0])
+    _ = try author.attribute(path, spec, wire_vertices, "int2[]", true, try array_of(ValueKind.vec2i, 0, u8[]((u8*)&no_ids[0], 0)))
+    try write_ids(author, path, spec, vertex_point_type, "token[]", ValueKind.token, arrays.vertex_types.view())
+    try write_points(author, path, spec, vertex_positions, arrays.positions.view())
+    try write_points(author, path, spec, curve_points, arrays.curve_points.view())
+    try write_uints(author, path, spec, curve_counts, arrays.curve_counts.view())
+    try write_uints(author, path, spec, curve_orders, arrays.curve_orders.view())
+    try write_doubles(author, path, spec, curve_knots, "double[]", ValueKind.double, 1, arrays.curve_knots.view())
+    try write_doubles(author, path, spec, curve_weights, "double[]", ValueKind.double, 1, arrays.curve_weights.view())
+    try write_points(author, path, spec, surface_points, arrays.surface_points.view())
+    try write_uints(author, path, spec, surface_u_counts, arrays.surface_u.view())
+    try write_uints(author, path, spec, surface_v_counts, arrays.surface_v.view())
+    try write_uints(author, path, spec, surface_u_orders, arrays.surface_u_orders.view())
+    try write_uints(author, path, spec, surface_v_orders, arrays.surface_v_orders.view())
+    try write_doubles(author, path, spec, surface_u_knots, "double[]", ValueKind.double, 1, arrays.surface_u_knots.view())
+    try write_doubles(author, path, spec, surface_v_knots, "double[]", ValueKind.double, 1, arrays.surface_v_knots.view())
+    try write_doubles(author, path, spec, surface_weights, "double[]", ValueKind.double, 1, arrays.surface_weights.view())
+    _ = try author.attribute(path, spec, face_names, "string[]", true, try array_of(ValueKind.string, arrays.names.count, u8[]((u8*)arrays.names.items.data, arrays.names.count * 4)), true)
+    _ = try author.attribute(path, spec, face_paths, "string[]", true, try array_of(ValueKind.string, arrays.paths.count, u8[]((u8*)arrays.paths.items.data, arrays.paths.count * 4)), true)
+
+## A uniform uint[] attribute.
+func write_uints(author: Author*, path: u32, spec: usize, name: str, values: const u32[]) -> !:
+    _ = try author.attribute(path, spec, name, "uint[]", true, try array_of(ValueKind.uint, values.length, u8[]((u8*)values.data, values.length * 4)))
+
+## A uniform token[] or string[] attribute of name ids.
+func write_ids(author: Author*, path: u32, spec: usize, name: str, type_name: str, kind: ValueKind, values: const u32[]) -> !:
+    _ = try author.attribute(path, spec, name, type_name, true, try array_of(kind, values.length, u8[]((u8*)values.data, values.length * 4)))
+
+## A uniform double array attribute, `width` doubles an element.
+func write_doubles(author: Author*, path: u32, spec: usize, name: str, type_name: str, kind: ValueKind, width: usize, values: const f64[]) -> !:
+    _ = try author.attribute(path, spec, name, type_name, true, try array_of(kind, values.length // width, u8[]((u8*)values.data, values.length * 8)))
+
+## A uniform point3d[] attribute.
+func write_points(author: Author*, path: u32, spec: usize, name: str, values: const Vector3[]) -> !:
+    var numbers = Growing[f64]()
+    defer numbers.close()
+    for p in values:
+        try numbers.push(p.x)
+        try numbers.push(p.y)
+        try numbers.push(p.z)
+    _ = try author.attribute(path, spec, name, "point3d[]", true, try array_of(ValueKind.vec3d, values.length, u8[]((u8*)numbers.items.data, numbers.count * 8)))

@@ -118,6 +118,16 @@ segments, extrapolation and loops).
     (a `restorient` baked in), the hints (zDepth and perspective by default)
     and, for a linear cloud, `luce:gsplatColorSpace`. Other point attributes
     are left out with a warning.
+- **BrepArray** (UsdSolid's draft schema) prims become CAD models, one per
+  B-rep, placed by the prim's world transform: a face's outward side is the
+  one its solid region's faceuse looks away from (a face no solid region
+  uses is a sheet's); edges are lines when they are one, else B-splines;
+  surfaces are planes, cylinders, cones, spheres and tori when their NURBS
+  are the rational arcs of a surface of revolution (as this export writes
+  them), else B-splines. Face names and paths come from `luce:faceName` and
+  `luce:facePath`. A non-manifold B-rep, wire edges, point shells and the
+  analytic shape APIs are refused with a warning naming the prim; NurbsPatch
+  prims beside BrepArrays (the same faces) pass without one.
 - **PointInstancer.**
   - Each prototype is loaded once as its own set. Its paths are relative
     to the prototype's parent.
@@ -189,8 +199,27 @@ Other details:
 - **Instances** become a PointInstancer whose prototypes sit under its
   `Prototypes` scope; the rows' `path` attribute becomes `primvars:path`
   (vertex interpolation), so a trip keeps each instance's path.
-- **CAD** (luce-cad models) becomes one NurbsPatch per face, under the prim
-  the face's path names (else `cad` under the root prim):
+- **CAD B-reps** (luce-cad models' boundaries) become UsdSolid `BrepArray`
+  prims too (the AOUSD proposal's draft schema, `PrelimUsdSolid`; its names
+  kept in `convert/solid_schema.lucb`), one per model, `cad/solid_<k>` under
+  the root prim, beside the patches below:
+  - topology as the Radial Edge model has it: the outside a void region;
+    each lump a solid region (its outer shell, then any cavity's); each
+    cavity a void region (a closed shell inside an odd number of others'
+    boxes); a sheet's faces used on both sides by the outside; two faceuses
+    per face, `same` on its surface's du x dv side; loops counterclockwise
+    about that normal; an edge's two edgeuses each other's next;
+  - shapes as NURBS (BrepPointAPI, BrepCurve3dNurbAPI, BrepSurfaceNurbAPI):
+    vertices placed, edge curves from their start vertex to their end one
+    (lines of order 2, arcs and ellipse arcs rational quadratics), faces'
+    surfaces as the patches below (nets with U the rows); no trim curves
+    (optional in the schema);
+  - `brep:intersectTol3d` the model's tolerance or its widest tolerant
+    edge's or vertex's; face names and paths in custom `luce:faceName` and
+    `luce:facePath`.
+- **CAD** (luce-cad models) also becomes one NurbsPatch per face, for
+  readers without UsdSolid, under the prim the face's path names (else
+  `cad` under the root prim):
   - the support converted exactly: a plane as a bilinear patch over its trim
     box; cylinders, cones, spheres and tori as rational quadratic surfaces of
     revolution (arcs of at most 90 degrees); B-spline supports keep their
@@ -219,6 +248,11 @@ Other details:
   composition arcs are not converted. `Usd.convert` keeps them, since it
   works on layers.
 - **Components with no USD form.** Volumes and SDFs are left out.
-- **CAD.** Faces are written as independent NurbsPatch prims: shared edges
-  and the B-rep's topology are not, trims are polylines (exact trim curves
-  come later), and NurbsPatch prims are not imported yet.
+- **CAD.** A B-rep comes back from its `BrepArray` with its faces, names,
+  edges and topology (lumps, cavities, sheets), its planes, cylinders, cones,
+  spheres and tori analytic again; tolerant edges come back exact at the
+  array's tolerance, face colors and placements' structure are not kept
+  (shapes are placed), and standalone patches only as NurbsPatch prims,
+  which are not imported (their trims are polylines). Non-manifold arrays
+  (an edge with three or more face sides, wire edges, point shells) and the
+  analytic shape APIs are refused with a warning naming the prim.

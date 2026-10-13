@@ -20,5 +20,11 @@ export_splats.lucb
 export_curves.lucb
 cad_patches.lucb
 export_cad.lucb
+solid_schema.lucb
+export_solids.lucb
+solid_curves.lucb
 export_set.lucb
+solids.lucb
+solid_shapes.lucb
+solid_build.lucb
 load.lucb

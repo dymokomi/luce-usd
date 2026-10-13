@@ -1,0 +1,73 @@
+## A B-rep edge's curve as UsdSolid's NURBS (export_solids.lucb): the
+## curve from the edge's start vertex to its end one, placed, and its knot
+## interval as the edge's range.
+## - A line: order 2, knots 0 0 1 1.
+## - A circle or ellipse arc (luce-cad's: about its origin, from `angle`
+##   round `sweep`, x and y its axes, the ellipse's minor radius its one
+##   weight): rational quadratic arcs of at most 90 degrees, middle weights
+##   cos(span / 2), knots 0 to 1 doubled between arcs.
+## - A B-spline: its net, weights and knots; an edge running against its
+##   parameter (a negative sweep) takes it turned round, knots k mapped to
+##   low + high - k.
+
+## Edge `e` of `b`'s curve placed by `placement` onto `out`'s curve arrays.
+func put_curve(b: const BrepModel*, e: i64, placement: Matrix4, out: SolidArrays*) -> !:
+    var record = try b.edge_record(e)
+    defer record.close()
+    let curve = &record
+    if curve.kind == 0:
+        try out.curve_points.push(placement.transform_point(curve.points[0]))
+        try out.curve_points.push(placement.transform_point(curve.points[1]))
+        try out.curve_weights.push(1.0)
+        try out.curve_weights.push(1.0)
+        for k in [0.0, 0.0, 1.0, 1.0]: try out.curve_knots.push(k)
+        try out.curve_counts.push(2)
+        try out.curve_orders.push(2)
+        try out.edge_ranges.push(0.0)
+        try out.edge_ranges.push(1.0)
+        return
+    if curve.kind == 1 or curve.kind == 3:
+        let major = curve.radius
+        let minor = curve.weights[0] if curve.kind == 3 else curve.radius
+        let arcs = (usize)math.max(1.0, math.ceil(math.abs(curve.sweep) / (math.pi * 0.5) - 1e-9))
+        let span = curve.sweep / (f64)arcs
+        let shoulder = math.cos(span * 0.5)
+        # Each arc's start (the first only), middle and end control points.
+        for arc in 0..<arcs:
+            let a0 = curve.angle + span * (f64)arc
+            if arc == 0:
+                try out.curve_points.push(placement.transform_point(curve.origin.add(curve.x.multiply_scalar(major * math.cos(a0))).add(curve.y.multiply_scalar(minor * math.sin(a0)))))
+                try out.curve_weights.push(1.0)
+            let middle = a0 + span * 0.5
+            try out.curve_points.push(placement.transform_point(curve.origin.add(curve.x.multiply_scalar(major * math.cos(middle) / shoulder)).add(curve.y.multiply_scalar(minor * math.sin(middle) / shoulder))))
+            try out.curve_weights.push(shoulder)
+            let a1 = a0 + span
+            try out.curve_points.push(placement.transform_point(curve.origin.add(curve.x.multiply_scalar(major * math.cos(a1))).add(curve.y.multiply_scalar(minor * math.sin(a1)))))
+            try out.curve_weights.push(1.0)
+        for _ in 0..<3: try out.curve_knots.push(0.0)
+        for arc in 1..<arcs:
+            try out.curve_knots.push((f64)arc / (f64)arcs)
+            try out.curve_knots.push((f64)arc / (f64)arcs)
+        for _ in 0..<3: try out.curve_knots.push(1.0)
+        try out.curve_counts.push((u32)(arcs * 2 + 1))
+        try out.curve_orders.push(3)
+        try out.edge_ranges.push(0.0)
+        try out.edge_ranges.push(1.0)
+        return
+    # A B-spline interval from `angle` round `sweep` (its own parameter).
+    let n = curve.points.length
+    let low = curve.knots[(usize)curve.degree]
+    let high = curve.knots[n]
+    let forward = curve.sweep >= 0.0
+    for k in 0..<n:
+        let at = k if forward else n - 1 - k
+        try out.curve_points.push(placement.transform_point(curve.points[at]))
+        try out.curve_weights.push(curve.weights[at] if curve.weights.length == n else 1.0)
+    for k in 0..<curve.knots.length:
+        try out.curve_knots.push(curve.knots[k] if forward else low + high - curve.knots[curve.knots.length - 1 - k])
+    try out.curve_counts.push((u32)n)
+    try out.curve_orders.push((u32)(curve.degree + 1))
+    let start = curve.angle if forward else low + high - curve.angle
+    let end = curve.angle + curve.sweep if forward else low + high - (curve.angle + curve.sweep)
+    try out.edge_ranges.push(start)
+    try out.edge_ranges.push(end)

@@ -9,6 +9,7 @@ pub struct GeomTokens:
     pub var mesh: u32
     pub var basis_curves: u32
     pub var nurbs_curves: u32
+    pub var brep_array: u32
     pub var points_type: u32
     pub var particle_field_splat: u32
     pub var particle_field: u32
@@ -125,6 +126,7 @@ pub struct GeomTokens:
             mesh = try names.token("Mesh"),
             basis_curves = try names.token("BasisCurves"),
             nurbs_curves = try names.token("NurbsCurves"),
+            brep_array = try names.token("BrepArray"),
             points_type = try names.token("Points"),
             particle_field_splat = try names.token("ParticleField3DGaussianSplat"),
             particle_field = try names.token("ParticleField"),

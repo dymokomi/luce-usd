@@ -1,0 +1,227 @@
+## UsdSolid BrepArray prims (solid_schema.lucb) read as CAD models: each
+## B-rep of an array one model, placed by its prim's world transform.
+## - Vertices from `vertexPoint`; an edge's curve a line when it is one
+##   (order 2, two control vertices), else the B-spline it is; its interval
+##   from its end vertices.
+## - A face's surface a plane when it is one (orders 2, a flat 2 by 2 net,
+##   its normal du x dv), else the B-spline (its net's rows U, as ours).
+## - A face's outward side is the one its solid region's faceuse looks away
+##   from: `same` (the surface's normal side) when that faceuse is
+##   `opposite`. Its loops, counterclockwise about the surface's normal in
+##   the file, run about the outward normal in ours (turned when it is the
+##   surface's other side); an edgeuse running with its edge's curve is a
+##   forward use.
+## - A face no solid region uses (both sides in void regions) is a sheet's:
+##   the model is an open surface body.
+## - Non-manifold B-reps (an edge with more than two face sides), wire
+##   edges and point shells are refused with a warning naming the prim,
+##   until luce-cad has non-manifold bodies; so is an analytic shape API
+##   (not written by anyone yet), naming it.
+## Face names and paths come back from `luce:faceName` and `luce:facePath`.
+
+## A BrepArray's arrays as read (values owned; release them).
+struct SolidValues:
+    var values: Growing[Value]
+
+    func close():
+        for at in 0..<self.values.count: self.values.items[at].release()
+        self.values.close()
+
+    ## The value of attribute `name` of `path`, kept (an empty one when
+    ## unauthored).
+    func read(stage: Stage*, path: u32, name: str) -> Value*!:
+        try self.values.push(try stage.value(path, try stage.names.token(name)))
+        return &self.values.items[self.values.count - 1]
+
+## The BrepArray gprims' B-reps as CAD models onto `out`.
+func import_solids(stage: Stage*, gathered: const Gathered*, warnings: Warnings*, out: Growing[interop.Reference[CadModel]]*) -> !:
+    for gprim in gathered.gprims.view():
+        if gprim.kind != GprimKind.brep_array: continue
+        solid_models(stage, &gprim, out) catch failure:
+            if failure.code == memory.exhausted: error(failure.code, failure.message)
+            var line = Growing[u8]()
+            defer line.close()
+            for byte in failure.message.bytes: try line.push(byte)
+            for byte in ": ".bytes: try line.push(byte)
+            try warnings.add_path((str)line.view(), stage.names, gprim.path)
+
+## A BrepArray's arrays (views of SolidValues' values) and where each
+## entity's data starts: loops by face, edgeuses by loop, nets and knots
+## by surface and by curve.
+struct SolidData:
+    var tolerances: const f64[]
+    var region_counts: const u32[]
+    var region_shells: const u32[]
+    var region_types: const u32[]
+    var shell_faceuses: const u32[]
+    var shell_wires: const u32[]
+    var faceuse_faces: const u32[]
+    var faceuse_sides: const u32[]
+    var face_loops: const u32[]
+    var face_types: const u32[]
+    var loop_edgeuses: const u32[]
+    var edgeuse_edges: const u32[]
+    var edgeuse_sides: const u32[]
+    var edge_types: const u32[]
+    var edge_ends: const i32[]
+    var positions: const f64[]
+    var curve_net: const f64[]
+    var curve_count: const u32[]
+    var curve_order: const u32[]
+    var curve_knot: const f64[]
+    var curve_weight: const f64[]
+    var surface_net: const f64[]
+    var surface_u: const u32[]
+    var surface_v: const u32[]
+    var surface_u_order: const u32[]
+    var surface_v_order: const u32[]
+    var surface_u_knot: const f64[]
+    var surface_v_knot: const f64[]
+    var surface_weight: const f64[]
+    var names: const u32[]
+    var paths: const u32[]
+    var wire_types: const u32[]
+    var loop_first: Growing[usize]
+    var edgeuse_first: Growing[usize]
+    var curve_first: Growing[usize]
+    var curve_knot_first: Growing[usize]
+    var surface_first: Growing[usize]
+    var u_knot_first: Growing[usize]
+    var v_knot_first: Growing[usize]
+
+    func close():
+        self.loop_first.close()
+        self.edgeuse_first.close()
+        self.curve_first.close()
+        self.curve_knot_first.close()
+        self.surface_first.close()
+        self.u_knot_first.close()
+        self.v_knot_first.close()
+
+## Prim `path`'s arrays, read into `held`.
+func solid_data(stage: Stage*, held: SolidValues*, path: u32) -> SolidData!:
+    var data = SolidData(
+        tolerances = (try held.read(stage, path, brep_tolerance)).doubles(),
+        region_counts = uints_of(try held.read(stage, path, brep_region_count)),
+        region_shells = uints_of(try held.read(stage, path, region_shell_count)),
+        region_types = (try held.read(stage, path, region_type)).ids(),
+        shell_faceuses = uints_of(try held.read(stage, path, shell_faceuse_count)),
+        shell_wires = uints_of(try held.read(stage, path, shell_wire_edge_count)),
+        faceuse_faces = uints_of(try held.read(stage, path, faceuse_face)),
+        faceuse_sides = (try held.read(stage, path, faceuse_orientation)).ids(),
+        face_loops = uints_of(try held.read(stage, path, face_loop_count)),
+        face_types = (try held.read(stage, path, face_surface_type)).ids(),
+        loop_edgeuses = uints_of(try held.read(stage, path, loop_edgeuse_count)),
+        edgeuse_edges = uints_of(try held.read(stage, path, edgeuse_edge)),
+        edgeuse_sides = (try held.read(stage, path, edgeuse_orientation)).ids(),
+        edge_types = (try held.read(stage, path, edge_curve_type)).ids(),
+        edge_ends = ints_of(try held.read(stage, path, edge_vertices)),
+        positions = (try held.read(stage, path, vertex_positions)).doubles(),
+        curve_net = (try held.read(stage, path, curve_points)).doubles(),
+        curve_count = uints_of(try held.read(stage, path, curve_counts)),
+        curve_order = uints_of(try held.read(stage, path, curve_orders)),
+        curve_knot = (try held.read(stage, path, curve_knots)).doubles(),
+        curve_weight = (try held.read(stage, path, curve_weights)).doubles(),
+        surface_net = (try held.read(stage, path, surface_points)).doubles(),
+        surface_u = uints_of(try held.read(stage, path, surface_u_counts)),
+        surface_v = uints_of(try held.read(stage, path, surface_v_counts)),
+        surface_u_order = uints_of(try held.read(stage, path, surface_u_orders)),
+        surface_v_order = uints_of(try held.read(stage, path, surface_v_orders)),
+        surface_u_knot = (try held.read(stage, path, surface_u_knots)).doubles(),
+        surface_v_knot = (try held.read(stage, path, surface_v_knots)).doubles(),
+        surface_weight = (try held.read(stage, path, surface_weights)).doubles(),
+        names = (try held.read(stage, path, face_names)).ids(),
+        paths = (try held.read(stage, path, face_paths)).ids(),
+        wire_types = (try held.read(stage, path, wire_curve_type)).ids(),
+        loop_first = Growing[usize](), edgeuse_first = Growing[usize](), curve_first = Growing[usize](), curve_knot_first = Growing[usize](),
+        surface_first = Growing[usize](), u_knot_first = Growing[usize](), v_knot_first = Growing[usize]())
+    errdefer data.close()
+    try starts_of(data.face_loops, &data.loop_first)
+    try starts_of(data.loop_edgeuses, &data.edgeuse_first)
+    try starts_of(data.curve_count, &data.curve_first)
+    try data.curve_knot_first.push(0)
+    for e in 0..<data.curve_count.length:
+        if e >= data.curve_order.length: error(errors.invalid, "a BrepArray's curve orders run short")
+        try data.curve_knot_first.push(data.curve_knot_first.items[e] + (usize)(data.curve_count[e] + data.curve_order[e]))
+    try data.surface_first.push(0)
+    try data.u_knot_first.push(0)
+    try data.v_knot_first.push(0)
+    for s in 0..<data.surface_u.length:
+        if s >= data.surface_v.length or s >= data.surface_u_order.length or s >= data.surface_v_order.length: error(errors.invalid, "a BrepArray's surface arrays run short")
+        try data.surface_first.push(data.surface_first.items[s] + (usize)(data.surface_u[s] * data.surface_v[s]))
+        try data.u_knot_first.push(data.u_knot_first.items[s] + (usize)(data.surface_u[s] + data.surface_u_order[s]))
+        try data.v_knot_first.push(data.v_knot_first.items[s] + (usize)(data.surface_v[s] + data.surface_v_order[s]))
+    return data
+
+## Prim `gprim`'s B-reps as models onto `out`.
+func solid_models(stage: Stage*, gprim: const Gprim*, out: Growing[interop.Reference[CadModel]]*) -> !:
+    var held = SolidValues(Growing[Value]())
+    defer held.close()
+    var data = try solid_data(stage, &held, gprim.path)
+    defer data.close()
+    if data.wire_types.length > 0: error(errors.unsupported, "a BrepArray with wire edges (non-manifold) is not supported yet")
+    for wires in data.shell_wires:
+        if wires > 0: error(errors.unsupported, "a BrepArray with wire edges (non-manifold) is not supported yet")
+    let nurb = try stage.names.token(surface_nurb_api)
+    let curve_nurb = try stage.names.token(curve_nurb_api)
+    for t in data.face_types:
+        if t != nurb: error(errors.unsupported, "a BrepArray face whose surface is not a NURBS (an analytic shape API) is not supported yet")
+    for t in data.edge_types:
+        if t != curve_nurb: error(errors.unsupported, "a BrepArray edge whose curve is not a NURBS (an analytic shape API) is not supported yet")
+    let opposite = try stage.names.token(opposite_side)
+    let solid = try stage.names.token(solid_region)
+    let world = world_matrix(&gprim.world)
+    # Each B-rep: its regions, shells and faceuses in turn.
+    var region: usize = 0
+    var shell: usize = 0
+    var faceuse: usize = 0
+    var faces = Growing[usize]()
+    defer faces.close()
+    var outward = Growing[i64]()
+    defer outward.close()
+    for b in 0..<data.region_counts.length:
+        # The faces its faceuses name, each's outward side (1: the
+        # surface's normal side, -1: the other, 0: a sheet's).
+        faces.clear()
+        outward.clear()
+        for _ in 0..<data.region_counts[b]:
+            if region >= data.region_shells.length or region >= data.region_types.length: error(errors.invalid, "a BrepArray's regions run short")
+            let in_solid = data.region_types[region] == solid
+            for _ in 0..<data.region_shells[region]:
+                if shell >= data.shell_faceuses.length: error(errors.invalid, "a BrepArray's shells run short")
+                if data.shell_faceuses[shell] == 0: error(errors.unsupported, "a BrepArray shell of a point or wire edges (non-manifold) is not supported yet")
+                for _ in 0..<data.shell_faceuses[shell]:
+                    if faceuse >= data.faceuse_faces.length or faceuse >= data.faceuse_sides.length: error(errors.invalid, "a BrepArray's faceuses run short")
+                    let f = (usize)data.faceuse_faces[faceuse]
+                    var at: i64 = -1
+                    for k in 0..<faces.count:
+                        if faces.items[k] == f: at = (i64)k
+                    if at < 0:
+                        try faces.push(f)
+                        try outward.push(0)
+                        at = (i64)faces.count - 1
+                    # Its solid region's faceuse looks away from the outside.
+                    if in_solid: outward.items[(usize)at] = 1 if data.faceuse_sides[faceuse] == opposite else -1
+                    faceuse += 1
+                shell += 1
+            region += 1
+        let tolerance = data.tolerances[b] if b < data.tolerances.length else 0.0
+        try out.push(try brep_model(stage, &data, faces.view(), outward.view(), tolerance, world))
+
+## Where each of `counts` starts, onto `out` (with the total last).
+func starts_of(counts: const u32[], out: Growing[usize]*) -> !:
+    try out.push(0)
+    for at in 0..<counts.length: try out.push(out.items[at] + (usize)counts[at])
+
+## A uint array's elements.
+func uints_of(value: const Value*) -> const u32[]:
+    let bytes = value.bytes()
+    return u32[]((u32*)bytes.data, bytes.length // 4)
+
+## A prim's world transform as geocore's matrix.
+func world_matrix(world: const Matrix4d*) -> Matrix4:
+    let (xx, xy, xz) = world.direction(1.0, 0.0, 0.0)
+    let (yx, yy, yz) = world.direction(0.0, 1.0, 0.0)
+    let (zx, zy, zz) = world.direction(0.0, 0.0, 1.0)
+    let (tx, ty, tz) = world.point(0.0, 0.0, 0.0)
+    return Matrix4(Vector3(xx, xy, xz), Vector3(yx, yy, yz), Vector3(zx, zy, zz), Vector3(tx, ty, tz))

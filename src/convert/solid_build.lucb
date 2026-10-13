@@ -1,0 +1,127 @@
+## One B-rep of a BrepArray (solids.lucb) built as a CAD model: its faces
+## `faces` (global indices) with their outward sides, the edges and
+## vertices they reach, numbered afresh.
+
+## Faces `faces` of `data` (`outward[k]`: 1 the surface's normal side, -1
+## the other, 0 a sheet's) as a model of `tolerance`, placed by `world`.
+func brep_model(stage: Stage*, data: const SolidData*, faces: const usize[], outward: const i64[], tolerance: f64, world: Matrix4) -> interop.Reference[CadModel]!:
+    let solid = try BrepModel.held(math.max(tolerance, 1e-9))
+    defer solid.release()
+    let b = solid.value()
+    let edges_in = data.edge_ends.length // 2
+    let vertices_in = data.positions.length // 3
+    var vertex_of = Growing[i64]()
+    defer vertex_of.close()
+    try vertex_of.fill(vertices_in, -1)
+    var edge_of = Growing[i64]()
+    defer edge_of.close()
+    try edge_of.fill(edges_in, -1)
+    var edge_sides = Growing[i64]()
+    defer edge_sides.close()
+    try edge_sides.fill(edges_in, 0)
+    # Each edge's face sides, first: more than two is non-manifold.
+    for f in faces:
+        if f + 1 >= data.loop_first.count: error(errors.invalid, "a BrepArray faceuse names a face it does not have")
+        for l in data.loop_first.items[f]..<data.loop_first.items[f + 1]:
+            if l + 1 >= data.edgeuse_first.count: error(errors.invalid, "a BrepArray's loops run short")
+            for u in data.edgeuse_first.items[l]..<data.edgeuse_first.items[l + 1]:
+                if u >= data.edgeuse_edges.length: error(errors.invalid, "a BrepArray's edgeuses run short")
+                let e = (usize)data.edgeuse_edges[u]
+                if e >= edges_in: error(errors.invalid, "a BrepArray edgeuse names an edge it does not have")
+                edge_sides.items[e] += 1
+                if edge_sides.items[e] > 2: error(errors.unsupported, "a BrepArray edge with more than two face sides (non-manifold) is not supported yet")
+    var uses = Growing[i64]()
+    defer uses.close()
+    var sizes = Growing[i64]()
+    defer sizes.close()
+    for k in 0..<faces.length:
+        let f = faces[k]
+        if f >= data.surface_u.length: error(errors.invalid, "a BrepArray faceuse names a face it does not have")
+        let (surface, flipped) = try face_surface(b, data, f, world)
+        # Ours run about the outward normal: the file's loops turned where
+        # that is the surface's other side.
+        let turned = outward[k] < 0
+        uses.clear()
+        sizes.clear()
+        for l in data.loop_first.items[f]..<data.loop_first.items[f + 1]:
+            if l + 1 >= data.edgeuse_first.count: error(errors.invalid, "a BrepArray's loops run short")
+            let first = data.edgeuse_first.items[l]
+            let end = data.edgeuse_first.items[l + 1]
+            if end - first == 0: error(errors.unsupported, "a BrepArray loop of a lone vertex is not supported yet")
+            let start = uses.count
+            for u in first..<end:
+                if u >= data.edgeuse_edges.length or u >= data.edgeuse_sides.length: error(errors.invalid, "a BrepArray's edgeuses run short")
+                let e = (usize)data.edgeuse_edges[u]
+                let local = try edge_on(b, data, e, &edge_of, &vertex_of, world)
+                let forward = data.edgeuse_sides[u] != try stage.names.token(opposite_side)
+                try uses.push(local + 1 if forward else -(local + 1))
+            if turned:
+                # The loop backwards, each use the other way.
+                var low = start
+                var high = uses.count - 1
+                while low < high:
+                    let swap = uses.items[low]
+                    uses.items[low] = -uses.items[high]
+                    uses.items[high] = -swap
+                    low += 1
+                    high -= 1
+                if low == high: uses.items[low] = -uses.items[low]
+            try sizes.push((i64)(uses.count - start))
+        # Its sense: whether its outward normal is its surface's (an
+        # analytic one's may oppose the NURBS's).
+        let face = try b.add_face(surface, uses.view(), sizes.view(), (outward[k] >= 0) != flipped)
+        if f < data.names.length: try b.set_face_name(face, stage.names.text_of(data.names[f]))
+        if f < data.paths.length: try b.set_face_path(face, stage.names.text_of(data.paths[f]))
+    return try CadModel.of_brep(solid)
+
+## Global edge `e`'s local edge in `b`, added (with its vertices, placed
+## by `world`) when first met.
+func edge_on(b: BrepModel*, data: const SolidData*, e: usize, edge_of: Growing[i64]*, vertex_of: Growing[i64]*, world: Matrix4) -> i64!:
+    if edge_of.items[e] >= 0: return edge_of.items[e]
+    var ends: i64[2] = [0, 0]
+    for k in 0..<(usize)2:
+        let v = data.edge_ends[e * 2 + k]
+        if v < 0 or (usize)v * 3 + 2 >= data.positions.length: error(errors.invalid, "a BrepArray edge names a vertex it does not have")
+        if vertex_of.items[(usize)v] < 0:
+            let p = world.transform_point(Vector3(data.positions[(usize)v * 3], data.positions[(usize)v * 3 + 1], data.positions[(usize)v * 3 + 2]))
+            vertex_of.items[(usize)v] = try b.add_vertex(p)
+        ends[k] = vertex_of.items[(usize)v]
+    if e + 1 >= data.curve_first.count: error(errors.invalid, "a BrepArray's curves run short")
+    let first = data.curve_first.items[e]
+    let count = (usize)data.curve_count[e]
+    let order = (usize)data.curve_order[e]
+    if (first + count) * 3 > data.curve_net.length or first + count > data.curve_weight.length or data.curve_knot_first.items[e + 1] > data.curve_knot.length or order < 2:
+        error(errors.invalid, "a BrepArray edge's NURBS runs past its arrays")
+    var points = Growing[Vector3]()
+    defer points.close()
+    var weights = Growing[f64]()
+    defer weights.close()
+    for k in first..<first + count:
+        try points.push(world.transform_point(Vector3(data.curve_net[k * 3], data.curve_net[k * 3 + 1], data.curve_net[k * 3 + 2])))
+        try weights.push(data.curve_weight[k])
+    # A line: two control vertices of order 2 (its weights cancel).
+    if order == 2 and count == 2 and ends[0] != ends[1]: edge_of.items[e] = try b.add_line(ends[0], ends[1])
+    else: edge_of.items[e] = try b.add_spline_edge(ends[0], ends[1], points.view(), weights.view(), (i64)order - 1, data.curve_knot[data.curve_knot_first.items[e]..<data.curve_knot_first.items[e + 1]], true)
+    return edge_of.items[e]
+
+## Face `f`'s surface added to `b`, placed by `world`: analytic when it
+## is one (solid_shapes.lucb), else its NURBS; and whether that surface's
+## normal opposes the NURBS's du x dv.
+func face_surface(b: BrepModel*, data: const SolidData*, f: usize, world: Matrix4) -> (i64, bool)!:
+    let nu = (usize)data.surface_u[f]
+    let nv = (usize)data.surface_v[f]
+    let first = data.surface_first.items[f]
+    if (first + nu * nv) * 3 > data.surface_net.length or first + nu * nv > data.surface_weight.length or data.u_knot_first.items[f + 1] > data.surface_u_knot.length or data.v_knot_first.items[f + 1] > data.surface_v_knot.length:
+        error(errors.invalid, "a BrepArray face's NURBS runs past its arrays")
+    var points = Growing[Vector3]()
+    defer points.close()
+    var weights = Growing[f64]()
+    defer weights.close()
+    for k in first..<first + nu * nv:
+        try points.push(world.transform_point(Vector3(data.surface_net[k * 3], data.surface_net[k * 3 + 1], data.surface_net[k * 3 + 2])))
+        try weights.push(data.surface_weight[k])
+    let order_u = (usize)data.surface_u_order[f]
+    let order_v = (usize)data.surface_v_order[f]
+    let found = try recognised(points.view(), weights.view(), nu, nv, order_u, order_v, b.model_tolerance())
+    if found.kind >= 0: return (try b.add_surface(found.kind, found.origin, found.axis, found.reference, found.radius, found.angle), found.flipped)
+    return (try b.add_spline_surface(points.view(), weights.view(), (i64)nu, (i64)nv, (i64)order_u - 1, (i64)order_v - 1, data.surface_u_knot[data.u_knot_first.items[f]..<data.u_knot_first.items[f + 1]], data.surface_v_knot[data.v_knot_first.items[f]..<data.v_knot_first.items[f + 1]]), false)

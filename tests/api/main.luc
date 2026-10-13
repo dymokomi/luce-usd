@@ -2,10 +2,12 @@
 from luce_std import files
 from format_tests import format_tests
 from geometry_tests import geometry_tests, composed_tests
+from solid_tests import solid_tests
 
 pub func main(arguments: list[str]) -> int!:
     with files.TemporaryDirectory() as directory:
         format_tests()
         geometry_tests(directory.path())
         composed_tests(directory.path())
+        solid_tests(directory.path())
     return 0

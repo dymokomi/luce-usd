@@ -7,6 +7,7 @@
 ## load.lucb the whole import.
 from luce_std import math, parallel
 import memory
+import interop
 import sync
 import errors
 from sdf.names import Names, absolute_root, empty_path
@@ -21,7 +22,8 @@ from luce_geocore.geocore import Vector3, Mesh
 from luce_geocore.kernel import Float3, Attribute, AttributeStore, Domain, DataType, Role, TableBuilder, GeometrySet, assembled, put_attribute, mesh_dispose, set_put_detail, empty_set, dispose_set, mesh_component, BitsBuilder, edge_bits_from_pairs, PointCloud, cloud_assembled, points_component, Curves, curves_assembled, curves_type, Instances, new_instances, instances_component, Placement
 from luce_geocore.kernel import set_detail, cloud_store, cloud_positions, cloud_origin, curves_origin, CurveSettings, KnotMode, Bits
 from luce_geocore.core.growing import Growing
-from luce_cad.cad_geometry import cad_component, set_models
+from luce_cad.cad_geometry import cad_component, set_models, put_models
+from luce_cad.model import CadModel, BrepModel
 from luce_cad.exact import FaceSupport
 from luce_geocore.core.shared import Column
 from luce_geocore.geocore import Matrix4
