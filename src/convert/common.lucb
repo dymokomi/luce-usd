@@ -23,7 +23,7 @@ from luce_geocore.kernel import Float3, Attribute, AttributeStore, Domain, DataT
 from luce_geocore.kernel import set_detail, cloud_store, cloud_positions, cloud_origin, curves_origin, CurveSettings, KnotMode, Bits
 from luce_geocore.core.growing import Growing
 from luce_cad.cad_geometry import cad_component, set_models, put_models
-from luce_cad.model import CadModel, BrepModel
+from luce_cad.model import CadModel, BrepModel, CadTolerances
 from luce_cad.exact import FaceSupport
 from luce_geocore.core.shared import Column
 from luce_geocore.geocore import Matrix4
