@@ -412,16 +412,15 @@ func write_solid(author: Author*, path: u32, arrays: const SolidArrays*, model: 
     let list = try ListOp.create()
     try author.layer.set(spec, author.layer.keys.api_schemas, Value.of_object(ValueKind.token_list_op, (void*)list))
     for schema in solid_api_schemas: try list.push(ListPart.prepended, ListItem(a = (u64)(try names.token(schema)), b = 0, offset = 0.0, scale = 1.0, custom = none))
-    # Its box (vertices and nets) and tolerance (the widest precision).
+    # Its box (vertices and nets) and tolerance (the project's resolution,
+    # or the widest precision).
     var low = Vector3(1.0e300, 1.0e300, 1.0e300)
     var high = Vector3(-1.0e300, -1.0e300, -1.0e300)
     for group in [arrays.positions.view(), arrays.surface_points.view()]:
         for p in group:
             low = Vector3(math.min(low.x, p.x), math.min(low.y, p.y), math.min(low.z, p.z))
             high = Vector3(math.max(high.x, p.x), math.max(high.y, p.y), math.max(high.z, p.z))
-    var tolerance = b.model_tolerance()
-    for e in 0..<b.edge_count(): tolerance = math.max(tolerance, try b.edge_precision_of(e))
-    for v in 0..<b.vertex_count(): tolerance = math.max(tolerance, try b.vertex_precision_of(v))
+    let tolerance = math.max(b.cad_tolerances().resolution(), b.widest_precision())
     _ = model
     let box: f64[6] = [low.x, low.y, low.z, high.x, high.y, high.z]
     let extent: f32[6] = [(f32)low.x, (f32)low.y, (f32)low.z, (f32)high.x, (f32)high.y, (f32)high.z]

@@ -3,9 +3,11 @@
 ## vertices they reach, numbered afresh.
 
 ## Faces `faces` of `data` (`outward[k]`: 1 the surface's normal side, -1
-## the other, 0 a sheet's) as a model of `tolerance`, placed by `world`.
+## the other, 0 a sheet's), placed by `world`: a model under the project's
+## tolerances, its vertices and edges as precise as `tolerance` (the file's
+## intersectTol3d) when it is looser than the resolution.
 func brep_model(stage: Stage*, data: const SolidData*, faces: const usize[], outward: const i64[], tolerance: f64, world: Matrix4) -> interop.Reference[CadModel]!:
-    let solid = try BrepModel.held(CadTolerances(), math.max(tolerance, 1e-9))
+    let solid = try BrepModel.held(CadTolerances())
     defer solid.release()
     let b = solid.value()
     let edges_in = data.edge_ends.length // 2
@@ -72,6 +74,9 @@ func brep_model(stage: Stage*, data: const SolidData*, faces: const usize[], out
         let face = try b.add_face(surface, uses.view(), sizes.view(), (outward[k] >= 0) != flipped)
         if f < data.names.length: try b.set_face_name(face, stage.names.text_of(data.names[f]))
         if f < data.paths.length: try b.set_face_path(face, stage.names.text_of(data.paths[f]))
+    if tolerance > b.cad_tolerances().resolution():
+        for v in 0..<b.vertex_count(): try b.set_vertex_precision(v, tolerance)
+        for e in 0..<b.edge_count(): try b.set_edge_precision(e, tolerance)
     return try CadModel.of_brep(solid)
 
 ## Global edge `e`'s local edge in `b`, added (with its vertices, placed
@@ -122,6 +127,6 @@ func face_surface(b: BrepModel*, data: const SolidData*, f: usize, world: Matrix
         try weights.push(data.surface_weight[k])
     let order_u = (usize)data.surface_u_order[f]
     let order_v = (usize)data.surface_v_order[f]
-    let found = try recognised(points.view(), weights.view(), nu, nv, order_u, order_v, b.model_tolerance())
+    let found = try recognised(points.view(), weights.view(), nu, nv, order_u, order_v, math.max(b.cad_tolerances().resolution(), b.widest_precision()))
     if found.kind >= 0: return (try b.add_surface(found.kind, found.origin, found.axis, found.reference, found.radius, found.angle), found.flipped)
     return (try b.add_spline_surface(points.view(), weights.view(), (i64)nu, (i64)nv, (i64)order_u - 1, (i64)order_v - 1, data.surface_u_knot[data.u_knot_first.items[f]..<data.u_knot_first.items[f + 1]], data.surface_v_knot[data.v_knot_first.items[f]..<data.v_knot_first.items[f + 1]]), false)
