@@ -2,14 +2,12 @@
 ## per face, the exact support (cad_patches.lucb) with the face's trim
 ## loops as order-2 trim curves, under the prim its face path names (else
 ## under `home`). Trim loops are polylines sampled at the display
-## tessellation's edge stations for `cad_divisions`, so the exported trims
-## match what the viewport draws; exact trim curves come later.
-
-## The divisions trims are sampled for (the display tessellation's default).
-let cad_divisions: i64 = 16
+## tessellation's edge stations at the export's MeshQuality, so the
+## exported trims match what the viewport draws at that quality; exact trim
+## curves come later.
 
 ## Every face of the set's CAD models, as NurbsPatch prims.
-func export_cad(set: const GeometrySet*, author: Author*, base: u32, home: u32, warnings: Warnings*) -> !:
+func export_cad(set: const GeometrySet*, author: Author*, base: u32, home: u32, quality: MeshQuality, warnings: Warnings*) -> !:
     let names = author.names
     let nurbs = try names.token("NurbsPatch")
     let tokens = try GeomTokens.of(names)
@@ -26,7 +24,7 @@ func export_cad(set: const GeometrySet*, author: Author*, base: u32, home: u32, 
         for face in 0..<model.face_count():
             var support = try model.face_support(face)
             defer support.close()
-            model.face_trim_uv(face, cad_divisions, &uv, &sizes) catch failure:
+            model.face_trim_uv(face, quality.divisions(), &uv, &sizes) catch failure:
                 if failure.code == memory.exhausted: error(failure.code, failure.message)
                 skipped += 1
                 continue

@@ -113,7 +113,7 @@ struct SolidArrays:
         self.paths.close()
 
 ## Every CAD model's B-rep of the set as a BrepArray prim under `home`.
-func export_solids(set: const GeometrySet*, author: Author*, home: u32, warnings: Warnings*) -> !:
+func export_solids(set: const GeometrySet*, author: Author*, home: u32, quality: MeshQuality, warnings: Warnings*) -> !:
     var name = Growing[u8]()
     defer name.close()
     var written: usize = 0
@@ -127,7 +127,7 @@ func export_solids(set: const GeometrySet*, author: Author*, home: u32, warnings
         let path = try author.names.child(home, try author.names.token((str)name.view()))
         var arrays = SolidArrays.empty()
         defer arrays.close()
-        packed(author.names, model, b, &arrays, warnings) catch failure:
+        packed(author.names, model, b, quality, &arrays, warnings) catch failure:
             if failure.code == memory.exhausted: error(failure.code, failure.message)
             var line = Growing[u8]()
             defer line.close()
@@ -139,7 +139,7 @@ func export_solids(set: const GeometrySet*, author: Author*, home: u32, warnings
         written += 1
 
 ## Model `model`'s B-rep `b` packed into `out` (see the header).
-func packed(names: Names*, model: const CadModel*, b: const BrepModel*, out: SolidArrays*, warnings: Warnings*) -> !:
+func packed(names: Names*, model: const CadModel*, b: const BrepModel*, quality: MeshQuality, out: SolidArrays*, warnings: Warnings*) -> !:
     let faces = (usize)b.face_count()
     let edges = (usize)b.edge_count()
     let vertices = (usize)b.vertex_count()
@@ -160,7 +160,7 @@ func packed(names: Names*, model: const CadModel*, b: const BrepModel*, out: Sol
         var support = try model.face_support(standalone + (i64)f)
         defer support.close()
         try placements.push(support.placement)
-        try model.face_trim_uv(standalone + (i64)f, cad_divisions, &uv, &sizes)
+        try model.face_trim_uv(standalone + (i64)f, quality.divisions(), &uv, &sizes)
         var patch = try patch_of(&support, uv.view(), sizes.view())
         defer patch.close()
         try agrees.push(patch.right_handed)

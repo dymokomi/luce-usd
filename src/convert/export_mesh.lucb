@@ -14,6 +14,9 @@ pub struct ExportOptions:
     ## Gaussian splat arrays: 0 as the cloud was read (halves when its
     ## detail `usd.halfSplats` says so), 1 floats, 2 halves.
     pub var splat_precision: i64 = 0
+    ## How finely CAD faces' trim loops are sampled (as the display mesh
+    ## at this quality samples their edges).
+    pub var quality: MeshQuality = MeshQuality()
 
 ## One Mesh prim's share of the mesh.
 struct MeshPart:

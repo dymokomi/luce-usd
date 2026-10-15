@@ -22,6 +22,7 @@ import flatten as flattening
 from sdf.names import Names
 from sdf.layer_data import LayerData
 from luce_geocore.geocore import GeometrySet
+from luce_cad.model import MeshQuality
 from luce_geocore.kernel import adopt_set, dispose_set
 from luce_geocore.core.growing import Growing
 
@@ -87,8 +88,9 @@ pub struct Usd:
     ## attribute (`split`), the rest under the root prim `root`; `precise`
     ## writes double-precision points. Gaussian splats are written as floats
     ## or halves as they were read (`splat_precision` 0), as floats (1) or as
-    ## halves (2). What was left out is in `warnings()`.
-    pub static func save(set: interop.Reference[GeometrySet], path: str, root: str = "geo", split: bool = true, precise: bool = false, splat_precision: i64 = 0) -> !:
+    ## halves (2). CAD faces' trim loops are sampled as the display mesh at
+    ## `quality` samples their edges. What was left out is in `warnings()`.
+    pub static func save(set: interop.Reference[GeometrySet], path: str, root: str = "geo", split: bool = true, precise: bool = false, splat_precision: i64 = 0, quality: MeshQuality = MeshQuality()) -> !:
         var names = try Names()
         defer names.close()
         var layer = try LayerData(&names)
@@ -96,7 +98,8 @@ pub struct Usd:
         var warnings = convert.Warnings()
         defer warnings.close()
         if splat_precision < 0 or splat_precision > 2: error(errors.invalid, "splat_precision is 0 (as read), 1 (floats) or 2 (halves)")
-        let options = convert.ExportOptions(split = split, precise = precise, splat_precision = splat_precision)
+        try quality.checked()
+        let options = convert.ExportOptions(split = split, precise = precise, splat_precision = splat_precision, quality = quality)
         try convert.export_set(try set.get(), &layer, root, &options, &warnings)
         try write_layer(&layer, path)
         remember(&warnings)

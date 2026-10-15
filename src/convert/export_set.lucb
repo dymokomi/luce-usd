@@ -39,8 +39,8 @@ func export_into(set: const GeometrySet*, author: Author*, base: u32, home: u32,
             try export_curves((const Curves*)component.data, author, base, try names.child(home, try names.token("curves")), options, warnings)
         elif kind == &cad_component:
             let cad = try names.child(home, try names.token("cad"))
-            try export_cad(set, author, base, cad, warnings)
-            try export_solids(set, author, cad, warnings)
+            try export_cad(set, author, base, cad, options.quality, warnings)
+            try export_solids(set, author, cad, options.quality, warnings)
         elif kind == instances_component():
             if depth >= most_export_depth:
                 try warnings.add("Instances nested more than 16 deep were left out")
