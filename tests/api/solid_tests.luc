@@ -12,17 +12,9 @@ from luce_cad.modeling import CadModeling
 from luce_cad.model import CadModel
 from luce_cad.cad_geometry import CadGeometry
 from luce_cad.surfacing import CadSurfacing
-from luce_geocore.geocore import Mesh, Vector3
+from luce_cad.measure import CadMeasure
+from luce_geocore.geocore import Vector3
 from luce_std import paths, files, math
-
-func volume(mesh: Mesh) -> float!:
-    var total = 0.0
-    for t in 0..<mesh.index_count() // 3:
-        let a = mesh.vertex(mesh.index(t * 3)).position
-        let b = mesh.vertex(mesh.index(t * 3 + 1)).position
-        let c = mesh.vertex(mesh.index(t * 3 + 2)).position
-        total += a.dot(b.cross(c)) / 6.0
-    return total
 
 ## `model` saved as `name` (.usda and .usdc) and loaded back: its faces,
 ## their names and kinds, its closedness and its volume; the model read
@@ -41,8 +33,11 @@ func trip(scratch: str, name: str, model: CadModel, within: float) -> CadModel!:
             assert(back.face_name(face) == model.face_name(face) and back.face_surface_kind(face) == model.face_surface_kind(face), f"{name}: face {face}")
         assert(CadSurfacing.is_closed(back) == CadSurfacing.is_closed(model))
         if CadSurfacing.is_closed(model):
-            let before = volume(model.tessellate(32))
-            let after = volume(back.tessellate(32))
+            # The measured volume (each triangle's cap to its surface
+            # added) follows the B-rep, not how each mesh happens to sample
+            # it: the loaded rims are NURBS, sampled unlike circles.
+            let before = CadMeasure.volume(model)
+            let after = CadMeasure.volume(back)
             if math.abs(after - before) > within: print(f"{name}.{extension}: volume {after} against {before}")
             assert(math.abs(after - before) <= within)
         if kept == none: kept = back
